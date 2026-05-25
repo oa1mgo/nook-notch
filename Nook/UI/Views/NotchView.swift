@@ -82,8 +82,11 @@ struct NotchView: View {
 
     /// Extra width for expanding activities (like Dynamic Island)
     private var expansionWidth: CGFloat {
+        // Base expansion: two side icon areas (each = sideWidth)
+        let baseExpansion = 2 * max(0, closedNotchSize.height - 12) + 20
+
         if showMusicActivity {
-            return max(56, closedNotchSize.height * 1.8)
+            return baseExpansion
         }
 
         // Permission indicator adds width on left side only
@@ -92,12 +95,8 @@ struct NotchView: View {
         // Expand for processing activity
         if activityCoordinator.expandingActivity.show {
             switch activityCoordinator.expandingActivity.type {
-            case .claude:
-                let baseWidth = 2 * max(0, closedNotchSize.height - 12) + 20
-                return baseWidth + permissionIndicatorWidth
-            case .codex:
-                let baseWidth = 2 * max(0, closedNotchSize.height - 12) + 20
-                return baseWidth + permissionIndicatorWidth
+            case .claude, .codex:
+                return baseExpansion + permissionIndicatorWidth
             case .none:
                 break
             }
@@ -105,12 +104,12 @@ struct NotchView: View {
 
         // Expand for pending permissions (left indicator) or waiting for input (checkmark on right)
         if hasPendingPermission {
-            return 2 * max(0, closedNotchSize.height - 12) + 20 + permissionIndicatorWidth
+            return baseExpansion + permissionIndicatorWidth
         }
 
         // Waiting for input just shows checkmark on right, no extra left indicator
         if hasWaitingForInput {
-            return 2 * max(0, closedNotchSize.height - 12) + 20
+            return baseExpansion
         }
 
         return 0
@@ -197,12 +196,6 @@ struct NotchView: View {
                         topCornerRadius: viewModel.animatedTopCornerRadius,
                         bottomCornerRadius: viewModel.animatedBottomCornerRadius
                     ))
-                    .overlay(alignment: .top) {
-                        Rectangle()
-                            .fill(viewModel.status == .opened && isAdaptiveBackgroundEnabled ? expandedNotchTheme.overlayColor : .black)
-                            .frame(height: 1)
-                            .padding(.horizontal, topCornerRadius)
-                    }
                     .shadow(
                         color: (viewModel.status == .opened || isHovering) ? .black.opacity(0.7) : .clear,
                         radius: 6
@@ -379,65 +372,53 @@ struct NotchView: View {
                 .frame(height: closedNotchSize.height)
         } else {
         HStack(spacing: 0) {
-            // Left side - crab + optional permission indicator (visible when processing, pending, or waiting for input)
+            // Left side - icons at natural size
             if showClosedActivity {
                 HStack(spacing: 4) {
                     if isCodexProcessing {
                         CodexPulseIcon(size: 14, color: activityTint, isAnimating: true)
+                            .padding(1)
                             .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
                     } else {
                         ClaudeCrabIcon(size: 14, color: activityTint, animateLegs: isProcessing)
+                            .padding(1)
                             .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
                     }
 
-                    // Permission indicator only (amber) - waiting for input shows checkmark on right
                     if hasPendingPermission {
                         PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
+                            .padding(1)
                             .matchedGeometryEffect(id: "status-indicator", in: activityNamespace, isSource: showClosedActivity)
                     }
                 }
-                .frame(width: viewModel.status == .opened ? nil : sideWidth + (hasPendingPermission ? 18 : 0))
-                .padding(.leading, viewModel.status == .opened ? 8 : 0)
             }
 
-            // Center content
+            // Center spacer
             if viewModel.status == .opened {
-                // Opened: show header content
                 openedHeaderContent
             } else if !showClosedActivity {
-                // Closed without activity: empty space
-                Rectangle()
-                    .fill(.clear)
-                    .frame(width: closedNotchSize.width - 20)
+                Spacer()
             } else {
-                // Closed with activity: black spacer (with optional bounce)
-                Rectangle()
-                    .fill(.black)
-                    .frame(width: closedNotchSize.width - cornerRadiusInsets.closed.top + (isBouncing ? 16 : 0))
+                Spacer()
+                    .background(Color.black)
             }
 
-            // Right side - spinner when processing/pending, checkmark when waiting for input
+            // Right side - icons at natural size
             if showClosedActivity {
                 if isProcessing || hasPendingPermission {
                     ProcessingSpinner(provider: activeLoadingProvider)
                         .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
-                        .frame(width: viewModel.status == .opened ? 20 : sideWidth)
-                        .padding(.trailing, viewModel.status == .opened ? 0 : 4)
                 } else if hasWaitingForInput {
-                    // Checkmark for waiting-for-input on the right side
                     ReadyForInputIndicatorIcon(size: 14, color: TerminalColors.green)
+                        .padding(1)
                         .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
-                        .frame(width: viewModel.status == .opened ? 20 : sideWidth)
-                        .padding(.trailing, viewModel.status == .opened ? 0 : 4)
                 }
             }
         }
+        .padding(.horizontal, 7)
+        .frame(width: viewModel.status == .opened ? nil : closedContentWidth + (isBouncing ? 16 : 0))
         .frame(height: closedNotchSize.height)
         }
-    }
-
-    private var sideWidth: CGFloat {
-        max(0, closedNotchSize.height - 12) + 10
     }
 
     // MARK: - Opened Header Content

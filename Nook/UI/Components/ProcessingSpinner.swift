@@ -56,7 +56,7 @@ struct ProcessingSpinner: View {
                     .stroke(color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
                     .rotationEffect(.degrees(rotation))
             }
-            .frame(width: 12, height: 12)
+            .frame(width: 16, height: 16)
             .onAppear {
                 rotation = 0
                 withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
@@ -65,9 +65,9 @@ struct ProcessingSpinner: View {
             }
         } else {
             Text(SessionLoadingStyle.symbols[phase % SessionLoadingStyle.symbols.count])
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 16, weight: .bold))
                 .foregroundColor(color)
-                .frame(width: 12, alignment: .center)
+                .frame(width: 16, alignment: .center)
                 .onReceive(timer) { _ in
                     phase = (phase + 1) % SessionLoadingStyle.symbols.count
                 }

@@ -30,9 +30,10 @@ struct CompactMusicActivityView: View {
                 isPlaying: musicManager.playbackState.isPlaying,
                 gradientColors: musicManager.artworkGradient
             )
-                .frame(width: 14, height: 14)
+            .frame(width: 16, height: 16)
+            .padding(1)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 7)
     }
 }
 
@@ -49,7 +50,7 @@ private extension CompactMusicActivityView {
                     .foregroundColor(.white.opacity(0.85))
             }
         }
-        .frame(width: 16, height: 16)
+        .frame(width: 18, height: 18)
         .background(Color.white.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }

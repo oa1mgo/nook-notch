@@ -1157,6 +1157,7 @@ actor SessionStore {
         }
 
         sessions[sessionId] = session
+        publishState()
     }
 
     // MARK: - Clear Processing
