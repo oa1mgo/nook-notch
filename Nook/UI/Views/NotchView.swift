@@ -196,6 +196,7 @@ struct NotchView: View {
                         topCornerRadius: viewModel.animatedTopCornerRadius,
                         bottomCornerRadius: viewModel.animatedBottomCornerRadius
                     ))
+                    .overlay(musicEdgeGlow)
                     .shadow(
                         color: (viewModel.status == .opened || isHovering) ? .black.opacity(0.7) : .clear,
                         radius: 6
@@ -336,6 +337,54 @@ struct NotchView: View {
     /// Whether to show the expanded closed state (processing, pending permission, or waiting for input)
     private var showClosedActivity: Bool {
         showCompactMusicActivity || isProcessing || hasPendingPermission || hasWaitingForInput
+    }
+
+    /// Whether to show the music progress edge glow
+    private var musicEdgeGlowVisible: Bool {
+        musicManager.playbackState.isPlaying
+            && viewModel.status == .closed
+    }
+
+    @State private var breathingOpacity: CGFloat = 0.9
+
+    @ViewBuilder
+    private var musicEdgeGlow: some View {
+        if musicEdgeGlowVisible {
+            NotchBottomEdge(
+                topCornerRadius: viewModel.animatedTopCornerRadius,
+                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+            )
+            .trim(from: 0, to: 1)
+            .stroke(
+                LinearGradient(
+                    colors: musicManager.edgeGlowGradient.map(Color.init(nsColor:)),
+                    startPoint: .leading,
+                    endPoint: .trailing
+                ),
+                style: StrokeStyle(lineWidth: 1, lineCap: .round)
+            )
+            .blur(radius: 1)
+            .opacity(breathingOpacity)
+            // Key insight: `.blur()` combined with `withAnimation`-based breathing
+            // dampens the opacity oscillation so much that the breathing becomes
+            // imperceptible — the blur spreads the thin line too thinly even at
+            // peak opacity. Using explicit `.task` cycles + discrete
+            // `withAnimation` steps (not `.repeatForever`) avoids this and
+            // also auto-cancels when the glow disappears (music stops / notch
+            // opens), preventing stale Timer / overlapping animation issues.
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    withAnimation(.easeInOut(duration: 1.5)) {
+                        breathingOpacity = 0.2
+                    }
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    withAnimation(.easeInOut(duration: 1.5)) {
+                        breathingOpacity = 0.9
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder

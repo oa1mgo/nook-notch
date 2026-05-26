@@ -9,7 +9,7 @@ struct CompactMusicActivityView: View {
             artwork
                 .frame(width: 18, height: 18)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text(primaryText)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.white)

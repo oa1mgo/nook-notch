@@ -70,6 +70,14 @@ final class MusicManager: ObservableObject {
         playbackState.isPlaying ? "music.note" : "music.note.list"
     }
 
+    var edgeGlowGradient: [NSColor] {
+        hasArtworkGradient ? artworkGradient : [
+            NSColor(red: 0.5, green: 0.7, blue: 1.0, alpha: 0.95),
+            NSColor(red: 0.6, green: 0.4, blue: 1.0, alpha: 0.85),
+            NSColor(red: 0.4, green: 0.85, blue: 1.0, alpha: 0.7)
+        ]
+    }
+
     var progressFraction: Double {
         guard playbackState.duration > 0 else { return 0 }
         return min(max(playbackState.currentTime / playbackState.duration, 0), 1)
