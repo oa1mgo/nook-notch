@@ -26,12 +26,14 @@ enum NotchOpenReason {
 enum NotchContentType: Equatable {
     case instances
     case menu
+    case shortcuts
     case chat(SessionState)
 
     var id: String {
         switch self {
         case .instances: return "instances"
         case .menu: return "menu"
+        case .shortcuts: return "shortcuts"
         case .chat(let session): return "chat-\(session.sessionId)"
         }
     }
@@ -54,6 +56,7 @@ class NotchViewModel: ObservableObject {
     @Published var animatedBottomCornerRadius: CGFloat = 12
     /// Extra width beyond device notch for closed state activity indicators (music, processing, etc.)
     @Published var closedNotchExpansionWidth: CGFloat = 0
+    @Published var navigationStack: [NotchContentType] = []
 
     // MARK: - Dependencies
 
@@ -90,6 +93,11 @@ class NotchViewModel: ObservableObject {
                     + screenSelector.expandedPickerHeight
                     + soundSelector.expandedPickerHeight
                     + claudeDirSelector.expandedPickerHeight
+            )
+        case .shortcuts:
+            return CGSize(
+                width: min(screenRect.width * 0.4, 480),
+                height: 480
             )
         case .instances:
             return CGSize(
@@ -327,6 +335,7 @@ class NotchViewModel: ObservableObject {
         if case .chat(let session) = contentType {
             currentChatSession = session
         }
+        navigationStack.removeAll()
         withAnimation(.spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)) {
             status = .closed
             animatedTopCornerRadius = 6
@@ -361,6 +370,22 @@ class NotchViewModel: ObservableObject {
     func exitChat() {
         currentChatSession = nil
         contentType = .instances
+    }
+
+    /// Push a sub-page onto the navigation stack
+    func pushTo(_ contentType: NotchContentType) {
+        navigationStack.append(contentType)
+        self.contentType = contentType
+    }
+
+    /// Navigate back from a sub-page (e.g. shortcuts) to the previous page
+    func navigateBack() {
+        guard !navigationStack.isEmpty else {
+            contentType = .instances
+            return
+        }
+        navigationStack.removeLast()
+        contentType = navigationStack.last ?? .instances
     }
 
     /// Perform boot animation: expand briefly then collapse
