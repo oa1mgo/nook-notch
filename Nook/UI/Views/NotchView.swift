@@ -222,6 +222,13 @@ struct NotchView: View {
                     }
                     .onTapGesture {
                         if viewModel.status != .opened {
+                            // Don't re-open if we just closed due to clicking the notch area.
+                            // The NSEvent monitor fires first and already handled the close;
+                            // without this guard the SwiftUI gesture would immediately re-open.
+                            if let closedAt = viewModel.closedByTapAt,
+                               Date().timeIntervalSince(closedAt) < 0.2 {
+                                return
+                            }
                             viewModel.notchOpen(reason: .click)
                         }
                     }

@@ -110,6 +110,9 @@ class NotchViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private let events = EventMonitors.shared
     private var hoverTimer: DispatchWorkItem?
+    /// Set when the notch is closing due to a click on the notch area,
+    /// so the redundant SwiftUI onTapGesture can skip re-opening it.
+    var closedByTapAt: Date?
 
     private enum InstancesPageLayout {
         static let contentSpacing: CGFloat = 8
@@ -252,6 +255,7 @@ class NotchViewModel: ObservableObject {
                 // Clicking notch while opened - only close if NOT in chat mode
                 if !isInChatMode {
                     notchClose()
+                    closedByTapAt = Date()
                 }
             }
         case .closed, .popping:
