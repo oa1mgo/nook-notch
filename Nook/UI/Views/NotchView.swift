@@ -357,40 +357,31 @@ struct NotchView: View {
     @ViewBuilder
     private var musicEdgeGlow: some View {
         if musicEdgeGlowVisible {
-            NotchBottomEdge(
+            let glowColors = musicManager.edgeGlowGradient.map(Color.init(nsColor:))
+            let glowGradient = LinearGradient(colors: glowColors, startPoint: .leading, endPoint: .trailing)
+
+            let edgeShape = NotchBottomEdge(
                 topCornerRadius: viewModel.animatedTopCornerRadius,
                 bottomCornerRadius: viewModel.animatedBottomCornerRadius
             )
-            .trim(from: 0, to: 1)
-            .stroke(
-                LinearGradient(
-                    colors: musicManager.edgeGlowGradient.map(Color.init(nsColor:)),
-                    startPoint: .leading,
-                    endPoint: .trailing
-                ),
-                style: StrokeStyle(lineWidth: 1, lineCap: .round)
-            )
-            .blur(radius: 1)
-            .opacity(breathingOpacity)
-            // Key insight: `.blur()` combined with `withAnimation`-based breathing
-            // dampens the opacity oscillation so much that the breathing becomes
-            // imperceptible — the blur spreads the thin line too thinly even at
-            // peak opacity. Using explicit `.task` cycles + discrete
-            // `withAnimation` steps (not `.repeatForever`) avoids this and
-            // also auto-cancels when the glow disappears (music stops / notch
-            // opens), preventing stale Timer / overlapping animation issues.
-            .task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    withAnimation(.easeInOut(duration: 1.5)) {
-                        breathingOpacity = 0.2
-                    }
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    withAnimation(.easeInOut(duration: 1.5)) {
-                        breathingOpacity = 0.9
+
+            edgeShape
+                .trim(from: 0, to: 1)
+                .stroke(glowGradient, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                .blur(radius: 6)
+                .opacity(breathingOpacity * 0.75)
+                .task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        withAnimation(.easeInOut(duration: 1.5)) {
+                            breathingOpacity = 0.15
+                        }
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        withAnimation(.easeInOut(duration: 1.5)) {
+                            breathingOpacity = 1.0
+                        }
                     }
                 }
-            }
         }
     }
 
