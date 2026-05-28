@@ -10,6 +10,15 @@ import Combine
 import SwiftUI
 import ServiceManagement
 
+// MARK: - Content Height Measurement
+
+private struct MenuContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 // MARK: - NotchMenuView
 
 struct NotchMenuView: View {
@@ -22,6 +31,7 @@ struct NotchMenuView: View {
     @ObservedObject private var soundSelector = SoundSelector.shared
     @State private var hooksInstalled: Bool = false
     @State private var launchAtLogin: Bool = false
+    @State private var didAppear = false
     @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
     @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
 
@@ -34,7 +44,8 @@ struct NotchMenuView: View {
                 MenuRow(
                     icon: "chevron.left",
                     label: "Back",
-                    primaryTextColor: primaryTextColor
+                    primaryTextColor: primaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 0
                 ) {
                     viewModel.toggleMenu()
                 }
@@ -47,22 +58,26 @@ struct NotchMenuView: View {
                 ScreenPickerRow(
                     screenSelector: screenSelector,
                     primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor
+                    secondaryTextColor: secondaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 1
                 )
                 SoundPickerRow(
                     soundSelector: soundSelector,
                     primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor
+                    secondaryTextColor: secondaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 2
                 )
                 ClaudeDirPickerRow(
                     primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor
+                    secondaryTextColor: secondaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 3
                 )
 
                 MenuRow(
                     icon: "keyboard",
                     label: "Keyboard Shortcuts...",
-                    primaryTextColor: primaryTextColor
+                    primaryTextColor: primaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 4
                 ) {
                     viewModel.pushTo(.shortcuts)
                 }
@@ -77,7 +92,8 @@ struct NotchMenuView: View {
                     label: "Artwork Adaptive Background",
                     isOn: artworkAdaptiveBackgroundEnabled,
                     primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor
+                    secondaryTextColor: secondaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 5
                 ) {
                     artworkAdaptiveBackgroundEnabled.toggle()
                 }
@@ -87,7 +103,8 @@ struct NotchMenuView: View {
                     label: "Music Edge Glow",
                     isOn: musicEdgeGlowEnabled,
                     primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor
+                    secondaryTextColor: secondaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 6
                 ) {
                     musicEdgeGlowEnabled.toggle()
                 }
@@ -102,7 +119,8 @@ struct NotchMenuView: View {
                     label: "Launch at Login",
                     isOn: launchAtLogin,
                     primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor
+                    secondaryTextColor: secondaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 7
                 ) {
                     do {
                         if launchAtLogin {
@@ -122,7 +140,8 @@ struct NotchMenuView: View {
                     label: "Hooks",
                     isOn: hooksInstalled,
                     primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor
+                    secondaryTextColor: secondaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 8
                 ) {
                     if hooksInstalled {
                         HookInstaller.uninstall()
@@ -133,7 +152,7 @@ struct NotchMenuView: View {
                     }
                 }
 
-                AccessibilityRow(isEnabled: AXIsProcessTrusted(), primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor)
+                AccessibilityRow(isEnabled: AXIsProcessTrusted(), primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 9)
 
                 Divider()
                     .background(separatorColor)
@@ -142,7 +161,8 @@ struct NotchMenuView: View {
                 MenuRow(
                     icon: "star",
                     label: "Star on GitHub",
-                    primaryTextColor: primaryTextColor
+                    primaryTextColor: primaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 10
                 ) {
                     if let url = URL(string: "https://github.com/oa1mgo/nook") {
                         NSWorkspace.shared.open(url)
@@ -157,22 +177,81 @@ struct NotchMenuView: View {
                     icon: "xmark.circle",
                     label: "Quit",
                     isDestructive: true,
-                    primaryTextColor: primaryTextColor
+                    primaryTextColor: primaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 11
                 ) {
                     NSApplication.shared.terminate(nil)
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 8)
+            .background(
+                GeometryReader { g in
+                    Color.clear
+                        .preference(key: MenuContentHeightKey.self, value: g.size.height)
+                }
+            )
+        }
+        .onPreferenceChange(MenuContentHeightKey.self) { height in
+            viewModel.menuContentHeight = height
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
+            didAppear = true
             refreshStates()
         }
         .onChange(of: viewModel.contentType) { _, newValue in
             if newValue == .menu {
+                didAppear = true
                 refreshStates()
             }
+        }
+        .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
+            guard trigger != nil, didAppear else { return }
+            performFocusedAction()
+        }
+    }
+
+    private func performFocusedAction() {
+        let i = viewModel.settingsFocusedIndex
+        switch i {
+        case 0: viewModel.toggleMenu()
+        case 1: withAnimation(.easeInOut(duration: 0.2)) { screenSelector.isPickerExpanded.toggle() }
+        case 2: withAnimation(.easeInOut(duration: 0.2)) { soundSelector.isPickerExpanded.toggle() }
+        case 3: withAnimation(.easeInOut(duration: 0.2)) { ClaudeDirSelector.shared.isPickerExpanded.toggle() }
+        case 4: viewModel.pushTo(.shortcuts)
+        case 5: artworkAdaptiveBackgroundEnabled.toggle()
+        case 6: musicEdgeGlowEnabled.toggle()
+        case 7:
+            do {
+                if launchAtLogin {
+                    try SMAppService.mainApp.unregister()
+                    launchAtLogin = false
+                } else {
+                    try SMAppService.mainApp.register()
+                    launchAtLogin = true
+                }
+            } catch {
+                print("Failed to toggle launch at login: \(error)")
+            }
+        case 8:
+            if hooksInstalled {
+                HookInstaller.uninstall()
+                hooksInstalled = false
+            } else {
+                HookInstaller.installIfNeeded()
+                hooksInstalled = true
+            }
+        case 9:
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+        case 10:
+            if let url = URL(string: "https://github.com/oa1mgo/nook") {
+                NSWorkspace.shared.open(url)
+            }
+        case 11: NSApplication.shared.terminate(nil)
+        default: break
         }
     }
 
@@ -428,6 +507,7 @@ struct AccessibilityRow: View {
     let isEnabled: Bool
     let primaryTextColor: Color
     let secondaryTextColor: Color
+    var isFocused: Bool = false
 
     @State private var isHovered = false
     @State private var refreshTrigger = false
@@ -478,7 +558,11 @@ struct AccessibilityRow: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                .fill(isFocused ? Color.white.opacity(0.12) : (isHovered ? Color.white.opacity(0.08) : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
         )
         .onHover { isHovered = $0 }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -502,6 +586,7 @@ struct MenuRow: View {
     let label: String
     var isDestructive: Bool = false
     var primaryTextColor: Color = .white
+    var isFocused: Bool = false
     let action: () -> Void
 
     @State private var isHovered = false
@@ -524,7 +609,11 @@ struct MenuRow: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                    .fill(isFocused ? Color.white.opacity(0.12) : (isHovered ? Color.white.opacity(0.08) : Color.clear))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -546,6 +635,7 @@ struct MenuToggleRow: View {
     let isOn: Bool
     var primaryTextColor: Color = .white
     var secondaryTextColor: Color = .white.opacity(0.4)
+    var isFocused: Bool = false
     let action: () -> Void
 
     @State private var isHovered = false
@@ -576,7 +666,11 @@ struct MenuToggleRow: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                    .fill(isFocused ? Color.white.opacity(0.12) : (isHovered ? Color.white.opacity(0.08) : Color.clear))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

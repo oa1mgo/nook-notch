@@ -79,6 +79,7 @@ class NotchWindowController: NSWindowController {
                 case .closed, .popping:
                     // Ignore mouse events when closed so clicks pass through
                     notchWindow?.ignoresMouseEvents = true
+                    notchWindow?.resignKey()
                 }
             }
             .store(in: &cancellables)
@@ -92,18 +93,14 @@ class NotchWindowController: NSWindowController {
         // Register global hotkey (e.g. ⌥⌘L to open notch)
         ShortcutManager.shared.registerGlobalHotkey()
 
-        // Listen for global hotkey toggle
+        // Listen for global hotkey toggle (Carbon) — route through handleShortcutAction
+        // to ensure currentChatSession is cleared for instances page.
         NotificationCenter.default.addObserver(
             forName: .globalToggleNotch,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self else { return }
-            if self.viewModel.status == .opened {
-                self.viewModel.notchClose()
-            } else {
-                self.viewModel.notchOpen(reason: .click)
-            }
+            self?.viewModel.handleShortcutAction(.toggleNotch)
         }
 
         // Listen for local shortcut actions (routed from ShortcutManager)

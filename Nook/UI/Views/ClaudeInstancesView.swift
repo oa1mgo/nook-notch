@@ -129,29 +129,44 @@ struct ClaudeInstancesView: View {
     }
 
     private var instancesList: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 2) {
-                ForEach(Array(sortedInstances.enumerated()), id: \.element.stableId) { index, session in
-                    InstanceRow(
-                        session: session,
-                        onFocus: { focusSession(session) },
-                        onChat: { openChat(session) },
-                        onArchive: { archiveSession(session) },
-                        onApprove: { approveSession(session) },
-                        onReject: { rejectSession(session) }
-                    )
-                    .measureHeight(using: InstanceRowHeightKey.self) {
-                        if index == 0 {
-                            instanceRowHeight = $0
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: 2) {
+                    ForEach(Array(sortedInstances.enumerated()), id: \.element.stableId) { index, session in
+                        InstanceRow(
+                            session: session,
+                            onFocus: { focusSession(session) },
+                            onChat: { openChat(session) },
+                            onArchive: { archiveSession(session) },
+                            onApprove: { approveSession(session) },
+                            onReject: { rejectSession(session) },
+                            isKeyboardSelected: index == viewModel.keyboardSelectedIndex
+                        )
+                        .measureHeight(using: InstanceRowHeightKey.self) {
+                            if index == 0 {
+                                instanceRowHeight = $0
+                            }
                         }
+                        .id(session.stableId)
                     }
-                    .id(session.stableId)
+                }
+                .padding(.vertical, 4)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: resolvedInstancesListMaxHeight)
+            .onChange(of: viewModel.keyboardSelectedIndex) { _, idx in
+                guard idx < sortedInstances.count else { return }
+                withAnimation(.smooth(duration: 0.2)) {
+                    proxy.scrollTo(sortedInstances[idx].stableId, anchor: .center)
                 }
             }
-            .padding(.vertical, 4)
+            .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
+                guard let trigger = trigger,
+                      viewModel.keyboardSelectedIndex >= 0,
+                      viewModel.keyboardSelectedIndex < sortedInstances.count else { return }
+                openChat(sortedInstances[viewModel.keyboardSelectedIndex])
+            }
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(maxHeight: resolvedInstancesListMaxHeight)
     }
 
     // MARK: - Actions
@@ -282,6 +297,7 @@ struct InstanceRow: View {
     let onArchive: () -> Void
     let onApprove: () -> Void
     let onReject: () -> Void
+    let isKeyboardSelected: Bool
 
     @State private var isHovered = false
     @State private var isYabaiAvailable = false
@@ -499,7 +515,11 @@ struct InstanceRow: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isWaitingForApproval)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
+                .fill(isKeyboardSelected ? Color.white.opacity(0.08) : (isHovered ? Color.white.opacity(0.06) : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isKeyboardSelected ? Color.white.opacity(0.2) : Color.clear, lineWidth: 1)
         )
         .onHover { isHovered = $0 }
         .task {

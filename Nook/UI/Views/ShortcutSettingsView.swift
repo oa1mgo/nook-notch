@@ -18,6 +18,7 @@ struct ShortcutSettingsView: View {
     @State private var showResetConfirm = false
     @State private var conflictFlash: ShortcutAction?
     @State private var isResetHovered = false
+    @State private var didAppear = false
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -26,7 +27,8 @@ struct ShortcutSettingsView: View {
                 MenuRow(
                     icon: "chevron.left",
                     label: "Back",
-                    primaryTextColor: primaryTextColor
+                    primaryTextColor: primaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 0
                 ) {
                     viewModel.navigateBack()
                 }
@@ -36,7 +38,7 @@ struct ShortcutSettingsView: View {
                     .padding(.vertical, 4)
 
                 // Action rows
-                ForEach(ShortcutAction.allCases, id: \.self) { action in
+                ForEach(Array(ShortcutAction.allCases.enumerated()), id: \.element) { offset, action in
                     ShortcutRow(
                         action: action,
                         primaryTextColor: primaryTextColor,
@@ -50,7 +52,8 @@ struct ShortcutSettingsView: View {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                                 withAnimation { conflictFlash = nil }
                             }
-                        }
+                        },
+                        isFocused: viewModel.settingsFocusedIndex == offset + 1
                     )
                     .overlay(
                         conflictFlash == action
@@ -67,6 +70,7 @@ struct ShortcutSettingsView: View {
                 // Reset row
                 Group {
                     if showResetConfirm {
+                        let isFocus = viewModel.settingsFocusedIndex == 8
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle")
                                 .font(.system(size: 12))
@@ -112,8 +116,17 @@ struct ShortcutSettingsView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(isFocus ? Color.white.opacity(0.12) : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(isFocus ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
+                        )
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                     } else {
+                        let isFocus = viewModel.settingsFocusedIndex == 8
                         Button {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showResetConfirm = true
@@ -135,7 +148,11 @@ struct ShortcutSettingsView: View {
                             .padding(.vertical, 10)
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
-                                    .fill(isResetHovered ? Color.white.opacity(0.08) : Color.clear)
+                                    .fill(isFocus ? Color.white.opacity(0.12) : (isResetHovered ? Color.white.opacity(0.08) : Color.clear))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(isFocus ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
                             )
                         }
                         .buttonStyle(.plain)
@@ -155,6 +172,32 @@ struct ShortcutSettingsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .shortcutKeyDown)) { notification in
             handleKeyDown(notification)
+        }
+        .onAppear {
+            didAppear = true
+        }
+        .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
+            guard trigger != nil, didAppear else { return }
+            let i = viewModel.settingsFocusedIndex
+            if i == 0 {
+                viewModel.navigateBack()
+            } else if i >= 1 && i <= 7 {
+                let actions = ShortcutAction.allCases
+                let idx = i - 1
+                guard idx < actions.count else { return }
+                if recordingAction == nil {
+                    recordingAction = actions[idx]
+                }
+            } else if i == 8 {
+                if showResetConfirm {
+                    store.resetToDefaults()
+                    showResetConfirm = false
+                } else {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showResetConfirm = true
+                    }
+                }
+            }
         }
     }
 

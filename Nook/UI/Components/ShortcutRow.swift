@@ -15,6 +15,7 @@ struct ShortcutRow: View {
     @ObservedObject var store: ShortcutStore
     @Binding var recordingAction: ShortcutAction?
     var onConflict: ((ShortcutAction) -> Void)?
+    var isFocused: Bool = false
 
     @State private var isHovered = false
 
@@ -68,11 +69,11 @@ struct ShortcutRow: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(backgroundColor)
+                    .fill(focusBackgroundColor)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(isRecording ? TerminalColors.green.opacity(0.5) : Color.clear, lineWidth: 1)
+                    .stroke(isRecording ? TerminalColors.green.opacity(0.5) : (isFocused ? Color.white.opacity(0.25) : Color.clear), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -80,8 +81,11 @@ struct ShortcutRow: View {
         .onHover { isHovered = $0 }
     }
 
-    private var backgroundColor: Color {
+    private var focusBackgroundColor: Color {
         if isRecording {
+            return Color.white.opacity(0.12)
+        }
+        if isFocused {
             return Color.white.opacity(0.12)
         }
         return isHovered ? Color.white.opacity(0.08) : Color.clear

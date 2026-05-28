@@ -11,6 +11,7 @@ struct ScreenPickerRow: View {
     @ObservedObject var screenSelector: ScreenSelector
     var primaryTextColor: Color = .white
     var secondaryTextColor: Color = .white.opacity(0.4)
+    var isFocused: Bool = false
     @State private var isHovered = false
 
     private var isExpanded: Bool {
@@ -54,7 +55,11 @@ struct ScreenPickerRow: View {
                 .padding(.vertical, 10)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                        .fill(isFocused ? Color.white.opacity(0.12) : (isHovered ? Color.white.opacity(0.08) : Color.clear))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
                 )
             }
             .buttonStyle(.plain)

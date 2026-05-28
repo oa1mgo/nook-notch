@@ -229,7 +229,7 @@ struct NotchView: View {
                                Date().timeIntervalSince(closedAt) < 0.2 {
                                 return
                             }
-                            viewModel.notchOpen(reason: .click)
+                            handleNotchTap()
                         }
                     }
             }
@@ -612,6 +612,10 @@ struct NotchView: View {
                 }
             }
         }
+    }
+
+    private func handleNotchTap() {
+        viewModel.handleNotchTap()
     }
 
     private func handleStatusChange(from oldStatus: NotchStatus, to newStatus: NotchStatus) {

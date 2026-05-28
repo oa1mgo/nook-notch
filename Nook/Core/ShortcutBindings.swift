@@ -68,7 +68,6 @@ struct ModifierFlagsWrapper: Codable, Equatable, Hashable {
 
 enum ShortcutAction: String, CaseIterable, Codable {
     case toggleNotch
-    case toggleChat
     case closeNotch
     case selectPrevious
     case selectNext
@@ -79,7 +78,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
     var displayName: String {
         switch self {
         case .toggleNotch:     return "Toggle Main Page"
-        case .toggleChat:      return "Toggle Recent Chat"
         case .closeNotch:      return "Close Notch"
         case .selectPrevious:  return "Previous Session"
         case .selectNext:      return "Next Session"
@@ -92,7 +90,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
     var sfSymbolName: String {
         switch self {
         case .toggleNotch:     return "rectangle.and.pencil.and.ellipsis"
-        case .toggleChat:      return "message"
         case .closeNotch:      return "xmark.circle"
         case .selectPrevious:  return "chevron.up"
         case .selectNext:      return "chevron.down"
@@ -106,8 +103,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
         switch self {
         case .toggleNotch:
             return [KeyCombination(keyCode: 37, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.command.rawValue | NSEvent.ModifierFlags.control.rawValue))] // ⌃⌘L (keyCode 37 = L)
-        case .toggleChat:
-            return [KeyCombination(keyCode: 38, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.command.rawValue | NSEvent.ModifierFlags.control.rawValue))] // ⌃⌘J (keyCode 38 = J)
         case .closeNotch:
             return [KeyCombination(keyCode: 53, flags: ModifierFlagsWrapper(rawValue: 0))] // Esc (keyCode 53)
         case .selectPrevious:

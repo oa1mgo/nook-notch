@@ -58,16 +58,21 @@ class NotchViewModel: ObservableObject {
     @Published var closedNotchExpansionWidth: CGFloat = 0
     @Published var navigationStack: [NotchContentType] = []
     /// Index for keyboard-driven session selection in the instances view
-    @Published var keyboardSelectedIndex: Int = 0
+    @Published var keyboardSelectedIndex: Int = -1
     /// Trigger to activate the currently keyboard-selected session
     @Published var keyboardActivateTrigger: UUID?
-
+    /// Focused row index for keyboard navigation on settings pages (menu, shortcuts).
+    @Published var settingsFocusedIndex: Int = -1
+    /// Live-measured content height of the menu VStack (via GeometryReader).
+    @Published var menuContentHeight: CGFloat = 552
 
     // MARK: - Dependencies
 
     private let screenSelector = ScreenSelector.shared
     private let soundSelector = SoundSelector.shared
     private let claudeDirSelector = ClaudeDirSelector.shared
+    /// The app that was frontmost before Nook took focus (for restoring on close).
+    private(set) var previousActiveApp: NSRunningApplication?
 
     // MARK: - Geometry
 
@@ -89,24 +94,20 @@ class NotchViewModel: ObservableObject {
                 height: 580
             )
         case .menu:
-            // Base: 4 MenuRow + 4 MenuToggleRow + 3 PickerRow (collapsed) ≈ 11 × 36pt
-            //       + 1 AccessibilityRow ≈ 40pt + 4 dividers × 9pt
-            //       + 16 spacings × 4pt + 16pt outer padding ≈ 552
-            //       → 600 (48pt margin for picker collapsed overhead)
-            // Picker expansion deltas added on top when expanded.
+            // Height = live-measured VStack content + headerRow (device notch height,
+            // minimum 24pt for non-notched) + 12pt bottom padding.
+            // GeometryReader inside NotchMenuView reports actual content height.
+            let headerHeight = max(24, geometry.deviceNotchRect.height)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: menuBaseHeight
-                    + screenSelector.expandedPickerHeight
-                    + soundSelector.expandedPickerHeight
-                    + claudeDirSelector.expandedPickerHeight
+                height: menuContentHeight + headerHeight + 12
             )
         case .shortcuts:
-            // 36pt Back + 40pt × 8 ShortcutRows + 36pt Reset + 9pt × 2 dividers
-            // + 4pt × 11 spacings + 16pt outer padding + 24pt header = 494 → 520 (26pt margin)
+            // 36pt Back + 40pt × 7 ShortcutRows + 36pt Reset + 9pt × 2 dividers
+            // + 4pt × 9 spacings + 16pt outer padding + 24pt header = 446 → 480
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: 520
+                height: 480
             )
         case .instances:
             return CGSize(
@@ -115,13 +116,6 @@ class NotchViewModel: ObservableObject {
             )
         }
     }
-
-    // MARK: - Layout Constants
-
-    /// Base height for menu page, before adding expanded picker deltas.
-    /// 11 rows × 36pt + 1 AccessibilityRow × 40pt + 4 dividers × 9pt
-    /// + 16 spacings × 4pt + 16pt padding ≈ 552 → 600
-    private let menuBaseHeight: CGFloat = 600
 
     // MARK: - Animation
 
@@ -164,21 +158,6 @@ class NotchViewModel: ObservableObject {
         )
         self.hasPhysicalNotch = hasPhysicalNotch
         setupEventHandlers()
-        observeSelectors()
-    }
-
-    private func observeSelectors() {
-        screenSelector.$isPickerExpanded
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &cancellables)
-
-        soundSelector.$isPickerExpanded
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &cancellables)
-
-        claudeDirSelector.$isPickerExpanded
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &cancellables)
     }
 
     private var instancesPageOpenedHeight: CGFloat {
@@ -333,6 +312,12 @@ class NotchViewModel: ObservableObject {
 
     func notchOpen(reason: NotchOpenReason = .unknown) {
         openReason = reason
+
+        // Save the frontmost app before we steal focus
+        if reason != .notification, previousActiveApp == nil {
+            previousActiveApp = NSWorkspace.shared.frontmostApplication
+        }
+
         withAnimation(.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)) {
             status = .opened
             animatedTopCornerRadius = 12
@@ -367,6 +352,14 @@ class NotchViewModel: ObservableObject {
             animatedBottomCornerRadius = 12
         }
         contentType = .instances
+        restoreFocus()
+    }
+
+    /// Return focus to the app that was frontmost before Nook opened.
+    private func restoreFocus() {
+        guard let app = previousActiveApp else { return }
+        previousActiveApp = nil
+        app.activate(options: [])
     }
 
     func notchPop() {
@@ -381,6 +374,11 @@ class NotchViewModel: ObservableObject {
 
     func toggleMenu() {
         contentType = contentType == .menu ? .instances : .menu
+    }
+
+    /// Mouse click on the closed notch — restore chat if available, otherwise instances.
+    func handleNotchTap() {
+        notchOpen(reason: .click)
     }
 
     func showChat(for session: SessionState) {
@@ -405,34 +403,92 @@ class NotchViewModel: ObservableObject {
         }
         navigationStack.append(contentType)
         self.contentType = contentType
+        settingsFocusedIndex = -1
     }
 
     /// Navigate back from a sub-page (e.g. shortcuts) to the previous page
     func navigateBack() {
         guard !navigationStack.isEmpty else {
             contentType = .instances
+            settingsFocusedIndex = -1
             return
         }
         navigationStack.removeLast()
         contentType = navigationStack.last ?? .instances
+        settingsFocusedIndex = -1
     }
 
-    /// Select the previous session in the instances list
-    func selectPreviousSession() {
-        guard instancesPageSessionCount > 0 else { return }
-        keyboardSelectedIndex = max(0, keyboardSelectedIndex - 1)
+    /// Select the previous item (session or settings row)
+    func selectPreviousItem() {
+        guard status == .opened else { return }
+        switch contentType {
+        case .instances:
+            guard instancesPageSessionCount > 0 else { return }
+            // If nothing selected (-1), select the last item
+            if keyboardSelectedIndex == -1 {
+                keyboardSelectedIndex = instancesPageSessionCount - 1
+            } else {
+                keyboardSelectedIndex = max(0, keyboardSelectedIndex - 1)
+            }
+        case .menu:
+            // If nothing selected (-1), select the last item
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = menuItemCount - 1
+            } else {
+                settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
+            }
+        case .shortcuts:
+            // If nothing selected (-1), select the last item
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = shortcutsItemCount - 1
+            } else {
+                settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
+            }
+        case .chat:
+            break // no keyboard navigation in chat view
+        }
     }
 
-    /// Select the next session in the instances list
-    func selectNextSession() {
-        guard instancesPageSessionCount > 0 else { return }
-        keyboardSelectedIndex = min(instancesPageSessionCount - 1, keyboardSelectedIndex + 1)
+    /// Select the next item (session or settings row)
+    func selectNextItem() {
+        guard status == .opened else { return }
+        switch contentType {
+        case .instances:
+            guard instancesPageSessionCount > 0 else { return }
+            // If nothing selected (-1), select the first item
+            if keyboardSelectedIndex == -1 {
+                keyboardSelectedIndex = 0
+            } else {
+                keyboardSelectedIndex = min(instancesPageSessionCount - 1, keyboardSelectedIndex + 1)
+            }
+        case .menu:
+            // If nothing selected (-1), select the first item
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = 0
+            } else {
+                settingsFocusedIndex = min(menuItemCount - 1, settingsFocusedIndex + 1)
+            }
+        case .shortcuts:
+            // If nothing selected (-1), select the first item
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = 0
+            } else {
+                settingsFocusedIndex = min(shortcutsItemCount - 1, settingsFocusedIndex + 1)
+            }
+        case .chat:
+            break // no keyboard navigation in chat view
+        }
     }
 
-    /// Activate the currently keyboard-selected session
-    func activateSelectedSession() {
+    /// Activate the currently keyboard-selected item
+    func activateSelectedItem() {
         keyboardActivateTrigger = UUID()
     }
+
+    /// Total focusable items in the menu page
+    let menuItemCount: Int = 12
+    /// Total focusable items in the shortcuts page (Back + 7 visible action rows + Restore)
+    let shortcutsItemCount: Int = 9
 
     /// Route a shortcut action to the appropriate handler
     func handleShortcutAction(_ action: ShortcutAction) {
@@ -441,26 +497,16 @@ class NotchViewModel: ObservableObject {
             if status == .opened {
                 notchClose()
             } else {
-                // Clear saved chat to always show instances page
-                currentChatSession = nil
-                notchOpen(reason: .click)
-            }
-        case .toggleChat:
-            if status == .opened {
-                notchClose()
-            } else {
-                // notchOpen() restores currentChatSession if set,
-                // or shows instances if no recent chat
                 notchOpen(reason: .click)
             }
         case .closeNotch:
             notchClose()
         case .selectPrevious:
-            selectPreviousSession()
+            selectPreviousItem()
         case .selectNext:
-            selectNextSession()
+            selectNextItem()
         case .enterSession:
-            activateSelectedSession()
+            activateSelectedItem()
         case .navigateBack:
             navigateBack()
         case .openSettings:

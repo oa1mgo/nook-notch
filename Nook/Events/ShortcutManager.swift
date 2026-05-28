@@ -113,13 +113,18 @@ class ShortcutManager {
                 return nil
             }
 
-            // Check all action bindings
+            // Check all action bindings.
+            // toggleNotch's Carbon-registered combo is skipped to avoid double-fire;
+            // non-Carbon combos are handled here.
             for action in ShortcutAction.allCases {
                 let combos = ShortcutStore.shared.combinations(for: action)
-                if combos.contains(combo) {
-                    NotificationCenter.default.post(name: .shortcutAction, object: action)
-                    return nil // consumed
+                guard combos.contains(combo) else { continue }
+                // Skip the first (Carbon-registered) combo for toggleNotch
+                if action == .toggleNotch, combo == combos.first {
+                    continue
                 }
+                NotificationCenter.default.post(name: .shortcutAction, object: action)
+                return nil // consumed
             }
 
             return event // not consumed, pass through
