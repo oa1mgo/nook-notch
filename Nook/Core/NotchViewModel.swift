@@ -313,6 +313,9 @@ class NotchViewModel: ObservableObject {
     func notchOpen(reason: NotchOpenReason = .unknown) {
         openReason = reason
 
+        // Clear stale keyboard activation signal to avoid re-trigger on view re-subscription
+        keyboardActivateTrigger = nil
+
         // Save the frontmost app before we steal focus
         if reason != .notification, previousActiveApp == nil {
             previousActiveApp = NSWorkspace.shared.frontmostApplication
@@ -391,6 +394,7 @@ class NotchViewModel: ObservableObject {
 
     /// Go back to instances list and clear saved chat state
     func exitChat() {
+        keyboardActivateTrigger = nil
         currentChatSession = nil
         contentType = .instances
     }
@@ -408,6 +412,7 @@ class NotchViewModel: ObservableObject {
 
     /// Navigate back from a sub-page (e.g. shortcuts) to the previous page
     func navigateBack() {
+        keyboardActivateTrigger = nil
         guard !navigationStack.isEmpty else {
             contentType = .instances
             settingsFocusedIndex = -1
