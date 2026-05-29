@@ -76,6 +76,7 @@ struct NotchMenuView: View {
                 MenuRow(
                     icon: "keyboard",
                     label: "Keyboard Shortcuts...",
+                    trailingIcon: "chevron.right",
                     primaryTextColor: primaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == 4
                 ) {
@@ -176,6 +177,7 @@ struct NotchMenuView: View {
                 MenuRow(
                     icon: "xmark.circle",
                     label: "Quit",
+                    trailingLabel: "⌘Q",
                     isDestructive: true,
                     primaryTextColor: primaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == 11
@@ -584,6 +586,8 @@ struct AccessibilityRow: View {
 struct MenuRow: View {
     let icon: String
     let label: String
+    var trailingLabel: String? = nil
+    var trailingIcon: String? = nil
     var isDestructive: Bool = false
     var primaryTextColor: Color = .white
     var isFocused: Bool = false
@@ -604,6 +608,18 @@ struct MenuRow: View {
                     .foregroundColor(textColor)
 
                 Spacer()
+
+                if let trailingLabel {
+                    Text(trailingLabel)
+                        .font(.system(size: 11))
+                        .foregroundColor(textColor.opacity(0.55))
+                }
+
+                if let trailingIcon {
+                    Image(systemName: trailingIcon)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(textColor.opacity(0.4))
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
