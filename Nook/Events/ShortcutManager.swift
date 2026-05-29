@@ -107,8 +107,12 @@ class ShortcutManager {
 
             let combo = KeyCombination.from(event: event)
 
-            // Esc — close notch (only consume if we handle it)
+            // Esc — close notch (skip if IME has marked text)
             if combo.keyCode == 53 {
+                if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+                   textView.hasMarkedText() {
+                    return event // pass through for IME composition
+                }
                 NotificationCenter.default.post(name: .shortcutAction, object: ShortcutAction.closeNotch)
                 return nil
             }
@@ -119,6 +123,19 @@ class ShortcutManager {
             for action in ShortcutAction.allCases {
                 let combos = ShortcutStore.shared.combinations(for: action)
                 guard combos.contains(combo) else { continue }
+
+                // When an editable text field is first responder, let it handle
+                // Enter (text submission) and arrow keys (cursor navigation) instead
+                // of consuming them. Ctrl+P/N always scroll, never pass through.
+                if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+                   textView.isEditable {
+                    let isArrowKey = combo.keyCode == 126 || combo.keyCode == 125
+                    let isEnter = combo.keyCode == 36
+                    if isArrowKey || isEnter {
+                        return event
+                    }
+                }
+
                 // Skip the first (Carbon-registered) combo for toggleNotch
                 if action == .toggleNotch, combo == combos.first {
                     continue
@@ -155,4 +172,5 @@ extension Notification.Name {
     static let globalToggleNotch = Notification.Name("com.nook.globalToggleNotch")
     static let shortcutAction = Notification.Name("com.nook.shortcutAction")
     static let shortcutKeyDown = Notification.Name("com.nook.shortcutKeyDown")
+    static let chatScrollAction = Notification.Name("com.nook.chatScrollAction")
 }

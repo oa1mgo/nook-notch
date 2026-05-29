@@ -5,6 +5,7 @@
 //  Redesigned chat interface with clean visual hierarchy
 //
 
+import AppKit
 import Combine
 import SwiftUI
 
@@ -28,6 +29,7 @@ struct ChatView: View {
     @State private var isBottomVisible: Bool = true
     @State private var codexTranscriptHistory: [ChatHistoryItem] = []
     @State private var isRefreshingCodexHistory: Bool = false
+
     @FocusState private var isInputFocused: Bool
 
     init(
@@ -219,6 +221,10 @@ struct ChatView: View {
                     isInputFocused = true
                 }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatScrollAction)) { notification in
+            guard let direction = notification.object as? ChatScrollDirection else { return }
+            performKeyboardScroll(direction)
         }
     }
 
@@ -578,6 +584,33 @@ struct ChatView: View {
 
     private func denyPermission() {
         sessionMonitor.denyPermission(sessionId: sessionId, reason: nil)
+    }
+
+    private func performKeyboardScroll(_ direction: ChatScrollDirection) {
+        guard let sv = findScrollView(in: NSApp.keyWindow?.contentView) else {
+            let lines: Int32 = direction == .up ? 3 : -3
+            if let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0) {
+                event.post(tap: .cghidEventTap)
+            }
+            return
+        }
+        let lineHeight: CGFloat = 120
+        let newY = switch direction {
+        case .up: sv.contentView.bounds.origin.y + lineHeight
+        case .down: sv.contentView.bounds.origin.y - lineHeight
+        }
+        let maxY = max(0, (sv.documentView?.bounds.height ?? 0) - sv.contentView.bounds.height)
+        sv.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: min(max(0, newY), maxY)))
+    }
+
+    /// Recursively find the first NSScrollView in a view hierarchy.
+    private func findScrollView(in view: NSView?) -> NSScrollView? {
+        guard let view = view else { return nil }
+        if let sv = view as? NSScrollView { return sv }
+        for subview in view.subviews {
+            if let found = findScrollView(in: subview) { return found }
+        }
+        return nil
     }
 
     private func sendMessage() {

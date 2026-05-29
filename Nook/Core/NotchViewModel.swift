@@ -39,6 +39,11 @@ enum NotchContentType: Equatable {
     }
 }
 
+enum ChatScrollDirection {
+    case up
+    case down
+}
+
 @MainActor
 class NotchViewModel: ObservableObject {
     // MARK: - Published State
@@ -61,6 +66,7 @@ class NotchViewModel: ObservableObject {
     @Published var keyboardSelectedIndex: Int = -1
     /// Trigger to activate the currently keyboard-selected session
     @Published var keyboardActivateTrigger: UUID?
+
     /// Focused row index for keyboard navigation on settings pages (menu, shortcuts).
     @Published var settingsFocusedIndex: Int = -1
     /// Live-measured content height of the menu VStack (via GeometryReader).
@@ -450,7 +456,7 @@ class NotchViewModel: ObservableObject {
                 settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
             }
         case .chat:
-            break // no keyboard navigation in chat view
+            NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.up)
         }
     }
 
@@ -481,7 +487,7 @@ class NotchViewModel: ObservableObject {
                 settingsFocusedIndex = min(shortcutsItemCount - 1, settingsFocusedIndex + 1)
             }
         case .chat:
-            break // no keyboard navigation in chat view
+            NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.down)
         }
     }
 
