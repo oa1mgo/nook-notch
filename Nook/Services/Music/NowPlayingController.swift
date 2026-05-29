@@ -67,6 +67,12 @@ extension NowPlayingController {
         }
     }
 
+    func restartStreaming() {
+        cleanupStream()
+        startStreamingUpdates()
+        refresh()
+    }
+
     func togglePlayPause(displayedTime: TimeInterval?) {
         sendCommand(.togglePlayPause, displayedTime: displayedTime)
     }
@@ -108,6 +114,8 @@ extension NowPlayingController {
 
 private extension NowPlayingController {
     func startStreamingUpdates() {
+        cleanupStream()
+
         guard let scriptURL = adapterScriptURL(), let frameworkURL = adapterFrameworkURL() else {
             return
         }
@@ -120,12 +128,20 @@ private extension NowPlayingController {
         process.arguments = [scriptURL.path, frameworkURL.path, "stream", "--debounce=50"]
         process.standardOutput = pipeHandler.pipe
         process.standardError = errorPipe
-        process.terminationHandler = { [logger] process in
+        process.terminationHandler = { [weak self, logger] process in
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let errorOutput = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
             if process.terminationStatus != 0 {
                 logger.error("Adapter stream exited with status \(process.terminationStatus): \(errorOutput, privacy: .public)")
+            }
+
+            // Auto-restart the streaming process after a brief delay.
+            // Uses a simple rate limit to prevent rapid restart loops.
+            guard streamRestartThrottle.allowRestart() else { return }
+            logger.debug("Restarting adapter stream")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.startStreamingUpdates()
             }
         }
 
@@ -146,6 +162,23 @@ private extension NowPlayingController {
             streamProcess = nil
             streamPipeHandler = nil
         }
+    }
+
+    private func cleanupStream() {
+        streamTask?.cancel()
+        streamTask = nil
+
+        if let process = streamProcess, process.isRunning {
+            process.terminate()
+        }
+        streamProcess = nil
+
+        if let handler = streamPipeHandler {
+            Task {
+                await handler.close()
+            }
+        }
+        streamPipeHandler = nil
     }
 
     private func sendCommand(_ command: AdapterCommand, displayedTime: TimeInterval? = nil) {
@@ -493,6 +526,24 @@ private extension NowPlayingController {
         }
     }
 }
+
+// MARK: - Stream Restart Throttle
+
+/// Sendable rate limiter for stream process restart, usable from
+/// a @Sendable termination handler without @MainActor isolation conflicts.
+private final class StreamRestartThrottle: @unchecked Sendable {
+    nonisolated(unsafe) private var lastAttempt: Date = .distantPast
+    private let minimumInterval: TimeInterval = 2.0
+
+    fileprivate nonisolated func allowRestart() -> Bool {
+        let now = Date()
+        guard now.timeIntervalSince(lastAttempt) >= minimumInterval else { return false }
+        lastAttempt = now
+        return true
+    }
+}
+
+private let streamRestartThrottle = StreamRestartThrottle()
 
 private struct AdapterStreamEvent: Decodable {
     let type: String?

@@ -84,6 +84,10 @@ final class MusicManager: ObservableObject {
     }
 
     func refresh() { controller.refresh() }
+    func restartStreaming() {
+        controller.restartStreaming()
+        // refresh() is called inside controller.restartStreaming()
+    }
     func togglePlayPause(displayedTime: TimeInterval? = nil) {
         controller.togglePlayPause(displayedTime: displayedTime)
     }
