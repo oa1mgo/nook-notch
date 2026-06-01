@@ -56,8 +56,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mixpanel?.track(event: "App Launched")
         mixpanel?.flush()
 
-        HookInstaller.installIfNeeded()
-        CodexHookInstaller.installIfNeeded()
+        if AppSettings.autoInstallHooks {
+            if AppSettings.claudeHooksEnabled { HookInstaller.installIfNeeded() }
+            if AppSettings.codexHooksEnabled { CodexHookInstaller.installIfNeeded() }
+            if AppSettings.opencodeHooksEnabled { OpencodeHookInstaller.installIfNeeded() }
+        }
         NSApplication.shared.setActivationPolicy(.accessory)
 
         windowManager = WindowManager()

@@ -87,6 +87,22 @@ class ClaudeSessionMonitor: ObservableObject {
                         await SessionStore.shared.process(.codexStopped(sessionId: sessionId, cwd: cwd))
                     }
                 }
+            },
+            onOpencodeEvent: { event in
+                Task {
+                    switch event {
+                    case .sessionStart(let sessionId, let cwd):
+                        await SessionStore.shared.process(.opencodeSessionStarted(sessionId: sessionId, cwd: cwd))
+                    case .userPromptSubmit(let sessionId, let cwd, let prompt):
+                        await SessionStore.shared.process(.opencodePromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt))
+                    case .preBashTool(let sessionId, let cwd, let toolName, let toolUseId, let command):
+                        await SessionStore.shared.process(.opencodeBashStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command))
+                    case .postBashTool(let sessionId, let cwd, let toolName, let toolUseId, let command):
+                        await SessionStore.shared.process(.opencodeBashFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command))
+                    case .stop(let sessionId, let cwd):
+                        await SessionStore.shared.process(.opencodeStopped(sessionId: sessionId, cwd: cwd))
+                    }
+                }
             }
         )
     }

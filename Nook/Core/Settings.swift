@@ -44,12 +44,20 @@ enum AppSettings {
         nonisolated static let claudeDirectoryName = "claudeDirectoryName"
         nonisolated static let artworkAdaptiveBackgroundEnabled = AppSettings.artworkAdaptiveBackgroundEnabledKey
         nonisolated static let musicEdgeGlowEnabled = AppSettings.musicEdgeGlowEnabledKey
+        nonisolated static let autoInstallHooks = "autoInstallHooks"
+        nonisolated static let claudeHooksEnabled = "claudeHooksEnabled"
+        nonisolated static let codexHooksEnabled = "codexHooksEnabled"
+        nonisolated static let opencodeHooksEnabled = "opencodeHooksEnabled"
     }
 
     nonisolated static func registerDefaults() {
         defaults.register(defaults: [
             Keys.artworkAdaptiveBackgroundEnabled: true,
-            Keys.musicEdgeGlowEnabled: true
+            Keys.musicEdgeGlowEnabled: true,
+            Keys.autoInstallHooks: true,
+            Keys.claudeHooksEnabled: true,
+            Keys.codexHooksEnabled: true,
+            Keys.opencodeHooksEnabled: false,
         ])
     }
 
@@ -114,5 +122,28 @@ enum AppSettings {
         set {
             defaults.set(newValue, forKey: Keys.musicEdgeGlowEnabled)
         }
+    }
+
+    // MARK: - Agent Hooks
+
+    /// Whether to auto-install hooks at launch for agents with hooks enabled.
+    nonisolated static var autoInstallHooks: Bool {
+        get { defaults.bool(forKey: Keys.autoInstallHooks) }
+        set { defaults.set(newValue, forKey: Keys.autoInstallHooks) }
+    }
+
+    nonisolated static var claudeHooksEnabled: Bool {
+        get { defaults.bool(forKey: Keys.claudeHooksEnabled) }
+        set { defaults.set(newValue, forKey: Keys.claudeHooksEnabled) }
+    }
+
+    nonisolated static var codexHooksEnabled: Bool {
+        get { defaults.bool(forKey: Keys.codexHooksEnabled) }
+        set { defaults.set(newValue, forKey: Keys.codexHooksEnabled) }
+    }
+
+    nonisolated static var opencodeHooksEnabled: Bool {
+        get { defaults.bool(forKey: Keys.opencodeHooksEnabled) }
+        set { defaults.set(newValue, forKey: Keys.opencodeHooksEnabled) }
     }
 }

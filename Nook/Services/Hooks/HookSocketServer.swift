@@ -103,6 +103,9 @@ typealias HookEventHandler = @Sendable (HookEvent) -> Void
 /// Callback for Codex hook events
 typealias CodexHookEventHandler = @Sendable (CodexSessionEvent) -> Void
 
+/// Callback for OpenCode hook events
+typealias OpencodeHookEventHandler = @Sendable (OpencodeSessionEvent) -> Void
+
 /// Callback for permission response failures (socket died)
 typealias PermissionFailureHandler = @Sendable (_ sessionId: String, _ toolUseId: String) -> Void
 
@@ -116,6 +119,7 @@ class HookSocketServer {
     private var acceptSource: DispatchSourceRead?
     private var eventHandler: HookEventHandler?
     private var codexEventHandler: CodexHookEventHandler?
+    private var opencodeEventHandler: OpencodeHookEventHandler?
     private var permissionFailureHandler: PermissionFailureHandler?
     private let queue = DispatchQueue(label: "com.celestial.Nook.socket", qos: .userInitiated)
 
@@ -135,13 +139,15 @@ class HookSocketServer {
     func start(
         onEvent: @escaping HookEventHandler,
         onPermissionFailure: PermissionFailureHandler? = nil,
-        onCodexEvent: CodexHookEventHandler? = nil
+        onCodexEvent: CodexHookEventHandler? = nil,
+        onOpencodeEvent: OpencodeHookEventHandler? = nil
     ) {
         queue.async { [weak self] in
             self?.startServer(
                 onEvent: onEvent,
                 onPermissionFailure: onPermissionFailure,
-                onCodexEvent: onCodexEvent
+                onCodexEvent: onCodexEvent,
+                onOpencodeEvent: onOpencodeEvent
             )
         }
     }
@@ -149,12 +155,14 @@ class HookSocketServer {
     private func startServer(
         onEvent: @escaping HookEventHandler,
         onPermissionFailure: PermissionFailureHandler?,
-        onCodexEvent: CodexHookEventHandler?
+        onCodexEvent: CodexHookEventHandler?,
+        onOpencodeEvent: OpencodeHookEventHandler?
     ) {
         guard serverSocket < 0 else { return }
 
         eventHandler = onEvent
         codexEventHandler = onCodexEvent
+        opencodeEventHandler = onOpencodeEvent
         permissionFailureHandler = onPermissionFailure
 
         unlink(Self.socketPath)
@@ -436,6 +444,11 @@ class HookSocketServer {
             close(clientSocket)
             logger.debug("Ignoring unsupported Codex event: \(eventName, privacy: .public)")
 
+        case .opencode(let event):
+            close(clientSocket)
+            logger.debug("Received OpenCode event: \(String(describing: event), privacy: .public)")
+            opencodeEventHandler?(event)
+
         case .unknown:
             logger.warning("Failed to parse event: \(String(data: data, encoding: .utf8) ?? "?", privacy: .public)")
             close(clientSocket)
@@ -445,6 +458,7 @@ class HookSocketServer {
     private enum DecodedHookPayload {
         case claude(HookEvent)
         case codex(CodexSessionEvent)
+        case opencode(OpencodeSessionEvent)
         case unsupportedCodex(eventName: String)
         case unknown
     }
@@ -459,6 +473,17 @@ class HookSocketServer {
                 return .unsupportedCodex(eventName: codexEnvelope.event)
             }
             return .codex(codexEvent)
+        }
+
+        if let opencodeEnvelope = try? JSONDecoder().decode(OpencodeHookEnvelope.self, from: data) {
+            do {
+                if let opencodeEvent = OpencodeHookAdapter.adapt(opencodeEnvelope) {
+                    return .opencode(opencodeEvent)
+                }
+            } catch {
+                logger.warning("Opencode adapter error: \(error.localizedDescription, privacy: .public)")
+            }
+            return .unknown
         }
 
         return .unknown

@@ -27,6 +27,7 @@ enum NotchContentType: Equatable {
     case instances
     case menu
     case shortcuts
+    case agents
     case chat(SessionState)
 
     var id: String {
@@ -34,6 +35,7 @@ enum NotchContentType: Equatable {
         case .instances: return "instances"
         case .menu: return "menu"
         case .shortcuts: return "shortcuts"
+        case .agents: return "agents"
         case .chat(let session): return "chat-\(session.sessionId)"
         }
     }
@@ -72,6 +74,8 @@ class NotchViewModel: ObservableObject {
     @Published var settingsFocusedIndex: Int = -1
     /// Live-measured content height of the menu VStack (via GeometryReader).
     @Published var menuContentHeight: CGFloat = 552
+    /// Live-measured content height of the agents page VStack (via GeometryReader).
+    @Published var agentsContentHeight: CGFloat = 260
 
     // MARK: - Dependencies
 
@@ -115,6 +119,12 @@ class NotchViewModel: ObservableObject {
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
                 height: 480
+            )
+        case .agents:
+            let headerHeight = max(24, geometry.deviceNotchRect.height)
+            return CGSize(
+                width: min(screenRect.width * 0.4, 480),
+                height: agentsContentHeight + headerHeight + 12
             )
         case .instances:
             return CGSize(
@@ -456,6 +466,12 @@ class NotchViewModel: ObservableObject {
             } else {
                 settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
             }
+        case .agents:
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = agentsItemCount - 1
+            } else {
+                settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
+            }
         case .chat:
             NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.up)
         }
@@ -487,6 +503,12 @@ class NotchViewModel: ObservableObject {
             } else {
                 settingsFocusedIndex = min(shortcutsItemCount - 1, settingsFocusedIndex + 1)
             }
+        case .agents:
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = 0
+            } else {
+                settingsFocusedIndex = min(agentsItemCount - 1, settingsFocusedIndex + 1)
+            }
         case .chat:
             NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.down)
         }
@@ -498,9 +520,11 @@ class NotchViewModel: ObservableObject {
     }
 
     /// Total focusable items in the menu page
-    let menuItemCount: Int = 12
+    let menuItemCount: Int = 11
     /// Total focusable items in the shortcuts page (Back + action rows + Restore)
     var shortcutsItemCount: Int { 1 + ShortcutAction.allCases.count + 1 }
+    /// Total focusable items in the agents page (just Back for now)
+    let agentsItemCount: Int = 1
 
     /// Route a shortcut action to the appropriate handler
     func handleShortcutAction(_ action: ShortcutAction) {

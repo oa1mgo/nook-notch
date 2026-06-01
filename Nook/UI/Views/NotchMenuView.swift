@@ -29,7 +29,6 @@ struct NotchMenuView: View {
     @ObservedObject private var updateManager = UpdateManager.shared
     @ObservedObject private var screenSelector = ScreenSelector.shared
     @ObservedObject private var soundSelector = SoundSelector.shared
-    @State private var hooksInstalled: Bool = false
     @State private var launchAtLogin: Bool = false
     @State private var didAppear = false
     @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
@@ -67,11 +66,16 @@ struct NotchMenuView: View {
                     secondaryTextColor: secondaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == 2
                 )
-                ClaudeDirPickerRow(
+
+                MenuRow(
+                    icon: "terminal",
+                    label: "Agents...",
+                    trailingIcon: "chevron.right",
                     primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == 3
-                )
+                ) {
+                    viewModel.pushTo(.agents)
+                }
 
                 MenuRow(
                     icon: "keyboard",
@@ -136,24 +140,7 @@ struct NotchMenuView: View {
                     }
                 }
 
-                MenuToggleRow(
-                    icon: "arrow.triangle.2.circlepath",
-                    label: "Hooks",
-                    isOn: hooksInstalled,
-                    primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 8
-                ) {
-                    if hooksInstalled {
-                        HookInstaller.uninstall()
-                        hooksInstalled = false
-                    } else {
-                        HookInstaller.installIfNeeded()
-                        hooksInstalled = true
-                    }
-                }
-
-                AccessibilityRow(isEnabled: AXIsProcessTrusted(), primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 9)
+                AccessibilityRow(isEnabled: AXIsProcessTrusted(), primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 8)
 
                 Divider()
                     .background(separatorColor)
@@ -164,7 +151,7 @@ struct NotchMenuView: View {
                     label: "Star on GitHub",
                     trailingLabel: appVersion,
                     primaryTextColor: primaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 10
+                    isFocused: viewModel.settingsFocusedIndex == 9
                 ) {
                     if let url = URL(string: "https://github.com/oa1mgo/nook") {
                         NSWorkspace.shared.open(url)
@@ -181,7 +168,7 @@ struct NotchMenuView: View {
                     trailingLabel: "⌘Q",
                     isDestructive: true,
                     primaryTextColor: primaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 11
+                    isFocused: viewModel.settingsFocusedIndex == 10
                 ) {
                     NSApplication.shared.terminate(nil)
                 }
@@ -221,7 +208,7 @@ struct NotchMenuView: View {
         case 0: viewModel.toggleMenu()
         case 1: withAnimation(.easeInOut(duration: 0.2)) { screenSelector.isPickerExpanded.toggle() }
         case 2: withAnimation(.easeInOut(duration: 0.2)) { soundSelector.isPickerExpanded.toggle() }
-        case 3: withAnimation(.easeInOut(duration: 0.2)) { ClaudeDirSelector.shared.isPickerExpanded.toggle() }
+        case 3: viewModel.pushTo(.agents)
         case 4: viewModel.pushTo(.shortcuts)
         case 5: artworkAdaptiveBackgroundEnabled.toggle()
         case 6: musicEdgeGlowEnabled.toggle()
@@ -238,28 +225,19 @@ struct NotchMenuView: View {
                 print("Failed to toggle launch at login: \(error)")
             }
         case 8:
-            if hooksInstalled {
-                HookInstaller.uninstall()
-                hooksInstalled = false
-            } else {
-                HookInstaller.installIfNeeded()
-                hooksInstalled = true
-            }
-        case 9:
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
                 NSWorkspace.shared.open(url)
             }
-        case 10:
+        case 9:
             if let url = URL(string: "https://github.com/oa1mgo/nook") {
                 NSWorkspace.shared.open(url)
             }
-        case 11: NSApplication.shared.terminate(nil)
+        case 10: NSApplication.shared.terminate(nil)
         default: break
         }
     }
 
     private func refreshStates() {
-        hooksInstalled = HookInstaller.isInstalled()
         launchAtLogin = SMAppService.mainApp.status == .enabled
         screenSelector.refreshScreens()
     }

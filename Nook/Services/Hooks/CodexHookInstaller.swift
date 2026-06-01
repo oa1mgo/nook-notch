@@ -116,6 +116,65 @@ struct CodexHookInstaller {
         }
     }
 
+    /// Check if Codex hooks are currently installed
+    static func isInstalled() -> Bool {
+        guard FileManager.default.fileExists(atPath: bridgeScript.path) else { return false }
+
+        guard let data = try? Data(contentsOf: hooksFile),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hooks = json["hooks"] as? [String: Any] else {
+            return false
+        }
+
+        for (_, value) in hooks {
+            if let entries = value as? [[String: Any]] {
+                for entry in entries {
+                    if let entryHooks = entry["hooks"] as? [[String: Any]] {
+                        for hook in entryHooks {
+                            if let cmd = hook["command"] as? String,
+                               cmd.contains("nook-codex-hook.py") {
+                                return true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    /// Uninstall Codex hooks: remove bridge script, disable feature flag, clean hooks.json
+    static func uninstall() {
+        try? FileManager.default.removeItem(at: bridgeScript)
+
+        guard let data = try? Data(contentsOf: hooksFile),
+              var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var hooks = json["hooks"] as? [String: Any] else {
+            return
+        }
+
+        for (event, value) in hooks {
+            if var entries = value as? [[String: Any]] {
+                entries = entries.compactMap { removingNookHooks(from: $0) }
+                if entries.isEmpty {
+                    hooks.removeValue(forKey: event)
+                } else {
+                    hooks[event] = entries
+                }
+            }
+        }
+
+        if hooks.isEmpty {
+            json.removeValue(forKey: "hooks")
+        } else {
+            json["hooks"] = hooks
+        }
+
+        if let data = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: hooksFile)
+        }
+    }
+
     private nonisolated static func removingNookHooks(from entry: [String: Any]) -> [String: Any]? {
         guard var entryHooks = entry["hooks"] as? [[String: Any]] else {
             return entry

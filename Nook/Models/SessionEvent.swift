@@ -31,6 +31,21 @@ enum SessionEvent: Sendable {
     /// Codex stopped the current turn
     case codexStopped(sessionId: String, cwd: String)
 
+    /// An OpenCode session was created or resumed
+    case opencodeSessionStarted(sessionId: String, cwd: String)
+
+    /// OpenCode submitted a user prompt for the current turn
+    case opencodePromptSubmitted(sessionId: String, cwd: String, prompt: String?)
+
+    /// OpenCode began running a Bash tool
+    case opencodeBashStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?)
+
+    /// OpenCode finished running a Bash tool
+    case opencodeBashFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?)
+
+    /// OpenCode stopped the current turn
+    case opencodeStopped(sessionId: String, cwd: String)
+
     // MARK: - Permission Events (user actions)
 
     /// User approved a permission request
@@ -210,6 +225,16 @@ extension SessionEvent: CustomStringConvertible {
             return "codexBashFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
         case .codexStopped(let sessionId, _):
             return "codexStopped(session: \(sessionId.prefix(8)))"
+        case .opencodeSessionStarted(let sessionId, _):
+            return "opencodeSessionStarted(session: \(sessionId.prefix(8)))"
+        case .opencodePromptSubmitted(let sessionId, _, _):
+            return "opencodePromptSubmitted(session: \(sessionId.prefix(8)))"
+        case .opencodeBashStarted(let sessionId, _, let toolName, _, _):
+            return "opencodeBashStarted(session: \(sessionId.prefix(8)), tool: \(toolName))"
+        case .opencodeBashFinished(let sessionId, _, let toolName, _, _):
+            return "opencodeBashFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
+        case .opencodeStopped(let sessionId, _):
+            return "opencodeStopped(session: \(sessionId.prefix(8)))"
         case .permissionApproved(let sessionId, let toolUseId):
             return "permissionApproved(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .permissionDenied(let sessionId, let toolUseId, _):

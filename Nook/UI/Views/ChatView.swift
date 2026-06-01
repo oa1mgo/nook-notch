@@ -363,6 +363,8 @@ struct ChatView: View {
             return "Claude Code needs your input"
         case .codex:
             return "Codex needs your input"
+        case .opencode:
+            return "OpenCode needs your input"
         }
     }
 

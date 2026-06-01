@@ -83,6 +83,21 @@ actor SessionStore {
         case .codexStopped(let sessionId, let cwd):
             processCodexStop(sessionId: sessionId, cwd: cwd)
 
+        case .opencodeSessionStarted(let sessionId, let cwd):
+            processOpencodeSessionStart(sessionId: sessionId, cwd: cwd)
+
+        case .opencodePromptSubmitted(let sessionId, let cwd, let prompt):
+            processOpencodePromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt)
+
+        case .opencodeBashStarted(let sessionId, let cwd, let toolName, let toolUseId, let command):
+            processOpencodeBashStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command)
+
+        case .opencodeBashFinished(let sessionId, let cwd, let toolName, let toolUseId, let command):
+            processOpencodeBashFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command)
+
+        case .opencodeStopped(let sessionId, let cwd):
+            processOpencodeStop(sessionId: sessionId, cwd: cwd)
+
         case .permissionApproved(let sessionId, let toolUseId):
             await processPermissionApproved(sessionId: sessionId, toolUseId: toolUseId)
 
@@ -366,6 +381,213 @@ actor SessionStore {
         session.toolTracker.inProgress.removeAll()
         sessions[sessionId] = session
     }
+
+    // MARK: - OpenCode Session Processing
+
+    private func createOpencodeSession(sessionId: String, cwd: String) -> SessionState {
+        SessionState(
+            sessionId: sessionId,
+            provider: .opencode,
+            cwd: cwd,
+            projectName: URL(fileURLWithPath: cwd).lastPathComponent,
+            phase: .idle
+        )
+    }
+
+    private func shouldIgnoreOpencodeSession(_ sessionId: String) -> Bool {
+        false
+    }
+
+    private func processOpencodeSessionStart(sessionId: String, cwd: String) {
+        guard !shouldIgnoreOpencodeSession(sessionId) else { return }
+        let isNewSession = sessions[sessionId] == nil
+        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        enrichOpencodeRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
+        session.completionNotificationAt = nil
+        if isNewSession || !session.phase.isActive {
+            session.phase = .idle
+        }
+        sessions[sessionId] = session
+
+        if isNewSession {
+            mixpanel?.track(event: "Session Started", properties: ["provider": "opencode"])
+        }
+    }
+
+    private func processOpencodePromptSubmitted(sessionId: String, cwd: String, prompt: String?) {
+        guard !shouldIgnoreOpencodeSession(sessionId) else { return }
+        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        let now = Date()
+        let trimmedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstUserMessage = session.conversationInfo.firstUserMessage ?? trimmedPrompt
+
+        enrichOpencodeRuntimeMetadata(session: &session)
+        session.lastActivity = now
+        session.completionNotificationAt = nil
+        session.phase = .processing
+        if let trimmedPrompt, !trimmedPrompt.isEmpty {
+            session.chatItems.append(
+                ChatHistoryItem(
+                    id: "opencode-user-\(sessionId)-\(Int(now.timeIntervalSince1970 * 1000))",
+                    type: .user(trimmedPrompt),
+                    timestamp: now
+                )
+            )
+        }
+        session.conversationInfo = ConversationInfo(
+            summary: session.conversationInfo.summary,
+            lastMessage: trimmedPrompt,
+            lastMessageRole: trimmedPrompt == nil ? session.conversationInfo.lastMessageRole : "user",
+            lastToolName: nil,
+            firstUserMessage: firstUserMessage,
+            lastUserMessageDate: trimmedPrompt == nil ? session.conversationInfo.lastUserMessageDate : now,
+            usage: session.conversationInfo.usage
+        )
+
+        sessions[sessionId] = session
+    }
+
+    private func processOpencodeBashStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?) {
+        guard !shouldIgnoreOpencodeSession(sessionId) else { return }
+        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        let now = Date()
+        let toolId = toolUseId ?? makeOpencodeToolId(for: sessionId)
+
+        enrichOpencodeRuntimeMetadata(session: &session)
+        session.lastActivity = now
+        session.completionNotificationAt = nil
+        session.phase = .processing
+        session.toolTracker.startTool(id: toolId, name: toolName)
+
+        let inputPreview = command?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let input = inputPreview.map { ["command": $0] } ?? [:]
+        session.chatItems.append(
+            ChatHistoryItem(
+                id: toolId,
+                type: .toolCall(ToolCallItem(
+                    name: toolName,
+                    input: input,
+                    status: .running,
+                    result: nil,
+                    structuredResult: nil,
+                    subagentTools: []
+                )),
+                timestamp: now
+            )
+        )
+        session.conversationInfo = ConversationInfo(
+            summary: session.conversationInfo.summary,
+            lastMessage: inputPreview,
+            lastMessageRole: "tool",
+            lastToolName: toolName,
+            firstUserMessage: session.conversationInfo.firstUserMessage,
+            lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
+            usage: session.conversationInfo.usage
+        )
+
+        sessions[sessionId] = session
+    }
+
+    private func processOpencodeBashFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?) {
+        guard !shouldIgnoreOpencodeSession(sessionId) else { return }
+        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        let now = Date()
+
+        enrichOpencodeRuntimeMetadata(session: &session)
+        session.lastActivity = now
+
+        if let toolId = latestRunningCodexToolId(in: session, toolName: toolName, toolUseId: toolUseId) {
+            session.toolTracker.completeTool(id: toolId, success: true)
+            updateToolStatus(in: &session, toolId: toolId, status: .success)
+        }
+
+        session.conversationInfo = ConversationInfo(
+            summary: session.conversationInfo.summary,
+            lastMessage: command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? session.conversationInfo.lastMessage,
+            lastMessageRole: "tool",
+            lastToolName: toolName,
+            firstUserMessage: session.conversationInfo.firstUserMessage,
+            lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
+            usage: session.conversationInfo.usage
+        )
+        session.phase = hasRunningTools(in: session) ? .processing : .idle
+
+        sessions[sessionId] = session
+    }
+
+    private func processOpencodeStop(sessionId: String, cwd: String) {
+        guard !shouldIgnoreOpencodeSession(sessionId) else { return }
+        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        let hadRunningTools = hasRunningTools(in: session)
+        enrichOpencodeRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
+        session.phase = .idle
+        session.completionNotificationAt = hadRunningTools ? nil : Date()
+
+        for index in session.chatItems.indices {
+            if case .toolCall(var tool) = session.chatItems[index].type, tool.status == .running {
+                tool.status = .interrupted
+                session.chatItems[index] = ChatHistoryItem(
+                    id: session.chatItems[index].id,
+                    type: .toolCall(tool),
+                    timestamp: session.chatItems[index].timestamp
+                )
+            }
+        }
+
+        session.toolTracker.inProgress.removeAll()
+        sessions[sessionId] = session
+    }
+
+    private func makeOpencodeToolId(for sessionId: String) -> String {
+        let millis = Int(Date().timeIntervalSince1970 * 1000)
+        return "opencode-bash-\(sessionId)-\(millis)"
+    }
+
+    private func enrichOpencodeRuntimeMetadata(session: inout SessionState) {
+        let tree = ProcessTreeBuilder.shared.buildTree()
+        guard let process = bestMatchingOpencodeProcess(for: session.cwd, tree: tree) else {
+            return
+        }
+
+        session.pid = process.pid
+        session.tty = process.tty
+        session.isInTmux = ProcessTreeBuilder.shared.isInTmux(pid: process.pid, tree: tree)
+    }
+
+    /// Find the most likely OpenCode parent process for the given working directory.
+    private func bestMatchingOpencodeProcess(for cwd: String, tree: [Int: ProcessInfo]) -> ProcessInfo? {
+        let candidates = tree.values.filter { info in
+            let command = info.command.lowercased()
+            return command == "opencode" || command.hasSuffix("/opencode") || command.contains("/opencode/")
+        }
+
+        let normalizedCwd = URL(fileURLWithPath: cwd).standardizedFileURL.path
+        let exactMatches = candidates.compactMap { info -> ProcessInfo? in
+            guard let processCwd = ProcessTreeBuilder.shared.getWorkingDirectory(forPid: info.pid) else {
+                return nil
+            }
+            let normalizedProcessCwd = URL(fileURLWithPath: processCwd).standardizedFileURL.path
+            return normalizedProcessCwd == normalizedCwd ? info : nil
+        }
+
+        if let tmuxMatch = exactMatches
+            .filter({ ProcessTreeBuilder.shared.isInTmux(pid: $0.pid, tree: tree) })
+            .max(by: { $0.pid < $1.pid }) {
+            return tmuxMatch
+        }
+
+        if let exactMatch = exactMatches.max(by: { $0.pid < $1.pid }) {
+            return exactMatch
+        }
+
+        return candidates
+            .filter { ProcessTreeBuilder.shared.isInTmux(pid: $0.pid, tree: tree) }
+            .max(by: { $0.pid < $1.pid })
+    }
+
+    // MARK: - Codex Helpers
 
     private func makeCodexToolId(for sessionId: String) -> String {
         let millis = Int(Date().timeIntervalSince1970 * 1000)

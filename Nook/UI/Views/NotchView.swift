@@ -547,6 +547,13 @@ struct NotchView: View {
                     secondaryTextColor: expandedSecondaryTextColor,
                     separatorColor: expandedSeparatorColor
                 )
+            case .agents:
+                AgentSettingsView(
+                    viewModel: viewModel,
+                    primaryTextColor: expandedPrimaryTextColor,
+                    secondaryTextColor: expandedSecondaryTextColor,
+                    separatorColor: expandedSeparatorColor
+                )
             case .chat(let session):
                 ChatView(
                     sessionId: session.sessionId,
