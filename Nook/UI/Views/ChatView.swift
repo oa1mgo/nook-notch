@@ -81,6 +81,20 @@ struct ChatView: View {
                 // Header
                 chatHeader
 
+                // Top status banner (waitingForInput — the agent asked
+                // the user a question and is waiting for an answer in
+                // the terminal). Suppressed while the approval bar is
+                // showing so we never double up on banners.
+                if session.phase == .waitingForInput && approvalTool == nil {
+                    waitingForInputBanner
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 6)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .top)),
+                            removal: .opacity
+                        ))
+                }
+
                 // Messages
                 if isLoading {
                     loadingState
@@ -92,7 +106,7 @@ struct ChatView: View {
 
                 // Approval bar, interactive prompt, or Input bar
                 if let tool = approvalTool {
-                    if tool == "AskUserQuestion" {
+                    if ToolCallItem.kind(of: tool) == .askUserQuestion {
                         // Interactive tools - show prompt to answer in terminal
                         interactivePromptBar
                             .transition(.asymmetric(
@@ -113,6 +127,7 @@ struct ChatView: View {
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isWaitingForApproval)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.phase)
         .animation(nil, value: viewModel.status)
         .task {
             // Skip if already loaded (prevents redundant work on view recreation)
@@ -140,7 +155,26 @@ struct ChatView: View {
             }
         }
         .onReceive(ChatHistoryManager.shared.$histories) { histories in
-            guard session.provider == .claude else { return }
+            // REGRESSION GUARD — DO NOT change to `== .claude`.
+            //
+            // Codex has its own merged-history path (transcript + live) in the
+            // $instances handler below, so it is excluded here. Claude and
+            // opencode both go through ChatHistoryManager: it subscribes to
+            // SessionStore and rebuilds `histories[sessionId]` for every
+            // provider, so we can drive the chat view straight from it.
+            //
+            // Symptom if regressed: opencode's bash/read/assistant text events
+            // are stored in chatItems (visible after navigating away and back,
+            // and visible in the session list), but the live chat view flickers
+            // once and never re-renders — the user sees a "stuck" view while
+            // the terminal shows fresh activity. This is what bit us in 0.2.0
+            // when the gate was `== .claude`; opencode fell through the same
+            // path as codex and got dropped.
+            //
+            // If you add a new provider here, ask: does it need transcript
+            // merging (codex-style)? If no, leave the gate as `!= .codex`
+            // and the new provider will work automatically.
+            guard session.provider != .codex else { return }
             // Update when count changes, last item differs, or content changes (e.g., tool status)
             if let newHistory = histories[sessionId] {
                 let countChanged = newHistory.count != history.count
@@ -266,6 +300,44 @@ struct ChatView: View {
     /// Whether the session is currently processing
     private var isProcessing: Bool {
         session.phase == .processing || session.phase == .compacting
+    }
+
+    /// Banner shown at the top of the chat area when the session is in
+    /// `.waitingForInput` state — i.e. the agent has shown an
+    /// `AskUserQuestion` / opencode `ask_user_question` dialog and is
+    /// waiting for the user to pick an option in the terminal.
+    ///
+    /// This is purely informational. The actual answer still has to be
+    /// typed into the terminal (or the Claude TUI / opencode TUI). The
+    /// banner exists to make sure the user notices the dialog is open
+    /// even when the notch is collapsed or the chat is scrolled away.
+    private var waitingForInputBanner: some View {
+        HStack(spacing: 10) {
+            WaitingForInputIcon(size: 14)
+                .frame(width: 18, height: 18)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Ready for input")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(primaryTextColor.opacity(0.92))
+                Text("Answer the question in the terminal to continue.")
+                    .font(.system(size: 11))
+                    .foregroundColor(secondaryTextColor)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(TerminalColors.green.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(TerminalColors.green.opacity(0.35), lineWidth: 1)
+        )
     }
 
     /// Get the last user message ID for stable text selection per turn
@@ -401,7 +473,16 @@ struct ChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 16) {
+                // Spacing: 10pt between adjacent items. Previous 8pt was OK
+                // for short tool lists but felt cramped once the opencode
+                // sessions started interleaving thinking blocks and 3-5
+                // tool calls in a row — runs of similar-looking tool rows
+                // fused into a single dense block. 12-16pt felt too airy
+                // (subagent tool lists developed visible "empty rows"
+                // between every line). 10pt is a middle ground that gives
+                // each tool row a clear top/bottom edge without breaking
+                // runs apart.
+                LazyVStack(spacing: 10) {
                     // Invisible anchor at bottom (first due to flip)
                     Color.clear
                         .frame(height: 1)
@@ -851,16 +932,18 @@ struct ToolCallView: View {
     }
 
     /// Whether the tool can be expanded (has result, NOT a subagent container, NOT Edit).
+    /// Uses provider-agnostic kind — opencode emits "edit" lowercase while
+    /// Claude emits "Edit" PascalCase.
     private var canExpand: Bool {
-        !tool.isSubagentContainer && tool.name != "Edit" && hasResult
+        !tool.isSubagentContainer && tool.kind != .edit && hasResult
     }
 
     private var showContent: Bool {
-        tool.name == "Edit" || isExpanded
+        tool.kind == .edit || isExpanded
     }
 
     private var agentDescription: String? {
-        guard tool.name == "AgentOutputTool",
+        guard tool.kind == .agentOutputTool,
               let agentId = tool.input["agentId"],
               let sessionDescriptions = ChatHistoryManager.shared.agentDescriptions[sessionId] else {
             return nil
@@ -887,14 +970,22 @@ struct ToolCallView: View {
                     .foregroundColor(textColor)
                     .fixedSize()
 
-                if tool.isSubagentContainer && !tool.subagentTools.isEmpty {
-                    let taskDesc = tool.input["description"] ?? "Running agent..."
-                    Text("\(taskDesc) (\(tool.subagentTools.count) tools)")
-                        .font(.system(size: 11))
-                        .foregroundColor(textColor.opacity(0.7))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else if tool.name == "AgentOutputTool", let desc = agentDescription {
+                if tool.isSubagentContainer {
+                    if !tool.subagentTools.isEmpty {
+                        let taskDesc = tool.input["description"] ?? "Running agent..."
+                        Text("\(taskDesc) (\(tool.subagentTools.count) tools)")
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else if let desc = tool.input["description"] {
+                        Text(desc)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                } else if tool.kind == .agentOutputTool, let desc = agentDescription {
                     let blocking = tool.input["block"] == "true"
                     Text(blocking ? "Waiting: \(desc)" : desc)
                         .font(.system(size: 11))
@@ -907,12 +998,143 @@ struct ToolCallView: View {
                         .foregroundColor(textColor.opacity(0.7))
                         .lineLimit(1)
                         .truncationMode(.tail)
+                } else if tool.kind == .bash {
+                    // Bash tools surface the actual command (or summary, for
+                    // subagent-emitted ones) on the same row as the status.
+                    // Without this the row is just "bash Completed" / "bash
+                    // Interrupted" — visually a blank line, and the user
+                    // can't tell which command each row refers to. The
+                    // status (running / success / interrupted) is already
+                    // encoded by the dot color, so we always show the cmd.
+                    //
+                    // Routes via provider-agnostic `kind` — opencode emits
+                    // toolName "bash" (lowercase) while Claude emits
+                    // "Bash" (PascalCase); see `ToolCallItem.kind`.
+                    let rawCommand = tool.input["command"]
+                        ?? tool.input["summary"]
+                        ?? tool.input["description"]
+                    if let cmd = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !cmd.isEmpty {
+                        let firstLine = cmd.components(separatedBy: "\n").first ?? cmd
+                        Text(String(firstLine.prefix(120)))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Text(tool.statusDisplay.text)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                } else if tool.kind == .read {
+                    // Read tools: opencode's postTool does not carry the
+                    // structured result back (see
+                    // SessionStore.processOpencodeToolFinished), so
+                    // `statusDisplay.text` falls back to a literal
+                    // "Completed" with no filename and no line count.
+                    // The result collapses to a one-line row that is much
+                    // shorter than the surrounding bash rows, which made
+                    // the area after a long bash sequence look like a
+                    // blank/inconsistent-height block. Render the input
+                    // file path the same way bash renders its command so
+                    // heights align.
+                    //
+                    // Path lookup order: `file_path` (Claude) → `path`
+                    // (some adapters) → `command` (opencode: the
+                    // OpencodeHookAdapter's `buildInputSummary` returns
+                    // the file path for read tools, and SessionStore
+                    // stores it under the "command" key for all
+                    // non-task tools).
+                    let rawPath = tool.input["file_path"]
+                        ?? tool.input["path"]
+                        ?? tool.input["command"]
+                    if let path = rawPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !path.isEmpty {
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else {
+                        Text(tool.statusDisplay.text)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                } else if tool.kind == .grep {
+                    // Grep tools: like read, opencode's postTool doesn't
+                    // carry a structured result, so statusDisplay.text
+                    // would render as a bare "Completed" — visually a
+                    // blank-ish row that breaks the rhythm of the
+                    // surrounding bash/read lines. Surface the pattern
+                    // (or command fallback for opencode) so the user
+                    // can tell which search the row refers to.
+                    //
+                    // Lookup order: `pattern` (Claude) → `path` (the
+                    // search root, secondary signal) → `command`
+                    // (opencode: buildInputSummary returns the pattern
+                    // for grep tools, and SessionStore stores it under
+                    // the "command" key for all non-task tools).
+                    let rawPattern = tool.input["pattern"]
+                        ?? tool.input["command"]
+                    if let pattern = rawPattern?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !pattern.isEmpty {
+                        Text("grep: \(String(pattern.prefix(80)))")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else if let path = tool.input["path"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                              !path.isEmpty {
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else {
+                        Text(tool.statusDisplay.text)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 } else {
-                    Text(tool.statusDisplay.text)
-                        .font(.system(size: 11))
-                        .foregroundColor(textColor.opacity(0.7))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    // Defensive fallback for any tool that doesn't have an
+                    // explicit branch above (glob, webFetch, webSearch,
+                    // write, edit, askUserQuestion, plan-mode, todoWrite,
+                    // killShell, bashOutput, agentOutputTool without a
+                    // description, unknown MCP tools, etc.). Without this
+                    // those tools would render as a bare "Completed" /
+                    // "Interrupted" — visually a blank one-line row that
+                    // breaks the height rhythm of the surrounding
+                    // messages and creates the "large blank area"
+                    // impression users reported.
+                    //
+                    // `inputPreview` already does a provider-agnostic
+                    // best-effort extraction (file_path → command →
+                    // pattern → query → url → first value), so even
+                    // unrecognised tools get a useful label here. Only
+                    // fall through to statusDisplay when preview is
+                    // empty (e.g. a task with no description and no
+                    // other input).
+                    let preview = tool.inputPreview
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !preview.isEmpty {
+                        Text(preview)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Text(tool.statusDisplay.text)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
 
                 Spacer()
@@ -936,7 +1158,7 @@ struct ToolCallView: View {
 
             // Result content (Edit always shows, others when expanded)
             // Edit tools bypass hasResult check - fallback in ToolResultContent renders from input params
-            if showContent && tool.status != .running && !tool.isSubagentContainer && (hasResult || tool.name == "Edit") {
+            if showContent && tool.status != .running && !tool.isSubagentContainer && (hasResult || tool.kind == .edit) {
                 ToolResultContent(tool: tool)
                     .padding(.leading, 12)
                     .padding(.top, 4)
@@ -944,7 +1166,7 @@ struct ToolCallView: View {
             }
 
             // Edit tools show diff from input even while running
-            if tool.name == "Edit" && tool.status == .running {
+            if tool.kind == .edit && tool.status == .running {
                 EditInputDiffView(input: tool.input)
                     .padding(.leading, 12)
                     .padding(.top, 4)
@@ -1166,7 +1388,11 @@ struct ThinkingView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 2)
+            // No extra vertical padding: when collapsed the HStack is a
+            // single short line, and the 10pt LazyVStack spacing already
+            // gives the row enough breathing room. Adding 2pt here made
+            // the gap between a collapsed thinking and the next tool row
+            // feel larger than the gap between two tool rows.
         }
     }
 }

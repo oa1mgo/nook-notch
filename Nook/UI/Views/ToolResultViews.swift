@@ -48,7 +48,7 @@ struct ToolResultContent: View {
             case .generic(let r):
                 GenericResultContent(result: r)
             }
-        } else if tool.name == "Edit" {
+        } else if tool.kind == .edit {
             // Special fallback for Edit - show diff from input params
             EditInputDiffView(input: tool.input)
         } else if let result = tool.result {

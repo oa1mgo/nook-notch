@@ -59,7 +59,7 @@ struct MarkdownText: View {
                 .foregroundColor(baseColor)
                 .font(.system(size: fontSize))
         } else {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(children.enumerated()), id: \.offset) { _, child in
                     BlockRenderer(markup: child, baseColor: baseColor, fontSize: fontSize)
                 }
@@ -116,10 +116,16 @@ private struct BlockRenderer: View {
 
     @ViewBuilder
     private func blockQuoteView(_ blockQuote: BlockQuote) -> some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Rectangle()
                 .fill(baseColor.opacity(0.4))
                 .frame(width: 2)
+                // Anchor the bar to the top so it does not center-stretch
+                // when the HStack is wider than the text. SwiftUI otherwise
+                // expands `Rectangle` to fill the available height of the
+                // parent VStack, producing a tall gray bar with the text
+                // squished in the middle (see ChatView blockquote render).
+                .frame(maxHeight: .infinity, alignment: .top)
 
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(blockQuote.children.enumerated()), id: \.offset) { _, child in
@@ -127,11 +133,16 @@ private struct BlockRenderer: View {
                         InlineRenderer(children: Array(para.inlineChildren), baseColor: baseColor.opacity(0.7), fontSize: fontSize)
                             .asText()
                             .italic()
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
         }
-        .padding(.vertical, 2)
+        // fixedSize(vertical: true) prevents the HStack from being
+        // stretched by the parent VStack's spacing/alignment. Without it,
+        // the gray bar expands to match the parent's vertical budget and
+        // creates large blank areas above and below the quote text.
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder

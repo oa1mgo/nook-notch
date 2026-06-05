@@ -336,7 +336,7 @@ struct InstanceRow: View {
     /// Whether the pending tool requires interactive input (not just approve/deny)
     private var isInteractiveTool: Bool {
         guard let toolName = session.pendingToolName else { return false }
-        return toolName == "AskUserQuestion"
+        return ToolCallItem.kind(of: toolName) == .askUserQuestion
     }
 
     /// Status text based on session phase (fallback when no other content)
@@ -539,9 +539,10 @@ struct InstanceRow: View {
         case .waitingForApproval:
             ProcessingSpinner(color: TerminalColors.amber)
         case .waitingForInput:
-            Circle()
-                .fill(TerminalColors.green)
-                .frame(width: 6, height: 6)
+            // Pixel speech bubble (12×12) — visually distinct from the
+            // 6×6 idle dot, matches the opencode ask_user_question /
+            // Claude Code "Ready for input" state semantically.
+            WaitingForInputIcon(size: 12)
         case .idle, .ended:
             Circle()
                 .fill(Color.white.opacity(0.2))
