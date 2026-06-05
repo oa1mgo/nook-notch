@@ -19,19 +19,27 @@ struct PermissionContext: Sendable {
     var formattedInput: String? {
         guard let input = toolInput else { return nil }
 
-        // For Bash, prioritize showing the command
-        if toolName == "Bash", let command = input["command"]?.value as? String {
-            return command.count > 100 ? String(command.prefix(100)) + "..." : command
-        }
-
-        // For Write/Edit, show the file path
-        if toolName == "Write" || toolName == "Edit", let path = input["file_path"]?.value as? String {
-            return URL(fileURLWithPath: path).lastPathComponent
-        }
-
-        // For Read, show the file path
-        if toolName == "Read", let path = input["file_path"]?.value as? String {
-            return URL(fileURLWithPath: path).lastPathComponent
+        // Switch on provider-agnostic kind — opencode emits lowercase
+        // tool names ("bash", "read", "edit", "write") while Claude
+        // emits PascalCase. A previous version used exact equality
+        // (`toolName == "Bash"`) which only matched Claude sessions,
+        // so opencode permission rows fell through to the generic
+        // fallback and didn't show the actual command / file path.
+        switch ToolCallItem.kind(of: toolName) {
+        case .bash:
+            if let command = input["command"]?.value as? String {
+                return command.count > 100 ? String(command.prefix(100)) + "..." : command
+            }
+        case .write, .edit:
+            if let path = input["file_path"]?.value as? String {
+                return URL(fileURLWithPath: path).lastPathComponent
+            }
+        case .read:
+            if let path = input["file_path"]?.value as? String {
+                return URL(fileURLWithPath: path).lastPathComponent
+            }
+        default:
+            break
         }
 
         // Default: show first string value found (skip description)

@@ -270,40 +270,61 @@ struct ToolStatusDisplay {
 
     /// Get running status text for a tool
     static func running(for toolName: String, input: [String: String]) -> ToolStatusDisplay {
-        switch toolName {
-        case "Read":
+        // Switch on provider-agnostic kind (opencode emits "bash" lowercase
+        // while Claude emits "Bash" PascalCase) so the running banner shows
+        // the actual command / pattern / url / etc. for both providers
+        // instead of falling through to a generic "Running...".
+        switch ToolCallItem.kind(of: toolName) {
+        case .read:
             return ToolStatusDisplay(text: "Reading...", isRunning: true)
-        case "Edit":
+        case .edit:
             return ToolStatusDisplay(text: "Editing...", isRunning: true)
-        case "Write":
+        case .write:
             return ToolStatusDisplay(text: "Writing...", isRunning: true)
-        case "Bash":
-            if let desc = input["description"], !desc.isEmpty {
+        case .bash:
+            // Tool input is provider-specific. Claude hooks put the command
+            // under "description"; the OpenCode hook adapter puts it under
+            // "command". For subagent bash tools (and any other source that
+            // passes a precomputed one-liner) the key is "summary". Check
+            // all three so the chat view shows the actual command (e.g.
+            // "git status && git diff HEAD --stat") rather than a generic
+            // "Running..." placeholder.
+            if let cmd = input["command"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !cmd.isEmpty {
+                let firstLine = cmd.components(separatedBy: "\n").first ?? cmd
+                return ToolStatusDisplay(text: String(firstLine.prefix(80)), isRunning: true)
+            }
+            if let desc = input["description"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !desc.isEmpty {
                 return ToolStatusDisplay(text: desc, isRunning: true)
             }
+            if let summary = input["summary"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !summary.isEmpty {
+                return ToolStatusDisplay(text: summary, isRunning: true)
+            }
             return ToolStatusDisplay(text: "Running...", isRunning: true)
-        case "Grep", "Glob":
+        case .grep, .glob:
             if let pattern = input["pattern"] {
                 return ToolStatusDisplay(text: "Searching: \(pattern)", isRunning: true)
             }
             return ToolStatusDisplay(text: "Searching...", isRunning: true)
-        case "WebSearch":
+        case .webSearch:
             if let query = input["query"] {
                 return ToolStatusDisplay(text: "Searching: \(query)", isRunning: true)
             }
             return ToolStatusDisplay(text: "Searching...", isRunning: true)
-        case "WebFetch":
+        case .webFetch:
             return ToolStatusDisplay(text: "Fetching...", isRunning: true)
-        case "Task", "Agent":
+        case .task:
             if let desc = input["description"], !desc.isEmpty {
                 return ToolStatusDisplay(text: desc, isRunning: true)
             }
             return ToolStatusDisplay(text: "Running agent...", isRunning: true)
-        case "TodoWrite":
+        case .todoWrite:
             return ToolStatusDisplay(text: "Updating todos...", isRunning: true)
-        case "EnterPlanMode":
+        case .enterPlanMode:
             return ToolStatusDisplay(text: "Entering plan mode...", isRunning: true)
-        case "ExitPlanMode":
+        case .exitPlanMode:
             return ToolStatusDisplay(text: "Exiting plan mode...", isRunning: true)
         default:
             return ToolStatusDisplay(text: "Running...", isRunning: true)

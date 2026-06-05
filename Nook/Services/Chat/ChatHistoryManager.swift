@@ -131,16 +131,38 @@ struct ToolCallItem: Equatable, Sendable {
     /// For Task tools: nested subagent tool calls
     var subagentTools: [SubagentToolCall]
 
+    // MARK: - Provider-agnostic tool kind
+    //
+    // The classification itself lives in `Models/ToolKind.swift` so it
+    // can be referenced from both Models (SessionPhase, ToolResultData)
+    // and Services without a reverse dependency. `name` is kept as the
+    // provider's original string (used for display and Equatable), but
+    // every behavior switch MUST route through `kind` (or `kind(of:)`)
+    // to avoid the case-sensitivity bug where opencode rows silently
+    // fall through to default / "Running...".
+    nonisolated var kind: ToolKind {
+        ToolKind.classify(name)
+    }
+
+    /// Static shim preserved for call sites that don't have a
+    /// `ToolCallItem` in hand (e.g. matching a `HookEvent.tool`
+    /// string). Prefer `ToolKind.classify` directly in new code.
+    nonisolated static func kind(of name: String?) -> ToolKind {
+        ToolKind.classify(name)
+    }
+
     /// Whether this tool is the subagent-container tool. "Task" is the
-    /// legacy name; Claude Code now uses "Agent".
+    /// legacy name; Claude Code now uses "Agent"; opencode uses "task".
     nonisolated var isSubagentContainer: Bool {
         Self.isSubagentContainerName(name)
     }
 
     /// Same check by raw tool-name string (used when we don't have a
     /// ToolCallItem — e.g. when matching against `HookEvent.tool`).
+    /// Case-insensitive — opencode emits "task" lowercase.
     nonisolated static func isSubagentContainerName(_ name: String?) -> Bool {
-        name == "Task" || name == "Agent"
+        guard let n = name?.lowercased() else { return false }
+        return n == "task" || n == "agent"
     }
 
     /// Preview text for the tool (input-based)
@@ -193,6 +215,10 @@ struct ToolCallItem: Equatable, Sendable {
     }
 }
 
+/// Provider-agnostic classification of a tool name now lives in
+/// `Models/ToolKind.swift`. Refer to it via `ToolCallItem.kind` or
+/// `ToolKind.classify(...)` directly.
+
 enum ToolStatus: Sendable, CustomStringConvertible {
     case running
     case waitingForApproval
@@ -237,23 +263,28 @@ struct SubagentToolCall: Equatable, Identifiable, Sendable {
 
     /// Short description for display
     var displayText: String {
-        switch name {
-        case "Read":
+        // Provider-agnostic — opencode emits lowercase ("bash", "read",
+        // "edit", "write", "grep", "glob", "webfetch", "websearch") while
+        // Claude emits PascalCase. Switch on kind so both providers show
+        // the actual file path / command / pattern / url / etc. instead
+        // of falling through to the raw tool name.
+        switch ToolCallItem.kind(of: name) {
+        case .read:
             if let path = input["file_path"] {
                 return URL(fileURLWithPath: path).lastPathComponent
             }
             return "Reading..."
-        case "Grep":
+        case .grep:
             if let pattern = input["pattern"] {
                 return "grep: \(pattern)"
             }
             return "Searching..."
-        case "Glob":
+        case .glob:
             if let pattern = input["pattern"] {
                 return "glob: \(pattern)"
             }
             return "Finding files..."
-        case "Bash":
+        case .bash:
             if let desc = input["description"] {
                 return desc
             }
@@ -262,22 +293,22 @@ struct SubagentToolCall: Equatable, Identifiable, Sendable {
                 return String(firstLine.prefix(40))
             }
             return "Running command..."
-        case "Edit":
+        case .edit:
             if let path = input["file_path"] {
                 return "Edit: \(URL(fileURLWithPath: path).lastPathComponent)"
             }
             return "Editing..."
-        case "Write":
+        case .write:
             if let path = input["file_path"] {
                 return "Write: \(URL(fileURLWithPath: path).lastPathComponent)"
             }
             return "Writing..."
-        case "WebFetch":
+        case .webFetch:
             if let url = input["url"] {
                 return "Fetching: \(url.prefix(30))..."
             }
             return "Fetching..."
-        case "WebSearch":
+        case .webSearch:
             if let query = input["query"] {
                 return "Search: \(query.prefix(30))"
             }

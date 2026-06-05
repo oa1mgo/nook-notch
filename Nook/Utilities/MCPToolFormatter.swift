@@ -23,6 +23,8 @@ struct MCPToolFormatter {
         "EnterPlanMode": "Plan",
         "ExitPlanMode": "Plan",
         "SlashCommand": "Command",
+        "task": "Agent",
+        "skill": "Skill",
     ]
 
     /// Checks if tool name is in MCP format (e.g., "mcp__deepwiki__ask_question")
