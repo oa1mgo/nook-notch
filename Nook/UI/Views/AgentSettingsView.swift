@@ -11,6 +11,7 @@ struct AgentSettingsView: View {
     @State private var claudeHooksInstalled = false
     @State private var codexHooksInstalled = false
     @State private var opencodeHooksInstalled = false
+    @State private var debugLogOn: Bool = AppSettings.debugLogEnabled
     @State private var didAppear = false
 
     private var claudeInstalled: Bool { AgentPathsResolver.isInstalled(.claude) }
@@ -25,6 +26,8 @@ struct AgentSettingsView: View {
                 ForEach(SessionProvider.allCases, id: \.self) { provider in
                     agentSection(provider)
                 }
+                Divider().background(separatorColor).padding(.vertical, 4)
+                debugLogSection
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 8)
@@ -272,6 +275,62 @@ struct AgentSettingsView: View {
             .padding(.vertical, 6)
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - Debug Log Section
+
+    /// Diagnostic toggle: when enabled, internal log output is mirrored
+    /// to `/tmp/nook-debug.log` (10 MB rolling, recreated on launch).
+    /// Off by default because the file grows during normal use and is
+    /// only useful when reproducing a specific bug.
+    private var debugLogSection: some View {
+        Button {
+            withAnimation {
+                debugLogOn.toggle()
+                AppSettings.debugLogEnabled = debugLogOn
+                if debugLogOn {
+                    DebugLog.shared.enable()
+                    DebugLog.shared.write("debug log enabled from settings UI")
+                } else {
+                    DebugLog.shared.write("debug log disabled from settings UI")
+                    DebugLog.shared.disable()
+                }
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "ladybug")
+                    .font(.system(size: 12))
+                    .foregroundColor(primaryTextColor.opacity(0.82))
+                    .frame(width: 16)
+
+                Text("Debug log")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(primaryTextColor.opacity(0.82))
+
+                Spacer()
+
+                Text("/tmp/nook-debug.log")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(secondaryTextColor)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Circle()
+                    .fill(debugLogOn ? TerminalColors.green : Color.white.opacity(0.3))
+                    .frame(width: 6, height: 6)
+                Text(debugLogOn ? "On" : "Off")
+                    .font(.system(size: 11))
+                    .foregroundColor(secondaryTextColor)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.white.opacity(0.03))
+            )
+        }
+        .buttonStyle(.plain)
+        .help("Mirror internal log output to /tmp/nook-debug.log (10 MB, rotated). Restart the app to clear the file.")
     }
 
     // MARK: - Actions

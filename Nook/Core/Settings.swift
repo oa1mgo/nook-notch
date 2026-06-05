@@ -48,6 +48,7 @@ enum AppSettings {
         nonisolated static let claudeHooksEnabled = "claudeHooksEnabled"
         nonisolated static let codexHooksEnabled = "codexHooksEnabled"
         nonisolated static let opencodeHooksEnabled = "opencodeHooksEnabled"
+        nonisolated static let debugLogEnabled = "debugLogEnabled"
     }
 
     nonisolated static func registerDefaults() {
@@ -58,6 +59,7 @@ enum AppSettings {
             Keys.claudeHooksEnabled: true,
             Keys.codexHooksEnabled: true,
             Keys.opencodeHooksEnabled: false,
+            Keys.debugLogEnabled: false,
         ])
     }
 
@@ -145,5 +147,14 @@ enum AppSettings {
     nonisolated static var opencodeHooksEnabled: Bool {
         get { defaults.bool(forKey: Keys.opencodeHooksEnabled) }
         set { defaults.set(newValue, forKey: Keys.opencodeHooksEnabled) }
+    }
+
+    /// When true, internal log output is mirrored to
+    /// `/tmp/nook-debug.log` (single 10 MB rolling file, recreated
+    /// on every app launch). Default off; intended as a
+    /// diagnostic toggle for hook/socket issues.
+    nonisolated static var debugLogEnabled: Bool {
+        get { defaults.bool(forKey: Keys.debugLogEnabled) }
+        set { defaults.set(newValue, forKey: Keys.debugLogEnabled) }
     }
 }

@@ -2,6 +2,7 @@ import AppKit
 import IOKit
 import Mixpanel
 import SwiftUI
+import os.log
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowManager: WindowManager?
@@ -29,6 +30,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         AppSettings.registerDefaults()
+
+        // Start the on-disk debug log mirror as early as possible so
+        // that startup-time diagnostics (hook installer, socket bind)
+        // are captured. The file is recreated on every launch.
+        if AppSettings.debugLogEnabled {
+            DebugLog.shared.enable()
+            DebugLog.shared.log(
+                Logger(subsystem: "com.celestial.Nook", category: "App"),
+                level: .default,
+                "app launched, debug log enabled → \(DebugLog.fileURL.path)"
+            )
+        }
 
         Mixpanel.initialize(token: "49814c1436104ed108f3fc4735228496")
 
