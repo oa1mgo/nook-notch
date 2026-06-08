@@ -81,20 +81,6 @@ struct ChatView: View {
                 // Header
                 chatHeader
 
-                // Top status banner (waitingForInput — the agent asked
-                // the user a question and is waiting for an answer in
-                // the terminal). Suppressed while the approval bar is
-                // showing so we never double up on banners.
-                if session.phase == .waitingForInput && approvalTool == nil {
-                    waitingForInputBanner
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 6)
-                        .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .move(edge: .top)),
-                            removal: .opacity
-                        ))
-                }
-
                 // Messages
                 if isLoading {
                     loadingState
@@ -104,10 +90,27 @@ struct ChatView: View {
                     messageList
                 }
 
-                // Approval bar, interactive prompt, or Input bar
-                if let tool = approvalTool {
+                // Bottom bar — provider-agnostic precedence:
+                //   1. .waitingForInput  → opencode ask_user_question
+                //   2. .waitingForApproval with AskUserQuestion → Claude's
+                //      interactive tool prompt
+                //   3. .waitingForApproval with any other tool → permission
+                //      approve/deny bar
+                //   4. else → regular input bar
+                // Unifying cases 1 and 2 onto the same `interactivePromptBar`
+                // so the user sees one consistent "click to focus the
+                // terminal" UX across providers. The top banner that used
+                // to live above the message list for opencode case 1 is
+                // removed in favour of the bottom bar (which sits right
+                // next to the input and is harder to miss).
+                if session.phase == .waitingForInput {
+                    interactivePromptBar
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
+                } else if let tool = approvalTool {
                     if ToolCallItem.kind(of: tool) == .askUserQuestion {
-                        // Interactive tools - show prompt to answer in terminal
                         interactivePromptBar
                             .transition(.asymmetric(
                                 insertion: .opacity.combined(with: .move(edge: .bottom)),
@@ -300,44 +303,6 @@ struct ChatView: View {
     /// Whether the session is currently processing
     private var isProcessing: Bool {
         session.phase == .processing || session.phase == .compacting
-    }
-
-    /// Banner shown at the top of the chat area when the session is in
-    /// `.waitingForInput` state — i.e. the agent has shown an
-    /// `AskUserQuestion` / opencode `ask_user_question` dialog and is
-    /// waiting for the user to pick an option in the terminal.
-    ///
-    /// This is purely informational. The actual answer still has to be
-    /// typed into the terminal (or the Claude TUI / opencode TUI). The
-    /// banner exists to make sure the user notices the dialog is open
-    /// even when the notch is collapsed or the chat is scrolled away.
-    private var waitingForInputBanner: some View {
-        HStack(spacing: 10) {
-            WaitingForInputIcon(size: 14)
-                .frame(width: 18, height: 18)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Ready for input")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(primaryTextColor.opacity(0.92))
-                Text("Answer the question in the terminal to continue.")
-                    .font(.system(size: 11))
-                    .foregroundColor(secondaryTextColor)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 4)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(TerminalColors.green.opacity(0.10))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(TerminalColors.green.opacity(0.35), lineWidth: 1)
-        )
     }
 
     /// Get the last user message ID for stable text selection per turn
@@ -628,6 +593,7 @@ struct ChatView: View {
         ChatInteractivePromptBar(
             provider: session.provider,
             isInTmux: session.isInTmux,
+            canFocusTerminal: session.isInTmux || session.pid != nil,
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
             onGoToTerminal: { focusTerminal() }
@@ -653,12 +619,59 @@ struct ChatView: View {
 
     private func focusTerminal() {
         Task {
-            if let pid = session.pid {
-                _ = await YabaiController.shared.focusWindow(forClaudePid: pid)
-            } else {
+            // tmux path (Claude's default): the Yabai controller walks
+            // `client_pid → terminal` via tmux's own `list-clients` and
+            // focuses the right pane. Skipped silently if yabai isn't
+            // installed.
+            if session.isInTmux, let pid = session.pid {
+                if await YabaiController.shared.focusWindow(forClaudePid: pid) {
+                    return
+                }
                 _ = await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd)
+                return
+            }
+            // Non-tmux fallback (e.g. opencode running directly in Ghostty).
+            // Yabai focuses whole windows by PID; for a non-tmux shell we
+            // don't have a window handle, only the shell's PID. Walk the
+            // process tree up to the terminal app's PID and activate it
+            // via NSWorkspace — `activate(ignoringOtherApps:)` brings the
+            // terminal to the front so the user can interact with the
+            // opencode question popup.
+            if let pid = session.pid {
+                let activated = await focusTerminalApp(forChildPid: Int(pid))
+                if !activated {
+                    DebugLog.shared.write("[focus] non-tmux focus failed: could not find terminal app for pid=\(pid)")
+                }
             }
         }
+    }
+
+    /// Walk up the process tree from `childPid` until we hit a known
+    /// terminal app process, then activate that app. Returns true if a
+    /// terminal app was found and activated.
+    private func focusTerminalApp(forChildPid childPid: Int) async -> Bool {
+        let tree = ProcessTreeBuilder.shared.buildTree()
+        guard let terminalPid = ProcessTreeBuilder.shared.findTerminalPid(
+            forProcess: childPid, tree: tree
+        ) else {
+            return false
+        }
+        // NSRunningApplication is the only API that gives us `activate`
+        // and survives app-sandbox quirks for already-running processes.
+        // `processIdentifier` matches the PID we just looked up. Note:
+        // `.activateIgnoringOtherApps` is deprecated in macOS 14 (no-op),
+        // so we call `activate()` plain — on macOS 14+ that's enough to
+        // surface the terminal window.
+        guard let app = NSRunningApplication(processIdentifier: pid_t(terminalPid)),
+              let bundleId = app.bundleIdentifier,
+              TerminalAppRegistry.isTerminalBundle(bundleId) else {
+            // Process found but isn't a known terminal app (e.g. parent
+            // is `login` or some other intermediary). Fall through.
+            return false
+        }
+        let activated = app.activate()
+        DebugLog.shared.write("[focus] activated terminal app pid=\(terminalPid) bundleId=\(bundleId) success=\(activated)")
+        return activated
     }
 
     private func approvePermission() {
@@ -1416,6 +1429,13 @@ struct InterruptedMessageView: View {
 struct ChatInteractivePromptBar: View {
     let provider: SessionProvider
     let isInTmux: Bool
+    /// True when the Terminal button click can do something useful.
+    /// Tighter than `isInTmux` alone — also true for non-tmux sessions
+    /// where we have a `session.pid` we can walk up to a terminal app
+    /// (opencode running directly in Ghostty, etc.). Drives both the
+    /// button action and the visual style — we don't want the button
+    /// to look clickable but do nothing, or unclickable but do something.
+    let canFocusTerminal: Bool
     let primaryTextColor: Color
     let secondaryTextColor: Color
     let onGoToTerminal: () -> Void
@@ -1430,19 +1450,38 @@ struct ChatInteractivePromptBar: View {
                 Text(MCPToolFormatter.formatToolName("AskUserQuestion"))
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(TerminalColors.amber)
-                Text(provider == .codex ? "Codex needs your input" : "Claude Code needs your input")
+                Text(providerSubtitle)
                     .font(.system(size: 11))
                     .foregroundColor(secondaryTextColor)
                     .lineLimit(1)
+                if !canFocusTerminal {
+                    Text(hintSubtitle)
+                        .font(.system(size: 10))
+                        .foregroundColor(secondaryTextColor.opacity(0.7))
+                        .lineLimit(1)
+                }
             }
             .opacity(showContent ? 1 : 0)
             .offset(x: showContent ? 0 : -10)
 
             Spacer()
 
-            // Terminal button on right (similar to Allow button)
+            // Terminal button on right (similar to Allow button).
+            //
+            // Visual style and click both follow `canFocusTerminal` rather
+            // than `isInTmux` alone — non-tmux sessions can still have the
+            // click do something useful (focus the terminal app via
+            // NSWorkspace) and we don't want the button to look broken when
+            // the user IS in a session we can focus.
+            //
+            // When `canFocusTerminal` is false, the button is still rendered
+            // (for layout consistency with the in-tmux path) but clicking
+            // is a no-op and a `.help()` tooltip explains the workaround
+            // (start the agent inside tmux). The `interactivePromptSubtitle`
+            // on the left also gains a hint line in that case so the user
+            // sees the explanation without having to hover.
             Button {
-                if isInTmux {
+                if canFocusTerminal {
                     onGoToTerminal()
                 }
             } label: {
@@ -1452,13 +1491,16 @@ struct ChatInteractivePromptBar: View {
                     Text("Terminal")
                         .font(.system(size: 13, weight: .medium))
                 }
-                .foregroundColor(isInTmux ? Color.black.opacity(0.88) : secondaryTextColor)
+                .foregroundColor(canFocusTerminal ? Color.black.opacity(0.88) : secondaryTextColor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(isInTmux ? primaryTextColor.opacity(0.92) : secondaryTextColor.opacity(0.16))
+                .background(canFocusTerminal ? primaryTextColor.opacity(0.92) : secondaryTextColor.opacity(0.16))
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
+            .help(canFocusTerminal
+                  ? "Focus the terminal window running \(providerName)"
+                  : "Start \(providerName) inside tmux to focus the terminal from here")
             .opacity(showButton ? 1 : 0)
             .scaleEffect(showButton ? 1 : 0.8)
         }
@@ -1473,6 +1515,37 @@ struct ChatInteractivePromptBar: View {
                 showButton = true
             }
         }
+    }
+
+    /// Provider-aware subtitle. Mirrors `ChatView.interactivePromptSubtitle`
+    /// (lines 397-406) — kept in sync by a comment; consider extracting to a
+    /// shared helper if a third caller appears.
+    private var providerSubtitle: String {
+        switch provider {
+        case .claude: return "Claude Code needs your input"
+        case .codex: return "Codex needs your input"
+        case .opencode: return "OpenCode needs your input"
+        }
+    }
+
+    /// Short agent name used in tooltips ("Focus the terminal window
+    /// running <X>"). Distinct from `providerSubtitle` so the hint copy
+    /// stays terse and free of marketing words like "Code".
+    private var providerName: String {
+        switch provider {
+        case .claude: return "Claude Code"
+        case .codex: return "Codex"
+        case .opencode: return "OpenCode"
+        }
+    }
+
+    /// Shown under the provider subtitle when the Terminal button can't
+    /// focus. Tells the user exactly how to unblock the click — start the
+    /// agent in tmux. We don't try to explain WHY here (the visual story
+    /// is that this pill is dimmed and the tooltip repeats the same
+    /// message); this is the "what to do" half of the hint.
+    private var hintSubtitle: String {
+        "Start \(providerName) in tmux to focus terminal"
     }
 }
 
