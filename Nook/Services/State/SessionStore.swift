@@ -1083,14 +1083,41 @@ actor SessionStore {
     private func processSubagentToolExecuted(sessionId: String, tool: SubagentToolCall) {
         guard var session = sessions[sessionId] else { return }
         session.subagentState.addSubagentTool(tool)
+        // Sync to chatItems so the UI updates live (rather than only after
+        // the parent subagent stops). Mirrors processSubagentTracking
+        // (Claude hooks path) at line 1025 — without this, opencode
+        // subagent tools sit in subagentState and never make it to the
+        // chatItem's subagentTools array, so the UI shows the task row
+        // without the expand list. See #74.
+        syncSubagentToolsToChatItems(session: &session)
         sessions[sessionId] = session
+        // DIAGNOSTIC (#74): confirm subagent tool flowed state → chatItem.
+        // stateCount = total subagent tools in the active task context.
+        // maxChatItemCount = max subagentTools count across all task chatItems
+        // (lets us verify the sync actually wrote to the right chatItem).
+        let stateCount = session.subagentState.activeTasks.values
+            .flatMap { $0.subagentTools }
+            .filter { $0.id == tool.id }
+            .count
+        let maxChatItemCount = session.chatItems.compactMap { item -> Int? in
+            if case .toolCall(let t) = item.type { return t.subagentTools.count }
+            return nil
+        }.max() ?? -1
+        DebugLog.shared.write("[session-store] subagent tool executed session=\(sessionId) toolId=\(tool.id) name=\(tool.name) stateCount=\(stateCount) maxChatItemCount=\(maxChatItemCount)")
     }
 
     /// Handle subagent tool completed event
     private func processSubagentToolCompleted(sessionId: String, toolId: String, status: ToolStatus) {
         guard var session = sessions[sessionId] else { return }
         session.subagentState.updateSubagentToolStatus(toolId: toolId, status: status)
+        // Sync the status update to chatItems. See #74.
+        syncSubagentToolsToChatItems(session: &session)
         sessions[sessionId] = session
+        // DIAGNOSTIC (#74): confirm subagent tool status flowed state → chatItem
+        let stateStatus = session.subagentState.activeTasks.values
+            .flatMap { $0.subagentTools }
+            .first(where: { $0.id == toolId })?.status.description ?? "?"
+        DebugLog.shared.write("[session-store] subagent tool completed session=\(sessionId) toolId=\(toolId) stateStatus=\(stateStatus)")
     }
 
     /// Handle subagent stopped event
