@@ -99,6 +99,26 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     private static var messageSession: [String: String] = [:]
     /// messageIDs whose assistant text has already been emitted as .assistantText
     private static var emittedTextMessages: Set<String> = []
+    /// messageIDs that were already consumed as user text via latestUserMsgID.
+    /// Prevents a second `message.part.updated(type=text)` with the same
+    /// messageID from falling through to the assistant text buffer.
+    private static var consumedUserMessageIDs: Set<String> = []
+    /// sessionID → the most recently consumed user prompt text. Used by
+    /// `handleTextPart`'s trailing-echo detection (#71/#78): if a reasoning
+    /// messageID receives a text part whose content matches the user prompt,
+    /// it's the trailing-echo pattern (opencode re-emits the user prompt on
+    /// the reasoning messageID after stop). Otherwise it's a legitimate
+    /// post-reasoning assistant text and must be flushed normally.
+    private static var consumedUserPromptBySession: [String: String] = [:]
+    /// DIAGNOSTIC (#79): count of events that landed in the top-level
+    /// per-session handlers for a given session BEFORE `session.created`
+    /// registered it as a subagent. If non-zero at child-registration time,
+    /// those events reached the parent as if they were parent output —
+    /// confirming the race-condition hypothesis (child message.part events
+    /// arriving before session.created populates `subagentToParent`). The
+    /// counter increments on every event whose sessionId isn't yet in
+    /// `subagentToParent`; cleared when the session is registered.
+    private static var preRegistrationEventCount: [String: Int] = [:]
     /// messageIDs whose assistant text should NEVER be emitted — these are
     /// the opencode `question` tool's parent messages. The question text is
     /// the prompt the user already sees in the opencode TUI when answering,
@@ -123,6 +143,15 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     /// `handleReasoningPart`, or at flush time as a fallback). Prevents the
     /// duplicate-thinking bug where stop-time flushes re-emit the same content.
     private static var emittedReasoningMessages: Set<String> = []
+    /// messageIDs whose reasoning part has been finalized (i.e. the final
+    /// `message.part.updated type=reasoning text=…` event has fired and the
+    /// .assistantThinking emit has happened). After this, any subsequent
+    /// `message.part.delta field=text` for the same messageID is a TEXT delta
+    /// for the assistant response that follows the reasoning — NOT a
+    /// reasoning delta. opencode v1.15.13 streams reasoning first, then text
+    /// on the same messageID; both deltas carry `field=text` so we need this
+    /// state to route them correctly. See #73 in the task list.
+    private static var reasoningFinalizedMessageIds: Set<String> = []
     /// callIDs whose preTool has already been emitted (opencode fires
     /// status=running 2–3 times per tool; only the first should create a chat item).
     private static var runningToolCallIds: Set<String> = []
@@ -195,7 +224,28 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // translation is done in `adaptSubagentEvent` and via direct
         // subagent-tool translation in `handleToolPart`.
         if let parentID = lookupParent(for: sessionId), parentID != sessionId {
+            // DIAGNOSTIC (#79): confirm the routing actually catches this
+            // subagent event. If a session's events are appearing as
+            // top-level chatItems despite `subagentToParent` being populated,
+            // this HIT log will be missing for those events — pointing at
+            // either a routing miss (event arrives before session.created
+            // registers the child) or a hit that's emitting wrong content.
+            Self.logNotice("→ subagent routing HIT session=\(sessionId) parent=\(parentID) envelopeType=\(envelope.type)")
             return adaptSubagentEvent(envelope: envelope, props: props, childId: sessionId, parentId: parentID)
+        }
+
+        // DIAGNOSTIC (#79): events whose sessionId isn't yet in
+        // `subagentToParent` fall through to the per-session handlers below.
+        // For sessions that turn out to be subagents (registered later via
+        // session.created), this counter records how many events leaked
+        // through before the routing was set up. A non-zero count at child
+        // registration time would confirm the race-condition hypothesis.
+        // Don't count session.created/session.updated themselves — those are
+        // what eventually populate the mapping.
+        if envelope.type != "session.created" && envelope.type != "session.updated" {
+            lock.lock()
+            preRegistrationEventCount[sessionId, default: 0] += 1
+            lock.unlock()
         }
 
         switch envelope.type {
@@ -333,7 +383,20 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // `preTool(tool=task)` can find the right child. The most recent
             // unscheduled child "wins" if multiple spawn in flight.
             parentAwaitingTask[parentID] = sessionId
+            // DIAGNOSTIC (#79): if any events for this session landed in the
+            // top-level handlers before session.created arrived, they were
+            // treated as parent output (text → .assistant, reasoning →
+            // .thinking). A non-zero count here is the smoking gun for the
+            // race-condition hypothesis (child message.part events arriving
+            // before session.created populates `subagentToParent`). When
+            // investigating #79, search the log for this ⚠ line and check
+            // the parent session's chatItems around the child's first
+            // messageID.
+            let preRegCount = preRegistrationEventCount.removeValue(forKey: sessionId) ?? 0
             lock.unlock()
+            if preRegCount > 0 {
+                Self.logNotice("⚠ DIAG #79 child registered with PRE-REGISTRATION EVENTS child=\(sessionId) parent=\(parentID) preRegCount=\(preRegCount) — events leaked to parent chatItems")
+            }
             Self.logNotice("→ subagent child registered session=\(sessionId) parent=\(parentID) cwd=\(cwd) firstSighting=\(isFirstSighting)")
             // Do NOT emit .sessionStart for the child — that would create a
             // standalone SessionState and surface it in ClaudeInstancesView.
@@ -455,6 +518,10 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             let buffered = pendingTextByMessage.removeValue(forKey: messageId) ?? ""
             lock.unlock()
             if !buffered.isEmpty {
+                // Capture for echo-detection in handleTextPart (#78).
+                lock.lock()
+                consumedUserPromptBySession[sessionId] = buffered
+                lock.unlock()
                 log.notice("→ userPromptSubmit (from buffer) session=\(sessionId) messageID=\(messageId) textChars=\(buffered.count)")
                 return [.userPromptSubmit(sessionId: sessionId, cwd: cwd, prompt: buffered)]
             }
@@ -502,6 +569,26 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // returns [] for the empty-text case but still does the work
             // for the final-text case (full reasoning emit).
             let messageId = part["messageID"] as? String ?? ""
+            let text = part["text"] as? String ?? ""
+            // DIAGNOSTIC (#82): log every reasoning part arrival so we can
+            // distinguish "opencode cleanup()'s updatePart never reached us"
+            // (transport/bridge issue) from "updatePart reached us but our
+            // handler dropped it" (handler issue). Without this log, a
+            // missing `assistantThinking (final)` for a given messageID is
+            // ambiguous between the two — we only know the emit didn't
+            // happen, not whether the source event did or didn't arrive.
+            //
+            // TODO(#82): keep this log until Bug J's opencode-side root
+            // cause is fully understood AND a regression test in
+            // OpencodeHookAdapter prevents silent drops. The log is
+            // cheap (1 line per reasoning part, no I/O cost beyond the
+            // existing logNotice) and was the only way to confirm
+            // plugin-side vs opencode-side responsibility in this round
+            // of investigation. Future Bug-J-like symptoms: grep this
+            // log for the missing messageID — if it's absent, the
+            // event never reached us; if it's present with textChars=0
+            // only, the opencode cleanup() didn't fire updatePart.
+            Self.logNotice("→ part arrived type=reasoning session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
             if !messageId.isEmpty {
                 markReasoningMessageId(messageId, sessionId: sessionId)
             }
@@ -539,8 +626,18 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // what `field` says. `knownReasoningMessageIds` is the routing-only
         // set (distinct from `emittedReasoningMessages` which tracks actual
         // emit history for dedup at flush time).
+        //
+        // EXCEPTION (#73): once the reasoning part is FINALIZED (the final
+        // `message.part.updated type=reasoning text=…` event has fired and
+        // `handleReasoningPart` has emitted the .assistantThinking event), any
+        // further deltas on the same messageID are TEXT deltas for the
+        // assistant response that follows the reasoning — not more reasoning.
+        // opencode streams reasoning first, then the actual response, both on
+        // the same messageID. Without this carve-out, the final assistant text
+        // gets misrouted to the reasoning buffer and dropped.
+        let isReasoningFinalized = reasoningFinalizedMessageIds.contains(messageId)
         let isKnownReasoning = knownReasoningMessageIds.contains(messageId)
-        if isKnownReasoning || field == "reasoning" {
+        if !isReasoningFinalized && (isKnownReasoning || field == "reasoning") {
             pendingReasoningByMessage[messageId, default: ""] += delta
         } else {
             pendingTextByMessage[messageId, default: ""] += delta
@@ -564,14 +661,64 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         if pendingMsgID == messageId, !text.isEmpty {
             lock.lock()
             latestUserMsgID.removeValue(forKey: sessionId)
+            consumedUserMessageIDs.insert(messageId)
+            // Capture for echo-detection in handleTextPart's trailing-echo
+            // carve-out (#78): the reasoning messageID sometimes receives a
+            // trailing text part that echoes the user prompt. Store the
+            // canonical prompt text here so the carve-out can compare against
+            // it later.
+            consumedUserPromptBySession[sessionId] = text
             lock.unlock()
             Self.logNotice("→ userPromptSubmit (text part matched) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
             return [.userPromptSubmit(sessionId: sessionId, cwd: cwd, prompt: text)]
         }
 
+        // Skip if this messageID was already consumed as a user message.
+        // opencode sometimes emits a second `message.part.updated(type=text)`
+        // on the same messageID after the first was already consumed above.
+        // Without this guard the text falls through to the assistant buffer.
+        lock.lock()
+        let wasConsumedUserMsg = consumedUserMessageIDs.contains(messageId)
+        lock.unlock()
+        if wasConsumedUserMsg {
+            Self.logNotice("→ text part skipped (already consumed as user) session=\(sessionId) messageID=\(messageId)")
+            return []
+        }
+
         // Assistant text — seed the buffer with any non-empty initial text.
         // In v1.15.13 the initial part is empty and content arrives via deltas.
         // In v1.15.12 the full text is in this event and deltas don't fire.
+        //
+        // opencode v1.15.13 sometimes emits a trailing `message.part.updated
+        // type=text` on the SAME messageID that already carried a reasoning
+        // part. That trailing text typically echoes the user prompt and must
+        // be dropped (the safety-net duplicate-thinking bug the user
+        // reported, where the 3.1s thinking was re-displayed as a
+        // bullet-point assistantText after the turn ended).
+        //
+        // #78: the previous carve-out used `bufferAlreadySeeded` (delta
+        // count) as the trigger, which over-suppressed legitimate post-
+        // reasoning text when opencode v1.15.13 emitted final-text without
+        // streaming deltas. Replace with content-based echo detection:
+        // compare the candidate text against the most recently consumed
+        // user prompt for this session. Match → echo (drop). No match →
+        // legitimate text (write to buffer).
+        lock.lock()
+        let isReasoningMessage = knownReasoningMessageIds.contains(messageId)
+            || emittedReasoningMessages.contains(messageId)
+        let promptChars: Int = consumedUserPromptBySession[sessionId]?.count ?? 0
+        let echoesUserPrompt: Bool = {
+            guard let prompt = consumedUserPromptBySession[sessionId] else { return false }
+            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let p = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !p.isEmpty, !t.isEmpty else { return false }
+            return t == p || p.contains(t) || t.contains(p)
+        }()
+        lock.unlock()
+        if isReasoningMessage && echoesUserPrompt {
+            Self.logNotice("→ text part suppressed (trailing-echo of user prompt) session=\(sessionId) messageID=\(messageId) textChars=\(text.count) promptChars=\(promptChars)")
+            return []
+        }
         if !text.isEmpty {
             lock.lock()
             pendingTextByMessage[messageId] = text
@@ -616,6 +763,14 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         if !alreadyEmitted {
             emittedReasoningMessages.insert(messageId)
         }
+        // The reasoning part is now finalized — any subsequent deltas for the
+        // same messageID are TEXT deltas (opencode streams reasoning first,
+        // then the assistant text response, both on the same messageID and
+        // both with `field=text`). Mark this so `handlePartDelta` routes
+        // them to `pendingTextByMessage` instead of `pendingReasoningByMessage`.
+        // See #73 in the task list — without this, the final assistant text
+        // gets misrouted to the reasoning buffer and is dropped.
+        reasoningFinalizedMessageIds.insert(messageId)
         lock.unlock()
 
         if alreadyEmitted { return [] }
@@ -667,6 +822,11 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         let callId = part["callID"] as? String
         let input = state["input"] as? [String: Any]
         let inputSummary = Self.buildInputSummary(toolName: toolName, input: input)
+        // ToolStateCompleted always carries `output`; ToolStateError carries
+        // `error` instead (see opencode/src/session/message-v2.ts:300-333).
+        // Read both so we can show the user a result body on real throws.
+        let output = state["output"] as? String
+        let error = state["error"] as? String
 
         // Task tool on the parent side — this is the bridge between a parent
         // session and the child subagent session it just spawned. At this
@@ -697,11 +857,15 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 // is done. Emit both subagentStopped (so subagentState can
                 // stop tracking) and postTool (so the visible task chatItem
                 // transitions from running → success and gets the final result).
+                // Note: even on the task container we pass output through;
+                // SessionStore gates the result-stamping on toolKind != .task
+                // so the container is not affected.
                 return [
                     .subagentStopped(sessionId: sessionId, taskToolId: callId),
                     .postTool(
                         sessionId: sessionId, cwd: cwd,
-                        toolName: toolName, toolUseId: callId, inputSummary: inputSummary
+                        toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
+                        output: output, error: error
                     )
                 ]
             }
@@ -731,7 +895,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                     return []
                 }
                 runningToolCallIds.remove(callId)
-                log.notice("→ postTool session=\(sessionId) callID=\(callId) tool=\(toolName)")
+                log.notice("→ postTool session=\(sessionId) callID=\(callId) tool=\(toolName) outputLen=\(output?.count ?? 0) errorLen=\(error?.count ?? 0)")
             default:
                 return []
             }
@@ -748,7 +912,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         case "completed":
             return [.postTool(
                 sessionId: sessionId, cwd: cwd,
-                toolName: toolName, toolUseId: callId, inputSummary: inputSummary
+                toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
+                output: output, error: error
             )]
         default:
             return []
@@ -899,6 +1064,19 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.lock()
             let reasoning = pendingReasoningByMessage.removeValue(forKey: messageId) ?? ""
             let reasoningEmitted = emittedReasoningMessages.contains(messageId)
+            // See #75: if the reasoning for this messageID was already
+            // emitted in a *previous* turn, then this messageID is stale
+            // (the parent turn ended in a tool call or finish=stop that
+            // didn't fire a text-final on this ID). Any leftover text in
+            // the buffer is from the previous turn and must not be
+            // re-emitted on the current turn's safety net — that would
+            // surface as a duplicate assistantText wedged between the new
+            // user prompt and the new assistant reply. The reasoning is
+            // already in the chat as a thinking block, so dropping the
+            // text is the right move. The bookkeeping bookkeeping below
+            // marks the messageID as handled so a duplicate flush can't
+            // re-evaluate.
+            let textStaleFromPriorTurn = reasoningEmitted
             if !reasoning.isEmpty && !reasoningEmitted {
                 emittedReasoningMessages.insert(messageId)
             }
@@ -919,11 +1097,12 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 Self.logNotice("→ assistantThinking (safety net) session=\(sessionId) messageID=\(messageId) textChars=\(reasoning.count)")
                 events.append(.assistantThinking(sessionId: sessionId, cwd: cwd, text: reasoning))
             }
-            if !text.isEmpty && !textEmitted && !textSuppressed {
+            if !text.isEmpty && !textEmitted && !textSuppressed && !textStaleFromPriorTurn {
                 Self.logNotice("→ assistantText (safety net) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
                 events.append(.assistantText(sessionId: sessionId, cwd: cwd, text: text))
-            } else if !text.isEmpty && textSuppressed {
-                Self.logNotice("→ assistantText suppressed (safety net, question parent) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
+            } else if !text.isEmpty && (textSuppressed || textStaleFromPriorTurn) {
+                let reason = textSuppressed ? "question parent" : "stale from prior turn"
+                Self.logNotice("→ assistantText suppressed (safety net, \(reason)) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
             }
         }
         return events
