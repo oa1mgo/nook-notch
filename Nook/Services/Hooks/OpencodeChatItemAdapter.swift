@@ -173,9 +173,9 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                     toolId: toolId, name: toolName,
                     input: input, status: .running,
                     result: nil, structuredResult: nil,
-                    subagentTools: [], isError: false
+                    subagentTools: []
                 )),
-                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .toolCall(ChatItemToolCall(toolId: toolId, name: toolName, input: input, status: .running, result: nil, structuredResult: nil, subagentTools: [], isError: false))), blockIndex: idx),
+                ordering: .messageRelative(messageId: msgId, typePriority: Self.typePriority(for: .toolCall(ChatItemToolCall(toolId: toolId, name: toolName, input: input, status: .running, result: nil, structuredResult: nil, subagentTools: []))), blockIndex: idx),
                 mutation: .insert, provider: .opencode
             )]
 
@@ -202,7 +202,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                     toolId: toolId, name: toolName,
                     input: [:], status: finalStatus,
                     result: resultBody, structuredResult: nil,
-                    subagentTools: [], isError: outputIsError
+                    subagentTools: []
                 )),
                 ordering: .messageRelative(messageId: msgId, typePriority: 1, blockIndex: 0),
                 mutation: .updateStatus, provider: .opencode,

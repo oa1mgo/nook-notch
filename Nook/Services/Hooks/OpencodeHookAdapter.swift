@@ -779,6 +779,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         Self.logNotice("→ assistantThinking (final) session=\(sessionId) messageID=\(messageId) textChars=\(text.count)")
         return [.assistantThinking(sessionId: sessionId, cwd: cwd, text: text, messageId: messageId)]
     }
+
     /// Tag a messageID as a reasoning message as soon as the reasoning part
     /// is created (empty-text `message.part.updated type=reasoning`). This
     /// must happen BEFORE the first `message.part.delta` for the same
@@ -1042,6 +1043,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         Self.logNotice("→ assistantThinking session=\(sessionId) messageID=\(messageId) textChars=\(text.count) trigger=\(trigger)")
         return [.assistantThinking(sessionId: sessionId, cwd: cwd, text: text, messageId: messageId)]
     }
+
     /// Flush all pending assistant text and reasoning buffers for a session
     /// (safety net for missed finish=stop events, e.g. on session idle).
     ///

@@ -68,7 +68,6 @@ struct ChatItemToolCall: Sendable, Equatable {
     var result: String?
     var structuredResult: ToolResultData?
     var subagentTools: [SubagentToolCall]
-    var isError: Bool
 }
 
 // MARK: - BlockOrdering
@@ -150,8 +149,7 @@ extension ChatItemBlock {
                 status: item.status,
                 result: item.result,
                 structuredResult: item.structuredResult,
-                subagentTools: item.subagentTools,
-                isError: item.status == .error
+                subagentTools: item.subagentTools
             ))
         case .image(let block):
             return .image(block)
