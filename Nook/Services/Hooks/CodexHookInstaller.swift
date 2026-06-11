@@ -2,7 +2,7 @@
 //  CodexHookInstaller.swift
 //  Nook
 //
-//  Installs Codex experimental hooks that forward session lifecycle events
+//  Installs Codex hooks that forward session lifecycle events
 //  into Nook via the shared Unix socket.
 //
 
@@ -25,6 +25,8 @@ struct CodexHookInstaller {
     private static func installBridgeScript() {
         let script = """
         #!/usr/bin/env python3
+        import json
+        import os
         import socket
         import sys
 
@@ -34,6 +36,13 @@ struct CodexHookInstaller {
             payload = sys.stdin.buffer.read()
             if not payload.strip():
                 return
+
+            try:
+                event = json.loads(payload.decode("utf-8"))
+                event.setdefault("cwd", os.getcwd())
+                payload = (json.dumps(event, separators=(",", ":")) + "\\n").encode("utf-8")
+            except Exception:
+                pass
 
             try:
                 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -58,28 +67,28 @@ struct CodexHookInstaller {
     private static func enableHooksFeature() {
         let existing = (try? String(contentsOf: configFile, encoding: .utf8)) ?? ""
 
-        if existing.contains("codex_hooks = true") {
+        if existing.contains("hooks = true") {
             return
         }
 
         let updated: String
-        if existing.contains("codex_hooks = false") {
-            updated = existing.replacingOccurrences(of: "codex_hooks = false", with: "codex_hooks = true")
+        if existing.contains("hooks = false") {
+            updated = existing.replacingOccurrences(of: "hooks = false", with: "hooks = true")
         } else if let featureRange = existing.range(of: "[features]") {
             let tail = existing[featureRange.upperBound...]
             if let nextSectionRange = tail.range(of: #"\n\[[^\n]+\]"#, options: .regularExpression) {
                 let insertionPoint = nextSectionRange.lowerBound
-                updated = String(existing[..<insertionPoint]) + "\ncodex_hooks = true" + String(existing[insertionPoint...])
+                updated = String(existing[..<insertionPoint]) + "\nhooks = true" + String(existing[insertionPoint...])
             } else if existing.hasSuffix("\n") {
-                updated = existing + "codex_hooks = true\n"
+                updated = existing + "hooks = true\n"
             } else {
-                updated = existing + "\ncodex_hooks = true\n"
+                updated = existing + "\nhooks = true\n"
             }
         } else if existing.isEmpty {
-            updated = "[features]\ncodex_hooks = true\n"
+            updated = "[features]\nhooks = true\n"
         } else {
             let suffix = existing.hasSuffix("\n") ? "" : "\n"
-            updated = existing + suffix + "\n[features]\ncodex_hooks = true\n"
+            updated = existing + suffix + "\n[features]\nhooks = true\n"
         }
 
         try? updated.write(to: configFile, atomically: true, encoding: .utf8)
@@ -96,10 +105,15 @@ struct CodexHookInstaller {
         let command = "\(detectPythonExecutable()) \(shellQuote(bridgeScript.path))"
         let handler: [String: Any] = ["type": "command", "command": command]
         let allEvents: [(String, [[String: Any]])] = [
-            ("SessionStart", [["matcher": "startup|resume", "hooks": [handler]]]),
+            ("SessionStart", [["matcher": "startup|resume|clear|compact", "hooks": [handler]]]),
             ("UserPromptSubmit", [["hooks": [handler]]]),
-            ("PreToolUse", [["matcher": "Bash", "hooks": [handler]]]),
-            ("PostToolUse", [["matcher": "Bash", "hooks": [handler]]]),
+            ("PreToolUse", [["hooks": [handler]]]),
+            ("PermissionRequest", [["hooks": [handler]]]),
+            ("PostToolUse", [["hooks": [handler]]]),
+            ("PreCompact", [["hooks": [handler]]]),
+            ("PostCompact", [["hooks": [handler]]]),
+            ("SubagentStart", [["hooks": [handler]]]),
+            ("SubagentStop", [["hooks": [handler]]]),
             ("Stop", [["hooks": [handler]]]),
         ]
 

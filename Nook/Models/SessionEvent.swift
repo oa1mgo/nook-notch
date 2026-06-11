@@ -28,6 +28,23 @@ enum SessionEvent: Sendable {
     /// Codex finished running a Bash tool
     case codexBashFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?)
 
+    /// Codex began running any tool (Bash, apply_patch, MCP, etc.)
+    case codexToolStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, input: [String: String], inputSummary: String?)
+
+    /// Codex finished running any tool.
+    case codexToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
+
+    /// Codex is waiting on terminal-side user input, such as a permission prompt.
+    case codexWaitingForUserInput(sessionId: String, cwd: String)
+
+    /// Codex started or finished compacting context.
+    case codexCompactingStarted(sessionId: String, cwd: String)
+    case codexCompactingFinished(sessionId: String, cwd: String)
+
+    /// Codex subagent lifecycle signals.
+    case codexSubagentStarted(sessionId: String, cwd: String)
+    case codexSubagentStopped(sessionId: String, cwd: String)
+
     /// Codex stopped the current turn
     case codexStopped(sessionId: String, cwd: String)
 
@@ -243,6 +260,20 @@ extension SessionEvent: CustomStringConvertible {
             return "codexBashStarted(session: \(sessionId.prefix(8)), tool: \(toolName))"
         case .codexBashFinished(let sessionId, _, let toolName, _, _):
             return "codexBashFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
+        case .codexToolStarted(let sessionId, _, let toolName, _, _, _):
+            return "codexToolStarted(session: \(sessionId.prefix(8)), tool: \(toolName))"
+        case .codexToolFinished(let sessionId, _, let toolName, _, _):
+            return "codexToolFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
+        case .codexWaitingForUserInput(let sessionId, _):
+            return "codexWaitingForUserInput(session: \(sessionId.prefix(8)))"
+        case .codexCompactingStarted(let sessionId, _):
+            return "codexCompactingStarted(session: \(sessionId.prefix(8)))"
+        case .codexCompactingFinished(let sessionId, _):
+            return "codexCompactingFinished(session: \(sessionId.prefix(8)))"
+        case .codexSubagentStarted(let sessionId, _):
+            return "codexSubagentStarted(session: \(sessionId.prefix(8)))"
+        case .codexSubagentStopped(let sessionId, _):
+            return "codexSubagentStopped(session: \(sessionId.prefix(8)))"
         case .codexStopped(let sessionId, _):
             return "codexStopped(session: \(sessionId.prefix(8)))"
         case .opencodeSessionStarted(let sessionId, _):

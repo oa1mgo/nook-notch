@@ -8,16 +8,13 @@
 import Foundation
 
 /// Minimal Codex hook envelope.
-///
-/// We intentionally reject Claude-style hook payloads by failing decoding when
-/// the Claude-only `status` field is present. That keeps Codex detection
-/// separate from the existing Claude hook path.
 struct CodexHookEnvelope: Decodable, Sendable {
     let event: String
     let sessionId: String
     let cwd: String
     let toolName: String?
     let toolUseId: String?
+    let toolInput: [String: AnyCodable]?
     let command: String?
     let prompt: String?
 
@@ -30,10 +27,16 @@ struct CodexHookEnvelope: Decodable, Sendable {
         case toolName = "tool_name"
         case toolNameCamel = "toolName"
         case tool
+        case name
         case toolUseId = "tool_use_id"
+        case toolUseIdCamel = "toolUseId"
+        case callId = "call_id"
+        case callIdCamel = "callId"
         case toolInput = "tool_input"
+        case toolInputCamel = "toolInput"
+        case input
+        case command
         case prompt
-        case status
     }
 
     enum ToolInputCodingKeys: String, CodingKey {
@@ -43,24 +46,14 @@ struct CodexHookEnvelope: Decodable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
-        if container.contains(.status) {
-            throw DecodingError.dataCorruptedError(
-                forKey: .status,
-                in: container,
-                debugDescription: "Claude hook payloads are not Codex hooks"
-            )
-        }
-
         event = try Self.decodeString(container, keys: [.event, .hookEventName])
         sessionId = try Self.decodeString(container, keys: [.sessionId, .sessionIdCamel])
-        cwd = try Self.decodeString(container, keys: [.cwd])
-        toolName = Self.decodeOptionalString(container, keys: [.toolName, .toolNameCamel, .tool])
-        toolUseId = Self.decodeOptionalString(container, keys: [.toolUseId])
-        if let toolInput = try? container.nestedContainer(keyedBy: ToolInputCodingKeys.self, forKey: .toolInput) {
-            command = try toolInput.decodeIfPresent(String.self, forKey: .command)
-        } else {
-            command = nil
-        }
+        cwd = Self.decodeOptionalString(container, keys: [.cwd]) ?? FileManager.default.currentDirectoryPath
+        toolName = Self.decodeOptionalString(container, keys: [.toolName, .toolNameCamel, .tool, .name])
+        toolUseId = Self.decodeOptionalString(container, keys: [.toolUseId, .toolUseIdCamel, .callId, .callIdCamel])
+        toolInput = Self.decodeOptionalToolInput(container)
+        command = Self.decodeOptionalString(container, keys: [.command])
+            ?? Self.stringValue(toolInput?["command"]?.value)
         prompt = Self.decodeOptionalString(container, keys: [.prompt])
     }
 
@@ -75,6 +68,81 @@ struct CodexHookEnvelope: Decodable, Sendable {
 
     var isBashTool: Bool {
         toolName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "bash"
+    }
+
+    var displayInput: [String: String] {
+        guard let toolInput else {
+            return command.map { ["command": $0] } ?? [:]
+        }
+
+        var result: [String: String] = [:]
+        for (key, value) in toolInput {
+            if let string = Self.stringValue(value.value), !string.isEmpty {
+                result[key] = string
+            }
+        }
+
+        if result["command"] == nil, let command {
+            result["command"] = command
+        }
+        return result
+    }
+
+    var inputSummary: String? {
+        if let command = displayInput["command"], !command.isEmpty {
+            return command
+        }
+
+        let priorityKeys = [
+            "file_path", "filePath", "path", "query", "pattern",
+            "url", "description", "prompt", "content"
+        ]
+        for key in priorityKeys {
+            if let value = displayInput[key], !value.isEmpty {
+                return String(value.prefix(120))
+            }
+        }
+        return toolName
+    }
+
+    private static func decodeOptionalToolInput(
+        _ container: KeyedDecodingContainer<CodingKeys>
+    ) -> [String: AnyCodable]? {
+        for key in [CodingKeys.toolInput, .toolInputCamel, .input] {
+            if let value = try? container.decodeIfPresent([String: AnyCodable].self, forKey: key) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        switch value {
+        case let string as String:
+            return string
+        case let int as Int:
+            return String(int)
+        case let double as Double:
+            return String(double)
+        case let bool as Bool:
+            return bool ? "true" : "false"
+        case let dict as [String: Any]:
+            guard JSONSerialization.isValidJSONObject(dict),
+                  let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+                  let string = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return string
+        case let array as [Any]:
+            guard JSONSerialization.isValidJSONObject(array),
+                  let data = try? JSONSerialization.data(withJSONObject: array, options: []),
+                  let string = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return string
+        default:
+            return nil
+        }
     }
 
     private static func decodeString(
@@ -113,7 +181,12 @@ struct CodexHookEnvelope: Decodable, Sendable {
 enum CodexSessionEvent: Sendable {
     case sessionStart(sessionId: String, cwd: String)
     case userPromptSubmit(sessionId: String, cwd: String, prompt: String?)
-    case preBashTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?)
-    case postBashTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?)
+    case preTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, input: [String: String], inputSummary: String?)
+    case postTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
+    case waitingForUserInput(sessionId: String, cwd: String)
+    case compactingStarted(sessionId: String, cwd: String)
+    case compactingFinished(sessionId: String, cwd: String)
+    case subagentStarted(sessionId: String, cwd: String)
+    case subagentStopped(sessionId: String, cwd: String)
     case stop(sessionId: String, cwd: String)
 }

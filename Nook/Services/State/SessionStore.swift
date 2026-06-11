@@ -85,6 +85,27 @@ actor SessionStore {
         case .codexBashFinished(let sessionId, let cwd, let toolName, let toolUseId, let command):
             processCodexBashFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command)
 
+        case .codexToolStarted(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+            processCodexToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary)
+
+        case .codexToolFinished(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
+            processCodexToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary)
+
+        case .codexWaitingForUserInput(let sessionId, let cwd):
+            processCodexWaitingForUserInput(sessionId: sessionId, cwd: cwd)
+
+        case .codexCompactingStarted(let sessionId, let cwd):
+            processCodexCompactingStarted(sessionId: sessionId, cwd: cwd)
+
+        case .codexCompactingFinished(let sessionId, let cwd):
+            processCodexCompactingFinished(sessionId: sessionId, cwd: cwd)
+
+        case .codexSubagentStarted(let sessionId, let cwd):
+            processCodexSubagentStarted(sessionId: sessionId, cwd: cwd)
+
+        case .codexSubagentStopped(let sessionId, let cwd):
+            processCodexSubagentStopped(sessionId: sessionId, cwd: cwd)
+
         case .codexStopped(let sessionId, let cwd):
             processCodexStop(sessionId: sessionId, cwd: cwd)
 
@@ -316,6 +337,25 @@ actor SessionStore {
     }
 
     private func processCodexBashStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?) {
+        let input = command.map { ["command": $0] } ?? [:]
+        processCodexToolStarted(
+            sessionId: sessionId,
+            cwd: cwd,
+            toolName: toolName,
+            toolUseId: toolUseId,
+            input: input,
+            inputSummary: command
+        )
+    }
+
+    private func processCodexToolStarted(
+        sessionId: String,
+        cwd: String,
+        toolName: String,
+        toolUseId: String?,
+        input: [String: String],
+        inputSummary: String?
+    ) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
@@ -327,8 +367,15 @@ actor SessionStore {
         session.phase = .processing
         session.toolTracker.startTool(id: toolId, name: toolName)
 
-        let inputPreview = command?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let input = inputPreview.map { ["command": $0] } ?? [:]
+        let inputPreview = inputSummary?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayInput: [String: String]
+        if !input.isEmpty {
+            displayInput = input
+        } else if let inputPreview, !inputPreview.isEmpty {
+            displayInput = ["summary": inputPreview]
+        } else {
+            displayInput = [:]
+        }
         // Dedup: if a tool item with this ID already exists, update it
         // instead of appending. Codex can re-emit `codexBashStarted` for
         // the same callID if the underlying hook fires more than once
@@ -341,8 +388,8 @@ actor SessionStore {
            case .toolCall(let existing) = session.chatItems[idx].type {
             let updated = ToolCallItem(
                 name: existing.name,
-                input: input,
-                status: existing.status,
+                input: displayInput,
+                status: existing.status == .success || existing.status == .error ? existing.status : .running,
                 result: existing.result,
                 structuredResult: existing.structuredResult,
                 subagentTools: existing.subagentTools
@@ -358,7 +405,7 @@ actor SessionStore {
                     id: toolId,
                     type: .toolCall(ToolCallItem(
                         name: toolName,
-                        input: input,
+                        input: displayInput,
                         status: .running,
                         result: nil,
                         structuredResult: nil,
@@ -382,9 +429,20 @@ actor SessionStore {
     }
 
     private func processCodexBashFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?) {
+        processCodexToolFinished(
+            sessionId: sessionId,
+            cwd: cwd,
+            toolName: toolName,
+            toolUseId: toolUseId,
+            inputSummary: command
+        )
+    }
+
+    private func processCodexToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
+        let fallbackToolId = toolUseId ?? makeCodexToolId(for: sessionId)
 
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = now
@@ -392,43 +450,120 @@ actor SessionStore {
         if let toolId = latestRunningCodexToolId(in: session, toolName: toolName, toolUseId: toolUseId) {
             session.toolTracker.completeTool(id: toolId, success: true)
             updateToolStatus(in: &session, toolId: toolId, status: .success)
+        } else if let toolUseId, !session.chatItems.contains(where: { $0.id == toolUseId }) {
+            session.chatItems.append(
+                ChatHistoryItem(
+                    id: fallbackToolId,
+                    type: .toolCall(ToolCallItem(
+                        name: toolName,
+                        input: inputSummary.map { ["summary": $0] } ?? [:],
+                        status: .success,
+                        result: nil,
+                        structuredResult: nil,
+                        subagentTools: []
+                    )),
+                    timestamp: now
+                )
+            )
         }
 
         session.conversationInfo = ConversationInfo(
             summary: session.conversationInfo.summary,
-            lastMessage: command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? session.conversationInfo.lastMessage,
+            lastMessage: inputSummary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? session.conversationInfo.lastMessage,
             lastMessageRole: "tool",
             lastToolName: toolName,
             firstUserMessage: session.conversationInfo.firstUserMessage,
             lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
             usage: session.conversationInfo.usage
         )
-        session.phase = hasRunningTools(in: session) ? .processing : .idle
+        // Codex `PostToolUse` is not the end of the turn. The model may keep
+        // thinking, produce text, compact, or start another tool before `Stop`.
+        // Keep the visible state active until the explicit turn-scope Stop hook.
+        if session.phase.canTransition(to: .processing) {
+            session.phase = .processing
+        }
+        session.completionNotificationAt = nil
 
+        sessions[sessionId] = session
+    }
+
+    private func processCodexWaitingForUserInput(sessionId: String, cwd: String) {
+        guard !shouldIgnoreCodexSession(sessionId) else { return }
+        var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
+        enrichCodexRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
+        session.completionNotificationAt = nil
+        if session.phase.canTransition(to: .waitingForInput) {
+            session.phase = .waitingForInput
+        }
+        sessions[sessionId] = session
+    }
+
+    private func processCodexCompactingStarted(sessionId: String, cwd: String) {
+        guard !shouldIgnoreCodexSession(sessionId) else { return }
+        var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
+        enrichCodexRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
+        session.completionNotificationAt = nil
+        if session.phase.canTransition(to: .compacting) {
+            session.phase = .compacting
+        }
+        sessions[sessionId] = session
+    }
+
+    private func processCodexCompactingFinished(sessionId: String, cwd: String) {
+        guard !shouldIgnoreCodexSession(sessionId) else { return }
+        var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
+        enrichCodexRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
+        session.completionNotificationAt = nil
+        if session.phase.canTransition(to: .processing) {
+            session.phase = .processing
+        }
+        sessions[sessionId] = session
+    }
+
+    private func processCodexSubagentStarted(sessionId: String, cwd: String) {
+        guard !shouldIgnoreCodexSession(sessionId) else { return }
+        var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
+        enrichCodexRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
+        session.completionNotificationAt = nil
+        if session.phase.canTransition(to: .processing) {
+            session.phase = .processing
+        }
+        sessions[sessionId] = session
+    }
+
+    private func processCodexSubagentStopped(sessionId: String, cwd: String) {
+        guard !shouldIgnoreCodexSession(sessionId) else { return }
+        var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
+        enrichCodexRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
+        session.completionNotificationAt = nil
+        if session.phase.canTransition(to: .processing) {
+            session.phase = .processing
+        }
         sessions[sessionId] = session
     }
 
     private func processCodexStop(sessionId: String, cwd: String) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
-        let hadRunningTools = hasRunningTools(in: session)
+        let hasActiveTools = hasRunningTools(in: session)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
-        session.phase = .idle
-        session.completionNotificationAt = hadRunningTools ? nil : Date()
-
-        for index in session.chatItems.indices {
-            if case .toolCall(var tool) = session.chatItems[index].type, tool.status == .running {
-                tool.status = .interrupted
-                session.chatItems[index] = ChatHistoryItem(
-                    id: session.chatItems[index].id,
-                    type: .toolCall(tool),
-                    timestamp: session.chatItems[index].timestamp
-                )
-            }
+        if hasActiveTools {
+            // Stop is scoped to the Codex turn, not necessarily to every
+            // asynchronous tool lifecycle. If a PostToolUse is still pending,
+            // keep Nook active instead of briefly showing an ended/idle state.
+            session.phase = .processing
+            session.completionNotificationAt = nil
+        } else {
+            session.phase = .idle
+            session.completionNotificationAt = Date()
+            session.toolTracker.inProgress.removeAll()
         }
-
-        session.toolTracker.inProgress.removeAll()
         sessions[sessionId] = session
     }
 

@@ -79,10 +79,20 @@ class ClaudeSessionMonitor: ObservableObject {
                         await SessionStore.shared.process(.codexSessionStarted(sessionId: sessionId, cwd: cwd))
                     case .userPromptSubmit(let sessionId, let cwd, let prompt):
                         await SessionStore.shared.process(.codexPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt))
-                    case .preBashTool(let sessionId, let cwd, let toolName, let toolUseId, let command):
-                        await SessionStore.shared.process(.codexBashStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command))
-                    case .postBashTool(let sessionId, let cwd, let toolName, let toolUseId, let command):
-                        await SessionStore.shared.process(.codexBashFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command))
+                    case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+                        await SessionStore.shared.process(.codexToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary))
+                    case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
+                        await SessionStore.shared.process(.codexToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary))
+                    case .waitingForUserInput(let sessionId, let cwd):
+                        await SessionStore.shared.process(.codexWaitingForUserInput(sessionId: sessionId, cwd: cwd))
+                    case .compactingStarted(let sessionId, let cwd):
+                        await SessionStore.shared.process(.codexCompactingStarted(sessionId: sessionId, cwd: cwd))
+                    case .compactingFinished(let sessionId, let cwd):
+                        await SessionStore.shared.process(.codexCompactingFinished(sessionId: sessionId, cwd: cwd))
+                    case .subagentStarted(let sessionId, let cwd):
+                        await SessionStore.shared.process(.codexSubagentStarted(sessionId: sessionId, cwd: cwd))
+                    case .subagentStopped(let sessionId, let cwd):
+                        await SessionStore.shared.process(.codexSubagentStopped(sessionId: sessionId, cwd: cwd))
                     case .stop(let sessionId, let cwd):
                         await SessionStore.shared.process(.codexStopped(sessionId: sessionId, cwd: cwd))
                     }
