@@ -325,12 +325,22 @@ struct SubagentState: Equatable, Sendable {
         activeTasks[taskId]?.subagentTools = tools
     }
 
-    /// Add a subagent tool to the most recent active Task
+    /// Add a subagent tool to the most recent active Task.
+    /// Deduplicates by tool ID — opencode may emit multiple `running` events
+    /// for the same tool (e.g. `message.part.updated partStatus=running`
+    /// arriving 2-3 times within ~20ms for the same callID). Without this
+    /// guard, the same SubagentToolCall is appended multiple times, inflating
+    /// the subagentTools count shown in the UI.
     nonisolated mutating func addSubagentTool(_ tool: SubagentToolCall) {
         // Find most recent active task (for parallel Task support)
         guard let mostRecentTaskId = activeTasks.keys.max(by: {
             (activeTasks[$0]?.startTime ?? .distantPast) < (activeTasks[$1]?.startTime ?? .distantPast)
         }) else { return }
+
+        // Skip if this tool ID is already tracked (opencode duplicate event)
+        guard !activeTasks[mostRecentTaskId]!.subagentTools.contains(where: { $0.id == tool.id }) else {
+            return
+        }
 
         activeTasks[mostRecentTaskId]?.subagentTools.append(tool)
     }

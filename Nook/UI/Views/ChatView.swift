@@ -947,7 +947,8 @@ struct ToolCallView: View {
     }
 
     private var hasResult: Bool {
-        tool.result != nil || tool.structuredResult != nil
+        let hasNonEmptyResult = tool.result.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
+        return hasNonEmptyResult || tool.structuredResult != nil
     }
 
     /// Whether the tool can be expanded. Two cases:
