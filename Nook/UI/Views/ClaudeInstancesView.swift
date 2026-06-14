@@ -12,10 +12,14 @@ struct ClaudeInstancesView: View {
     @ObservedObject var sessionMonitor: ClaudeSessionMonitor
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject var musicManager: MusicManager
+    @ObservedObject var performanceMonitor: PerformanceMonitor
+    let isPerformanceMonitorEnabled: Bool
 
     @State private var instanceRowHeight: CGFloat = 0
+    @State private var performanceRowHeight: CGFloat = 0
     @State private var musicCardHeight: CGFloat = 0
 
+    private var showsPerformanceRow: Bool { isPerformanceMonitorEnabled }
     private var showsMusicCard: Bool { musicManager.isVisible }
 
     private var maxInstancesListHeight: CGFloat {
@@ -47,6 +51,14 @@ struct ClaudeInstancesView: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if showsPerformanceRow {
+                PerformanceSummaryRow(monitor: performanceMonitor) {
+                    viewModel.pushTo(.performance(.overview))
+                }
+                .padding(.top, InstancesListLayout.performanceTopInset)
+                .measureHeight(using: PerformanceRowHeightKey.self) { performanceRowHeight = $0 }
+            }
+
             if showsMusicCard {
                 MusicCardView(musicManager: musicManager)
                     .measureHeight(using: MusicCardHeightKey.self) { musicCardHeight = $0 }
@@ -62,6 +74,12 @@ struct ClaudeInstancesView: View {
             syncLayoutMetrics()
         }
         .onChange(of: musicManager.isVisible) { _, _ in
+            syncLayoutMetrics()
+        }
+        .onChange(of: isPerformanceMonitorEnabled) { _, _ in
+            syncLayoutMetrics()
+        }
+        .onChange(of: performanceRowHeight) { _, _ in
             syncLayoutMetrics()
         }
         .onChange(of: musicCardHeight) { _, _ in
@@ -161,7 +179,7 @@ struct ClaudeInstancesView: View {
                 }
             }
             .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
-                guard let trigger = trigger,
+                guard trigger != nil,
                       viewModel.keyboardSelectedIndex >= 0,
                       viewModel.keyboardSelectedIndex < sortedInstances.count else { return }
                 openChat(sortedInstances[viewModel.keyboardSelectedIndex])
@@ -203,6 +221,7 @@ struct ClaudeInstancesView: View {
 private enum InstancesListLayout {
     static let targetVisibleRows: CGFloat = 3.2
     static let contentSpacing: CGFloat = 8
+    static let performanceTopInset: CGFloat = 8
     static let listRowSpacing: CGFloat = 2
     static let listVerticalPadding: CGFloat = 4
     static let emptyStateHeight: CGFloat = 84
@@ -251,6 +270,14 @@ private struct MusicCardHeightKey: PreferenceKey {
     }
 }
 
+private struct PerformanceRowHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private struct MeasuredHeightReader<Key: PreferenceKey>: ViewModifier where Key.Value == CGFloat {
     let onChange: (CGFloat) -> Void
 
@@ -280,6 +307,10 @@ private extension ClaudeInstancesView {
 
         if abs(viewModel.instancesPageRowHeight - instanceRowHeight) > 0.5 {
             viewModel.instancesPageRowHeight = instanceRowHeight
+        }
+
+        if abs(viewModel.instancesPagePerformanceRowHeight - performanceRowHeight) > 0.5 {
+            viewModel.instancesPagePerformanceRowHeight = performanceRowHeight
         }
 
         if abs(viewModel.instancesPageMusicCardHeight - musicCardHeight) > 0.5 {

@@ -23,11 +23,30 @@ enum NotchOpenReason {
     case unknown
 }
 
+enum PerformanceSection: String, CaseIterable, Hashable {
+    case overview
+    case cpu
+    case memory
+    case battery
+    case network
+
+    var title: String {
+        switch self {
+        case .overview: return "Performance"
+        case .cpu: return "CPU"
+        case .memory: return "Memory"
+        case .battery: return "Battery"
+        case .network: return "Network"
+        }
+    }
+}
+
 enum NotchContentType: Equatable {
     case instances
     case menu
     case shortcuts
     case agents
+    case performance(PerformanceSection)
     case chat(SessionState)
 
     var id: String {
@@ -36,6 +55,7 @@ enum NotchContentType: Equatable {
         case .menu: return "menu"
         case .shortcuts: return "shortcuts"
         case .agents: return "agents"
+        case .performance(let section): return "performance-\(section.rawValue)"
         case .chat(let session): return "chat-\(session.sessionId)"
         }
     }
@@ -57,8 +77,10 @@ class NotchViewModel: ObservableObject {
     @Published var isHovering: Bool = false
     @Published var instancesPageHasSessions: Bool = false
     @Published var instancesPageSessionCount: Int = 0
+    @Published var instancesPageShowsPerformance: Bool = false
     @Published var instancesPageShowsMusic: Bool = false
     @Published var instancesPageRowHeight: CGFloat = 0
+    @Published var instancesPagePerformanceRowHeight: CGFloat = 0
     @Published var instancesPageMusicCardHeight: CGFloat = 0
     @Published var animatedTopCornerRadius: CGFloat = 6
     @Published var animatedBottomCornerRadius: CGFloat = 12
@@ -76,6 +98,8 @@ class NotchViewModel: ObservableObject {
     @Published var menuContentHeight: CGFloat = 552
     /// Live-measured content height of the agents page VStack (via GeometryReader).
     @Published var agentsContentHeight: CGFloat = 260
+    /// Live-measured content heights of performance pages, keyed by section.
+    @Published var performanceContentHeights: [PerformanceSection: CGFloat] = [:]
 
     // MARK: - Dependencies
 
@@ -126,6 +150,11 @@ class NotchViewModel: ObservableObject {
                 width: min(screenRect.width * 0.4, 480),
                 height: agentsContentHeight + headerHeight + 12
             )
+        case .performance(let section):
+            return CGSize(
+                width: min(screenRect.width * 0.4, 480),
+                height: performanceHeight(for: section)
+            )
         case .instances:
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
@@ -162,6 +191,8 @@ class NotchViewModel: ObservableObject {
         static let emptyHeight: CGFloat = 112
         static let emptyHeightWithMusic: CGFloat = 228
         static let fallbackRowHeight: CGFloat = 58
+        static let performanceTopInset: CGFloat = 8
+        static let fallbackPerformanceRowHeight: CGFloat = 44 + performanceTopInset
         static let fallbackMusicBlockHeight: CGFloat = emptyHeightWithMusic - emptyHeight
     }
 
@@ -179,6 +210,9 @@ class NotchViewModel: ObservableObject {
 
     private var instancesPageOpenedHeight: CGFloat {
         let chromeHeight = InstancesPageLayout.emptyHeight - InstancesPageLayout.emptyStateHeight
+        let performanceBlockHeight: CGFloat = instancesPageShowsPerformance
+            ? resolvedPerformanceRowHeight + InstancesPageLayout.contentSpacing
+            : 0
         let musicBlockHeight: CGFloat = instancesPageShowsMusic
             ? resolvedMusicCardHeight + InstancesPageLayout.contentSpacing
             : 0
@@ -193,7 +227,7 @@ class NotchViewModel: ObservableObject {
             contentHeight = InstancesPageLayout.emptyStateHeight
         }
 
-        return chromeHeight + musicBlockHeight + contentHeight
+        return chromeHeight + performanceBlockHeight + musicBlockHeight + contentHeight
     }
 
     private var resolvedRowHeight: CGFloat {
@@ -202,6 +236,41 @@ class NotchViewModel: ObservableObject {
 
     private var resolvedMusicCardHeight: CGFloat {
         max(instancesPageMusicCardHeight, InstancesPageLayout.fallbackMusicBlockHeight - InstancesPageLayout.contentSpacing)
+    }
+
+    private var resolvedPerformanceRowHeight: CGFloat {
+        max(instancesPagePerformanceRowHeight, InstancesPageLayout.fallbackPerformanceRowHeight)
+    }
+
+    private func performanceHeight(for section: PerformanceSection) -> CGFloat {
+        let headerHeight = max(24, geometry.deviceNotchRect.height)
+        let contentHeight = performanceContentHeights[section] ?? fallbackPerformanceContentHeight(for: section)
+        return min(contentHeight + headerHeight + 12, 560)
+    }
+
+    private func fallbackPerformanceContentHeight(for section: PerformanceSection) -> CGFloat {
+        let headerHeight = max(24, geometry.deviceNotchRect.height)
+        let chromeHeight = headerHeight + 12
+
+        switch section {
+        case .overview:
+            return 470 - chromeHeight
+        case .cpu:
+            return 500 - chromeHeight
+        case .memory:
+            return 560 - chromeHeight
+        case .battery:
+            return 450 - chromeHeight
+        case .network:
+            return 500 - chromeHeight
+        }
+    }
+
+    func updatePerformanceContentHeight(_ height: CGFloat, for section: PerformanceSection) {
+        let sanitizedHeight = max(0, height)
+        if abs((performanceContentHeights[section] ?? 0) - sanitizedHeight) > 0.5 {
+            performanceContentHeights[section] = sanitizedHeight
+        }
     }
 
     private func listHeight(rowHeight: CGFloat, visibleRows: CGFloat) -> CGFloat {
@@ -439,6 +508,12 @@ class NotchViewModel: ObservableObject {
             } else {
                 settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
             }
+        case .performance:
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = performanceItemCount - 1
+            } else {
+                settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
+            }
         case .chat:
             NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.up)
         }
@@ -476,6 +551,12 @@ class NotchViewModel: ObservableObject {
             } else {
                 settingsFocusedIndex = min(agentsItemCount - 1, settingsFocusedIndex + 1)
             }
+        case .performance:
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = 0
+            } else {
+                settingsFocusedIndex = min(performanceItemCount - 1, settingsFocusedIndex + 1)
+            }
         case .chat:
             NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.down)
         }
@@ -487,11 +568,18 @@ class NotchViewModel: ObservableObject {
     }
 
     /// Total focusable items in the menu page
-    let menuItemCount: Int = 11
+    let menuItemCount: Int = 12
     /// Total focusable items in the shortcuts page (Back + action rows + Restore)
     var shortcutsItemCount: Int { 1 + ShortcutAction.allCases.count + 1 }
     /// Total focusable items in the agents page (just Back for now)
     let agentsItemCount: Int = 1
+    /// Total focusable items in the current performance page.
+    var performanceItemCount: Int {
+        if case .performance(.overview) = contentType {
+            return 1 + PerformanceSection.allCases.filter { $0 != .overview }.count
+        }
+        return 1
+    }
 
     /// Route a shortcut action to the appropriate handler
     func handleShortcutAction(_ action: ShortcutAction) {

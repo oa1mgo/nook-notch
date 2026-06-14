@@ -35,6 +35,7 @@ enum AppSettings {
     private nonisolated(unsafe) static let defaults = UserDefaults.standard
     nonisolated static let artworkAdaptiveBackgroundEnabledKey = "artworkAdaptiveBackgroundEnabled"
     nonisolated static let musicEdgeGlowEnabledKey = "musicEdgeGlowEnabled"
+    nonisolated static let performanceMonitorEnabledKey = "performanceMonitorEnabled"
     nonisolated static let shortcutsKey = "nook_shortcut_bindings"
 
     // MARK: - Keys
@@ -44,6 +45,7 @@ enum AppSettings {
         nonisolated static let claudeDirectoryName = "claudeDirectoryName"
         nonisolated static let artworkAdaptiveBackgroundEnabled = AppSettings.artworkAdaptiveBackgroundEnabledKey
         nonisolated static let musicEdgeGlowEnabled = AppSettings.musicEdgeGlowEnabledKey
+        nonisolated static let performanceMonitorEnabled = AppSettings.performanceMonitorEnabledKey
         nonisolated static let autoInstallHooks = "autoInstallHooks"
         nonisolated static let claudeHooksEnabled = "claudeHooksEnabled"
         nonisolated static let codexHooksEnabled = "codexHooksEnabled"
@@ -55,6 +57,7 @@ enum AppSettings {
         defaults.register(defaults: [
             Keys.artworkAdaptiveBackgroundEnabled: true,
             Keys.musicEdgeGlowEnabled: true,
+            Keys.performanceMonitorEnabled: true,
             Keys.autoInstallHooks: true,
             Keys.claudeHooksEnabled: true,
             Keys.codexHooksEnabled: true,
@@ -123,6 +126,22 @@ enum AppSettings {
         }
         set {
             defaults.set(newValue, forKey: Keys.musicEdgeGlowEnabled)
+        }
+    }
+
+    // MARK: - Performance Monitor
+
+    /// Controls whether the compact performance monitor row is shown on the home page.
+    /// Defaults to enabled.
+    nonisolated static var performanceMonitorEnabled: Bool {
+        get {
+            if defaults.object(forKey: Keys.performanceMonitorEnabled) == nil {
+                return true
+            }
+            return defaults.bool(forKey: Keys.performanceMonitorEnabled)
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.performanceMonitorEnabled)
         }
     }
 

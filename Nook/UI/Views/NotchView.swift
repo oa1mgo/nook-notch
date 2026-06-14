@@ -29,6 +29,7 @@ struct NotchView: View {
     @StateObject private var sessionMonitor = ClaudeSessionMonitor()
     @StateObject private var activityCoordinator = NotchActivityCoordinator.shared
     @StateObject private var musicManager = MusicManager()
+    @StateObject private var performanceMonitor = PerformanceMonitor()
     @ObservedObject private var updateManager = UpdateManager.shared
     @State private var previousPendingIds: Set<String> = []
     @State private var previousWaitingForInputIds: Set<String> = []
@@ -38,6 +39,7 @@ struct NotchView: View {
     @State private var isHovering: Bool = false
     @State private var isBouncing: Bool = false
     @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
+    @AppStorage(AppSettings.performanceMonitorEnabledKey) private var performanceMonitorEnabled = true
 
     @Namespace private var activityNamespace
 
@@ -256,6 +258,7 @@ struct NotchView: View {
         .onAppear {
             viewModel.closedNotchExpansionWidth = expansionWidth
             sessionMonitor.startMonitoring()
+            performanceMonitor.setActive(performanceMonitorEnabled)
             syncInstancesPageLayoutState()
             handleProcessingChange()
             // On non-notched devices, keep visible so users have a target to interact with
@@ -277,6 +280,10 @@ struct NotchView: View {
         .onChange(of: musicManager.playbackState) { _, _ in
             syncInstancesPageLayoutState()
             handleProcessingChange()
+        }
+        .onChange(of: performanceMonitorEnabled) { _, isEnabled in
+            performanceMonitor.setActive(isEnabled)
+            syncInstancesPageLayoutState()
         }
         .onChange(of: expansionWidth) { _, newValue in
             viewModel.closedNotchExpansionWidth = newValue
@@ -543,7 +550,9 @@ struct NotchView: View {
                 ClaudeInstancesView(
                     sessionMonitor: sessionMonitor,
                     viewModel: viewModel,
-                    musicManager: musicManager
+                    musicManager: musicManager,
+                    performanceMonitor: performanceMonitor,
+                    isPerformanceMonitorEnabled: performanceMonitorEnabled
                 )
             case .menu:
                 NotchMenuView(
@@ -562,6 +571,15 @@ struct NotchView: View {
             case .agents:
                 AgentSettingsView(
                     viewModel: viewModel,
+                    primaryTextColor: expandedPrimaryTextColor,
+                    secondaryTextColor: expandedSecondaryTextColor,
+                    separatorColor: expandedSeparatorColor
+                )
+            case .performance(let section):
+                PerformanceDetailView(
+                    viewModel: viewModel,
+                    monitor: performanceMonitor,
+                    section: section,
                     primaryTextColor: expandedPrimaryTextColor,
                     secondaryTextColor: expandedSecondaryTextColor,
                     separatorColor: expandedSeparatorColor
@@ -599,6 +617,7 @@ struct NotchView: View {
 
         viewModel.instancesPageHasSessions = hasSessions
         viewModel.instancesPageSessionCount = sessionCount
+        viewModel.instancesPageShowsPerformance = performanceMonitorEnabled
         viewModel.instancesPageShowsMusic = showsMusic
     }
 

@@ -33,6 +33,7 @@ struct NotchMenuView: View {
     @State private var didAppear = false
     @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
     @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
+    @AppStorage(AppSettings.performanceMonitorEnabledKey) private var performanceMonitorEnabled = true
 
     var body: some View {
         // ScrollView so the menu gracefully scrolls when content exceeds the
@@ -114,6 +115,17 @@ struct NotchMenuView: View {
                     musicEdgeGlowEnabled.toggle()
                 }
 
+                MenuToggleRow(
+                    icon: "gauge.with.dots.needle.33percent",
+                    label: "Performance Monitor",
+                    isOn: performanceMonitorEnabled,
+                    primaryTextColor: primaryTextColor,
+                    secondaryTextColor: secondaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 7
+                ) {
+                    performanceMonitorEnabled.toggle()
+                }
+
                 Divider()
                     .background(separatorColor)
                     .padding(.vertical, 4)
@@ -125,7 +137,7 @@ struct NotchMenuView: View {
                     isOn: launchAtLogin,
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 7
+                    isFocused: viewModel.settingsFocusedIndex == 8
                 ) {
                     do {
                         if launchAtLogin {
@@ -140,7 +152,7 @@ struct NotchMenuView: View {
                     }
                 }
 
-                AccessibilityRow(isEnabled: AXIsProcessTrusted(), primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 8)
+                AccessibilityRow(isEnabled: AXIsProcessTrusted(), primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 9)
 
                 Divider()
                     .background(separatorColor)
@@ -151,7 +163,7 @@ struct NotchMenuView: View {
                     label: "Star on GitHub",
                     trailingLabel: appVersion,
                     primaryTextColor: primaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 9
+                    isFocused: viewModel.settingsFocusedIndex == 10
                 ) {
                     if let url = URL(string: "https://github.com/oa1mgo/nook") {
                         NSWorkspace.shared.open(url)
@@ -168,7 +180,7 @@ struct NotchMenuView: View {
                     trailingLabel: "⌘Q",
                     isDestructive: true,
                     primaryTextColor: primaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 10
+                    isFocused: viewModel.settingsFocusedIndex == 11
                 ) {
                     NSApplication.shared.terminate(nil)
                 }
@@ -212,7 +224,8 @@ struct NotchMenuView: View {
         case 4: viewModel.pushTo(.shortcuts)
         case 5: artworkAdaptiveBackgroundEnabled.toggle()
         case 6: musicEdgeGlowEnabled.toggle()
-        case 7:
+        case 7: performanceMonitorEnabled.toggle()
+        case 8:
             do {
                 if launchAtLogin {
                     try SMAppService.mainApp.unregister()
@@ -224,15 +237,15 @@ struct NotchMenuView: View {
             } catch {
                 print("Failed to toggle launch at login: \(error)")
             }
-        case 8:
+        case 9:
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
                 NSWorkspace.shared.open(url)
             }
-        case 9:
+        case 10:
             if let url = URL(string: "https://github.com/oa1mgo/nook") {
                 NSWorkspace.shared.open(url)
             }
-        case 10: NSApplication.shared.terminate(nil)
+        case 11: NSApplication.shared.terminate(nil)
         default: break
         }
     }
