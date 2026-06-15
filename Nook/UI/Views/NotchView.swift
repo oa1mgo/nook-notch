@@ -39,6 +39,8 @@ struct NotchView: View {
     @State private var isHovering: Bool = false
     @State private var isBouncing: Bool = false
     @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
+    @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
+    @AppStorage(AppSettings.vibeGlowEnabledKey) private var vibeGlowEnabled = false
     @AppStorage(AppSettings.performanceMonitorEnabledKey) private var performanceMonitorEnabled = true
 
     @Namespace private var activityNamespace
@@ -105,6 +107,10 @@ struct NotchView: View {
 
         if showMusicActivity {
             return baseExpansion
+        }
+
+        guard !suppressesClosedAgentActivity else {
+            return 0
         }
 
         // Permission indicator adds width on left side only
@@ -214,7 +220,7 @@ struct NotchView: View {
                         topCornerRadius: viewModel.animatedTopCornerRadius,
                         bottomCornerRadius: viewModel.animatedBottomCornerRadius
                     ))
-                    .overlay(musicEdgeGlow)
+                    .overlay(edgeGlowOverlay)
                     .shadow(
                         color: (viewModel.status == .opened || isHovering) ? .black.opacity(0.7) : .clear,
                         radius: 6
@@ -230,6 +236,7 @@ struct NotchView: View {
                     .animation(.smooth, value: hasPendingPermission)
                     .animation(.smooth, value: hasWaitingForInput)
                     .animation(.smooth, value: showMusicActivity)
+                    .animation(.smooth, value: vibeGlowEnabled)
                     .animation(.smooth(duration: 0.45), value: musicManager.playbackState.artworkData)
                     .animation(.spring(response: 0.3, dampingFraction: 0.5), value: isBouncing)
                     .contentShape(Rectangle())
@@ -261,6 +268,7 @@ struct NotchView: View {
             performanceMonitor.setActive(performanceMonitorEnabled)
             syncInstancesPageLayoutState()
             handleProcessingChange()
+            syncVisibilityForVibeGlow()
             // On non-notched devices, keep visible so users have a target to interact with
             if !viewModel.hasPhysicalNotch {
                 isVisible = true
@@ -285,6 +293,9 @@ struct NotchView: View {
             performanceMonitor.setActive(isEnabled)
             syncInstancesPageLayoutState()
         }
+        .onChange(of: vibeGlowEnabled) { _, _ in
+            syncVisibilityForVibeGlow()
+        }
         .onChange(of: expansionWidth) { _, newValue in
             viewModel.closedNotchExpansionWidth = newValue
         }
@@ -303,8 +314,26 @@ struct NotchView: View {
         }
     }
 
-    private var activeLoadingProvider: SessionProvider {
-        switch activityCoordinator.expandingActivity.type {
+    private var activeWaitingForInputActivityType: NotchActivityType? {
+        let activeIds = Set(waitingForInputTimestamps.keys)
+        guard let session = sessionMonitor.instances.first(where: { activeIds.contains($0.stableId) }) else {
+            return nil
+        }
+        return activityType(for: session.provider)
+    }
+
+    private var closedActivityType: NotchActivityType {
+        if isProcessing || hasPendingPermission {
+            return activityCoordinator.expandingActivity.type
+        }
+        if hasWaitingForInput {
+            return activeWaitingForInputActivityType ?? activityCoordinator.expandingActivity.type
+        }
+        return activityCoordinator.expandingActivity.type
+    }
+
+    private var closedActivityProvider: SessionProvider {
+        switch closedActivityType {
         case .codex:
             return .codex
         case .opencode:
@@ -314,12 +343,23 @@ struct NotchView: View {
         }
     }
 
-    private var activityTint: Color {
-        SessionLoadingStyle.tint(for: activeLoadingProvider)
+    private var closedActivityTint: Color {
+        SessionLoadingStyle.tint(for: closedActivityProvider)
+    }
+
+    private func activityType(for provider: SessionProvider) -> NotchActivityType {
+        switch provider {
+        case .claude:
+            return .claude
+        case .codex:
+            return .codex
+        case .opencode:
+            return .opencode
+        }
     }
 
     private var showMusicActivity: Bool {
-        musicManager.isVisible && !hasPendingPermission && !isAnyProcessing
+        musicManager.isVisible && (usesClosedVibeMode || (!hasPendingPermission && !isAnyProcessing))
     }
 
     private var showCompactMusicActivity: Bool {
@@ -370,7 +410,19 @@ struct NotchView: View {
 
     /// Whether to show the expanded closed state (processing, pending permission, or waiting for input)
     private var showClosedActivity: Bool {
-        showCompactMusicActivity || isProcessing || hasPendingPermission || hasWaitingForInput
+        showCompactMusicActivity || (!suppressesClosedAgentActivity && (isProcessing || hasPendingPermission || hasWaitingForInput))
+    }
+
+    private var usesClosedVibeMode: Bool {
+        vibeGlowEnabled && viewModel.status != .opened && isAnyProcessing
+    }
+
+    private var suppressesClosedAgentActivity: Bool {
+        usesClosedVibeMode
+    }
+
+    private var vibeGlowVisible: Bool {
+        vibeGlowEnabled && viewModel.status == .closed && isAnyProcessing
     }
 
     /// Whether to show the music progress edge glow
@@ -378,15 +430,19 @@ struct NotchView: View {
         musicManager.playbackState.isPlaying
             && viewModel.status == .closed
             && musicEdgeGlowEnabled
+            && !vibeGlowVisible
     }
 
     @State private var breathingOpacity: CGFloat = 0.9
 
-    @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
-
     @ViewBuilder
-    private var musicEdgeGlow: some View {
-        if musicEdgeGlowVisible {
+    private var edgeGlowOverlay: some View {
+        if vibeGlowVisible {
+            VibeSurroundGlow(
+                topCornerRadius: viewModel.animatedTopCornerRadius,
+                bottomCornerRadius: viewModel.animatedBottomCornerRadius
+            )
+        } else if musicEdgeGlowVisible {
             let glowColors = musicManager.edgeGlowGradient.map(Color.init(nsColor:))
             let glowGradient = LinearGradient(colors: glowColors, startPoint: .leading, endPoint: .trailing)
 
@@ -452,18 +508,18 @@ struct NotchView: View {
             // Left side - icons at natural size
             if showClosedActivity {
                 HStack(spacing: 4) {
-                    if activityCoordinator.expandingActivity.type == .codex {
-                        CodexPulseIcon(size: 14, color: activityTint, isAnimating: true)
+                    if closedActivityType == .codex {
+                        CodexPulseIcon(size: 14, color: closedActivityTint, isAnimating: true)
                             .padding(1)
                             .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
-                    } else if activityCoordinator.expandingActivity.type == .opencode {
+                    } else if closedActivityType == .opencode {
                         Image(systemName: SessionProvider.opencode.systemImage)
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(activityTint)
+                            .foregroundColor(closedActivityTint)
                             .frame(width: 16, height: 16)
                             .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
                     } else {
-                        ClaudeCrabIcon(size: 14, color: activityTint, animateLegs: isProcessing)
+                        ClaudeCrabIcon(size: 14, color: closedActivityTint, animateLegs: isProcessing)
                             .padding(1)
                             .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
                     }
@@ -489,7 +545,7 @@ struct NotchView: View {
             // Right side - icons at natural size
             if showClosedActivity {
                 if isProcessing || hasPendingPermission {
-                    ProcessingSpinner(provider: activeLoadingProvider)
+                    ProcessingSpinner(provider: closedActivityProvider)
                         .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
                 } else if hasWaitingForInput {
                     ReadyForInputIndicatorIcon(size: 14, color: TerminalColors.green)
@@ -641,9 +697,9 @@ struct NotchView: View {
 
             // Delay hiding the notch until animation completes
             // Don't hide on non-notched devices - users need a visible target
-            if viewModel.status == .closed && viewModel.hasPhysicalNotch {
+            if viewModel.status == .closed && viewModel.hasPhysicalNotch && !vibeGlowVisible {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    if !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && viewModel.status == .closed {
+                    if !vibeGlowVisible && !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && viewModel.status == .closed {
                         isVisible = false
                     }
                 }
@@ -667,10 +723,24 @@ struct NotchView: View {
             // Don't hide on non-notched devices - users need a visible target
             guard viewModel.hasPhysicalNotch else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                if viewModel.status == .closed && !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && !showMusicActivity && !activityCoordinator.expandingActivity.show {
+                if viewModel.status == .closed && !vibeGlowVisible && !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && !showMusicActivity && !activityCoordinator.expandingActivity.show {
                     isVisible = false
                 }
             }
+        }
+    }
+
+    private func syncVisibilityForVibeGlow() {
+        if vibeGlowVisible {
+            isVisible = true
+        } else if viewModel.status == .closed &&
+                    viewModel.hasPhysicalNotch &&
+                    !isAnyProcessing &&
+                    !hasPendingPermission &&
+                    !hasWaitingForInput &&
+                    !showMusicActivity &&
+                    !activityCoordinator.expandingActivity.show {
+            isVisible = false
         }
     }
 
@@ -784,5 +854,109 @@ struct NotchView: View {
         }
 
         return false
+    }
+}
+
+private struct VibeSurroundGlow: View {
+    let topCornerRadius: CGFloat
+    let bottomCornerRadius: CGFloat
+
+    private let cycleDuration: TimeInterval = 7.2
+    private let innerGlowOffset: CGFloat = 3
+    private let outerGlowOffset: CGFloat = 10
+    private let colors: [Color] = [
+        Color(red: 0.24, green: 0.82, blue: 1.00),
+        Color(red: 0.76, green: 0.42, blue: 1.00),
+        Color(red: 1.00, green: 0.42, blue: 0.68),
+        Color(red: 0.34, green: 0.92, blue: 0.74),
+        Color(red: 0.24, green: 0.82, blue: 1.00),
+    ]
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { timeline in
+            let phase = timeline.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: cycleDuration) / cycleDuration
+            let startAngle = Angle.degrees(-phase * 360)
+            let gradient = AngularGradient(
+                colors: colors,
+                center: .center,
+                startAngle: startAngle,
+                endAngle: startAngle + .degrees(360)
+            )
+            let outerGlowEdge = VibeSurroundEdge(
+                topCornerRadius: topCornerRadius,
+                bottomCornerRadius: bottomCornerRadius,
+                outwardOffset: outerGlowOffset
+            )
+            let innerGlowEdge = VibeSurroundEdge(
+                topCornerRadius: topCornerRadius,
+                bottomCornerRadius: bottomCornerRadius,
+                outwardOffset: innerGlowOffset
+            )
+
+            ZStack {
+                outerGlowEdge
+                    .stroke(
+                        gradient,
+                        style: StrokeStyle(lineWidth: 18, lineCap: .round, lineJoin: .round)
+                    )
+                    .blur(radius: 16)
+                    .opacity(0.34)
+
+                innerGlowEdge
+                    .stroke(
+                        gradient,
+                        style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round)
+                    )
+                    .blur(radius: 4)
+                    .opacity(0.56)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct VibeSurroundEdge: Shape {
+    var topCornerRadius: CGFloat
+    var bottomCornerRadius: CGFloat
+    var outwardOffset: CGFloat
+
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { .init(topCornerRadius, bottomCornerRadius) }
+        set {
+            topCornerRadius = newValue.first
+            bottomCornerRadius = newValue.second
+        }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let topY = rect.minY
+        let bottomY = rect.maxY + outwardOffset
+        let leftX = rect.minX + topCornerRadius - outwardOffset
+        let rightX = rect.maxX - topCornerRadius + outwardOffset
+
+        path.move(to: CGPoint(x: rect.maxX + outwardOffset, y: topY))
+        path.addQuadCurve(
+            to: CGPoint(x: rightX, y: topY + topCornerRadius),
+            control: CGPoint(x: rightX, y: topY)
+        )
+        path.addLine(to: CGPoint(x: rightX, y: bottomY - bottomCornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rightX - bottomCornerRadius, y: bottomY),
+            control: CGPoint(x: rightX, y: bottomY)
+        )
+        path.addLine(to: CGPoint(x: leftX + bottomCornerRadius, y: bottomY))
+        path.addQuadCurve(
+            to: CGPoint(x: leftX, y: bottomY - bottomCornerRadius),
+            control: CGPoint(x: leftX, y: bottomY)
+        )
+        path.addLine(to: CGPoint(x: leftX, y: topY + topCornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX - outwardOffset, y: topY),
+            control: CGPoint(x: leftX, y: topY)
+        )
+
+        return path
     }
 }

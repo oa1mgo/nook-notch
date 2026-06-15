@@ -35,6 +35,7 @@ enum AppSettings {
     private nonisolated(unsafe) static let defaults = UserDefaults.standard
     nonisolated static let artworkAdaptiveBackgroundEnabledKey = "artworkAdaptiveBackgroundEnabled"
     nonisolated static let musicEdgeGlowEnabledKey = "musicEdgeGlowEnabled"
+    nonisolated static let vibeGlowEnabledKey = "vibeGlowEnabled"
     nonisolated static let performanceMonitorEnabledKey = "performanceMonitorEnabled"
     nonisolated static let shortcutsKey = "nook_shortcut_bindings"
 
@@ -45,6 +46,7 @@ enum AppSettings {
         nonisolated static let claudeDirectoryName = "claudeDirectoryName"
         nonisolated static let artworkAdaptiveBackgroundEnabled = AppSettings.artworkAdaptiveBackgroundEnabledKey
         nonisolated static let musicEdgeGlowEnabled = AppSettings.musicEdgeGlowEnabledKey
+        nonisolated static let vibeGlowEnabled = AppSettings.vibeGlowEnabledKey
         nonisolated static let performanceMonitorEnabled = AppSettings.performanceMonitorEnabledKey
         nonisolated static let autoInstallHooks = "autoInstallHooks"
         nonisolated static let claudeHooksEnabled = "claudeHooksEnabled"
@@ -57,6 +59,7 @@ enum AppSettings {
         defaults.register(defaults: [
             Keys.artworkAdaptiveBackgroundEnabled: true,
             Keys.musicEdgeGlowEnabled: true,
+            Keys.vibeGlowEnabled: false,
             Keys.performanceMonitorEnabled: true,
             Keys.autoInstallHooks: true,
             Keys.claudeHooksEnabled: true,
@@ -126,6 +129,22 @@ enum AppSettings {
         }
         set {
             defaults.set(newValue, forKey: Keys.musicEdgeGlowEnabled)
+        }
+    }
+
+    // MARK: - Vibe Glow
+
+    /// Controls whether the closed notch uses the continuous vibe glow.
+    /// Defaults to disabled so the closed-state activity UI remains unchanged.
+    nonisolated static var vibeGlowEnabled: Bool {
+        get {
+            if defaults.object(forKey: Keys.vibeGlowEnabled) == nil {
+                return false
+            }
+            return defaults.bool(forKey: Keys.vibeGlowEnabled)
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.vibeGlowEnabled)
         }
     }
 

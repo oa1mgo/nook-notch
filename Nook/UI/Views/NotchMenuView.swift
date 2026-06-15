@@ -33,6 +33,7 @@ struct NotchMenuView: View {
     @State private var didAppear = false
     @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
     @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
+    @AppStorage(AppSettings.vibeGlowEnabledKey) private var vibeGlowEnabled = false
     @AppStorage(AppSettings.performanceMonitorEnabledKey) private var performanceMonitorEnabled = true
 
     var body: some View {
@@ -116,12 +117,23 @@ struct NotchMenuView: View {
                 }
 
                 MenuToggleRow(
+                    icon: "sparkles",
+                    label: "Vibe Glow",
+                    isOn: vibeGlowEnabled,
+                    primaryTextColor: primaryTextColor,
+                    secondaryTextColor: secondaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 7
+                ) {
+                    vibeGlowEnabled.toggle()
+                }
+
+                MenuToggleRow(
                     icon: "gauge.with.dots.needle.33percent",
                     label: "Performance Monitor",
                     isOn: performanceMonitorEnabled,
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 7
+                    isFocused: viewModel.settingsFocusedIndex == 8
                 ) {
                     performanceMonitorEnabled.toggle()
                 }
@@ -137,7 +149,7 @@ struct NotchMenuView: View {
                     isOn: launchAtLogin,
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 8
+                    isFocused: viewModel.settingsFocusedIndex == 9
                 ) {
                     do {
                         if launchAtLogin {
@@ -152,7 +164,7 @@ struct NotchMenuView: View {
                     }
                 }
 
-                AccessibilityRow(isEnabled: AXIsProcessTrusted(), primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 9)
+                AccessibilityRow(isEnabled: AXIsProcessTrusted(), primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 10)
 
                 Divider()
                     .background(separatorColor)
@@ -163,7 +175,7 @@ struct NotchMenuView: View {
                     label: "Star on GitHub",
                     trailingLabel: appVersion,
                     primaryTextColor: primaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 10
+                    isFocused: viewModel.settingsFocusedIndex == 11
                 ) {
                     if let url = URL(string: "https://github.com/oa1mgo/nook") {
                         NSWorkspace.shared.open(url)
@@ -180,7 +192,7 @@ struct NotchMenuView: View {
                     trailingLabel: "⌘Q",
                     isDestructive: true,
                     primaryTextColor: primaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 11
+                    isFocused: viewModel.settingsFocusedIndex == 12
                 ) {
                     NSApplication.shared.terminate(nil)
                 }
@@ -224,8 +236,9 @@ struct NotchMenuView: View {
         case 4: viewModel.pushTo(.shortcuts)
         case 5: artworkAdaptiveBackgroundEnabled.toggle()
         case 6: musicEdgeGlowEnabled.toggle()
-        case 7: performanceMonitorEnabled.toggle()
-        case 8:
+        case 7: vibeGlowEnabled.toggle()
+        case 8: performanceMonitorEnabled.toggle()
+        case 9:
             do {
                 if launchAtLogin {
                     try SMAppService.mainApp.unregister()
@@ -237,15 +250,15 @@ struct NotchMenuView: View {
             } catch {
                 print("Failed to toggle launch at login: \(error)")
             }
-        case 9:
+        case 10:
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
                 NSWorkspace.shared.open(url)
             }
-        case 10:
+        case 11:
             if let url = URL(string: "https://github.com/oa1mgo/nook") {
                 NSWorkspace.shared.open(url)
             }
-        case 11: NSApplication.shared.terminate(nil)
+        case 12: NSApplication.shared.terminate(nil)
         default: break
         }
     }

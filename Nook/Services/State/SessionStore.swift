@@ -443,6 +443,7 @@ actor SessionStore {
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
         let fallbackToolId = toolUseId ?? makeCodexToolId(for: sessionId)
+        let completedTurnAt = session.completionNotificationAt
 
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = now
@@ -476,13 +477,21 @@ actor SessionStore {
             lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
             usage: session.conversationInfo.usage
         )
-        // Codex `PostToolUse` is not the end of the turn. The model may keep
-        // thinking, produce text, compact, or start another tool before `Stop`.
-        // Keep the visible state active until the explicit turn-scope Stop hook.
-        if session.phase.canTransition(to: .processing) {
-            session.phase = .processing
+        if let completedTurnAt {
+            // A late PostToolUse can arrive after Codex has already emitted
+            // Stop for the turn. Keep the turn completed while still letting
+            // the tool row reconcile above.
+            session.phase = .idle
+            session.completionNotificationAt = completedTurnAt
+        } else {
+            // Codex `PostToolUse` is not the end of the turn. The model may keep
+            // thinking, produce text, compact, or start another tool before `Stop`.
+            // Keep the visible state active until the explicit turn-scope Stop hook.
+            if session.phase.canTransition(to: .processing) {
+                session.phase = .processing
+            }
+            session.completionNotificationAt = nil
         }
-        session.completionNotificationAt = nil
 
         sessions[sessionId] = session
     }
@@ -550,20 +559,12 @@ actor SessionStore {
     private func processCodexStop(sessionId: String, cwd: String) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
-        let hasActiveTools = hasRunningTools(in: session)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
-        if hasActiveTools {
-            // Stop is scoped to the Codex turn, not necessarily to every
-            // asynchronous tool lifecycle. If a PostToolUse is still pending,
-            // keep Nook active instead of briefly showing an ended/idle state.
-            session.phase = .processing
-            session.completionNotificationAt = nil
-        } else {
-            session.phase = .idle
-            session.completionNotificationAt = Date()
-            session.toolTracker.inProgress.removeAll()
-        }
+        session.phase = .idle
+        session.completionNotificationAt = Date()
+        finishDanglingCodexTools(in: &session)
+        session.toolTracker.inProgress.removeAll()
         sessions[sessionId] = session
     }
 
@@ -1231,6 +1232,22 @@ actor SessionStore {
                 return tool.status == .running || tool.status == .waitingForApproval
             }
             return false
+        }
+    }
+
+    private func finishDanglingCodexTools(in session: inout SessionState) {
+        for index in session.chatItems.indices {
+            guard case .toolCall(var tool) = session.chatItems[index].type,
+                  tool.status == .running || tool.status == .waitingForApproval else {
+                continue
+            }
+
+            tool.status = tool.status == .waitingForApproval ? .interrupted : .success
+            session.chatItems[index] = ChatHistoryItem(
+                id: session.chatItems[index].id,
+                type: .toolCall(tool),
+                timestamp: session.chatItems[index].timestamp
+            )
         }
     }
 

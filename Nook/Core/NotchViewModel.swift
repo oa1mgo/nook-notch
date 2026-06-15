@@ -568,7 +568,7 @@ class NotchViewModel: ObservableObject {
     }
 
     /// Total focusable items in the menu page
-    let menuItemCount: Int = 12
+    let menuItemCount: Int = 13
     /// Total focusable items in the shortcuts page (Back + action rows + Restore)
     var shortcutsItemCount: Int { 1 + ShortcutAction.allCases.count + 1 }
     /// Total focusable items in the agents page (just Back for now)
