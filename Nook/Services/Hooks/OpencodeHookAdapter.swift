@@ -44,45 +44,16 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     private static var lock = NSLock()
 
     // TODO(perf): All `private static var` state declared below is
-    // session-scoped (or message-scoped within a session) and is
-    // NEVER cleared when the corresponding session ends. Nook is
-    // typically a long-running menubar app — these maps grow for the
-    // lifetime of the process. Practical impact today is small
-    // (MB-scale at most for power users; correctness is unaffected
-    // because opencode messageIDs are globally unique and not
-    // reused), but it is a strict memory leak and would become a
-    // problem if Nook ever became a system service.
+    // session-scoped (or message-scoped within a session) and was
+    // previously NEVER cleared when the corresponding session ends.
+    // Cleanup is now implemented in `cleanupState(forSession:)`, called
+    // from `handleSessionStatus(idle)` and `handleSessionIdle`.
     //
-    // Cleanup hook: `handleSessionIdle` and the `session.status=idle`
-    // / `session.status=ended` branches in the dispatcher are the
-    // canonical places. On cleanup, drop per-session entries from
-    // the dicts and filter the global Sets through `messageSession`
-    // (or change the Sets to `[sessionId: Set<messageID>]` for O(1)
-    // removal). State to clear, grouped by cleanup strategy:
-    //
-    //   Per-session dicts — single `removeValue(forKey:)`:
-    //     - sessionCwd
-    //     - latestUserMsgID
-    //     - subagentToParent            (key is the child sessionId)
-    //     - subagentTaskToolId          (key is the child sessionId)
-    //     - parentAwaitingTask          (key is the parent sessionId)
-    //
-    //   Message-scoped dicts — filter by `messageSession[messageID]`:
-    //     - pendingTextByMessage
-    //     - pendingReasoningByMessage
-    //     - messageSession              (the reverse map itself)
-    //
-    //   Global Sets keyed by messageID — filter by `messageSession`,
-    //   or convert to per-session dicts for O(1) removal:
-    //     - emittedTextMessages
-    //     - suppressedTextMessages
-    //     - knownReasoningMessageIds
-    //     - emittedReasoningMessages
-    //
-    //   Global Set keyed by callID — no session mapping today;
-    //   tracking `callID → sessionId` is needed before this can be
-    //   cleaned per-session:
-    //     - runningToolCallIds
+    // State that remains unbounded (cannot be cleaned per-session):
+    //   - runningToolCallIds: keyed by callID, no session mapping;
+    //     tracking `callID → sessionId` would be needed. Low risk
+    //     because the set is bounded by active tool calls only
+    //     (entries are removed on completed/error).
 
     /// sessionID → cwd from session.created / session.updated
     private static var sessionCwd: [String: String] = [:]
@@ -310,6 +281,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 return v
             }()
             let flushed = flushPendingText(forSession: childId, cwd: cwd)
+            cleanupState(forSession: childId)
             Self.logNotice("→ subagent stop routed to parent child=\(childId) parent=\(parentId) flushed=\(flushed.count)")
             return flushed
 
@@ -437,6 +409,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // Safety net: flush any assistant text buffers that didn't get a finish=stop
             var events: [OpencodeSessionEvent] = flushPendingText(forSession: sessionId, cwd: cwd)
             events.append(.stop(sessionId: sessionId, cwd: cwd))
+            cleanupState(forSession: sessionId)
             Self.logNotice("→ stop session=\(sessionId) flushed=\(events.count - 1)")
             return events
         default:
@@ -452,8 +425,44 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.unlock()
             return v
         }()
+        cleanupState(forSession: sessionId)
         Self.logNotice("→ stop (legacy session.idle) session=\(sessionId)")
         return [.stop(sessionId: sessionId, cwd: cwd)]
+    }
+
+    private static func cleanupState(forSession sessionId: String) {
+        lock.lock()
+        // Per-session dicts — direct removal
+        sessionCwd.removeValue(forKey: sessionId)
+        latestUserMsgID.removeValue(forKey: sessionId)
+        consumedUserPromptBySession.removeValue(forKey: sessionId)
+        preRegistrationEventCount.removeValue(forKey: sessionId)
+        parentAwaitingTask.removeValue(forKey: sessionId)
+
+        // Subagent dicts — sessionId may be a child or a parent
+        subagentToParent.removeValue(forKey: sessionId)
+        subagentTaskToolId.removeValue(forKey: sessionId)
+        // Also remove child entries whose parent is this session
+        subagentToParent = subagentToParent.filter { $0.value != sessionId }
+        subagentTaskToolId = subagentTaskToolId.filter { $0.value != sessionId }
+
+        // Message-scoped — collect messageIDs belonging to this session
+        let messagesToRemove = messageSession.filter { $0.value == sessionId }.map(\.key)
+        for messageId in messagesToRemove {
+            pendingTextByMessage.removeValue(forKey: messageId)
+            pendingReasoningByMessage.removeValue(forKey: messageId)
+            messageSession.removeValue(forKey: messageId)
+            emittedTextMessages.remove(messageId)
+            suppressedTextMessages.remove(messageId)
+            knownReasoningMessageIds.remove(messageId)
+            emittedReasoningMessages.remove(messageId)
+            reasoningFinalizedMessageIds.remove(messageId)
+            consumedUserMessageIDs.remove(messageId)
+        }
+        lock.unlock()
+        if !messagesToRemove.isEmpty {
+            Self.logNotice("→ cleanup session=\(sessionId) messages=\(messagesToRemove.count)")
+        }
     }
 
     private static func handleQuestionAsked(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
@@ -930,7 +939,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             }
             return [pre]
         }
-        if toolName == "task", let callId, status == "completed" {
+        if toolName == "task", let callId, status == "completed" || status == "error" {
             if let childId = disassociateTaskFromChild(parentId: sessionId, taskToolId: callId) {
                 Self.logNotice("→ task postTool session=\(sessionId) callID=\(callId) child=\(childId) → subagentStopped")
                 // The task postTool is the parent's signal that the subagent
@@ -976,6 +985,13 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 }
                 runningToolCallIds.remove(callId)
                 log.notice("→ postTool session=\(sessionId) callID=\(callId) tool=\(toolName) outputLen=\(output?.count ?? 0) errorLen=\(error?.count ?? 0)")
+            case "error":
+                guard runningToolCallIds.contains(callId) else {
+                    log.notice("→ postTool (error) for unknown callID, skipping session=\(sessionId) callID=\(callId)")
+                    return []
+                }
+                runningToolCallIds.remove(callId)
+                log.notice("→ postTool (error) session=\(sessionId) callID=\(callId) tool=\(toolName) errorLen=\(error?.count ?? 0)")
             default:
                 return []
             }
@@ -996,6 +1012,12 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 sessionId: sessionId, cwd: cwd,
                 toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
                 output: output, error: error, messageId: messageId
+            )]
+        case "error":
+            return [.postTool(
+                sessionId: sessionId, cwd: cwd,
+                toolName: toolName, toolUseId: callId, inputSummary: inputSummary,
+                output: nil, error: error, messageId: messageId
             )]
         default:
             return []
