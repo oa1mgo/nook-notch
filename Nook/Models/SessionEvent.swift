@@ -191,6 +191,13 @@ extension HookEvent {
 
         // Permission request creates waitingForApproval state
         if expectsResponse, let tool = tool {
+            // AskUserQuestion is user input (not approval), so use
+            // .waitingForInput for consistent cross-provider behavior.
+            // Claude sends status: "waiting_for_input"; OpenCode sends
+            // PermissionRequest — both should render the same way.
+            if ToolKind.classify(tool) == .askUserQuestion {
+                return .waitingForInput
+            }
             return .waitingForApproval(PermissionContext(
                 toolUseId: toolUseId ?? "",
                 toolName: tool,

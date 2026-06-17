@@ -364,6 +364,13 @@ struct InstanceRow: View {
         session.phase.isWaitingForApproval
     }
 
+    /// Whether the session is waiting for user input (AskUserQuestion).
+    /// Unified across providers: Claude sends status: "waiting_for_input",
+    /// OpenCode sends PermissionRequest — both resolve to .waitingForInput.
+    private var isWaitingForUserInput: Bool {
+        session.phase.isWaitingForInput && isInteractiveTool
+    }
+
     /// Whether the pending tool requires interactive input (not just approve/deny)
     private var isInteractiveTool: Bool {
         guard let toolName = session.pendingToolName else { return false }
@@ -418,8 +425,8 @@ struct InstanceRow: View {
                     }
                 }
 
-                // Show tool call when waiting for approval, otherwise last activity
-                if isWaitingForApproval, let toolName = session.pendingToolName {
+                // Show tool call when waiting for approval/input, otherwise last activity
+                if (isWaitingForApproval || isWaitingForUserInput), let toolName = session.pendingToolName {
                     // Show tool name in amber + input on same line
                     HStack(spacing: 4) {
                         Text(MCPToolFormatter.formatToolName(toolName))
@@ -493,7 +500,7 @@ struct InstanceRow: View {
             Spacer(minLength: 0)
 
             // Action icons or approval buttons
-            if isWaitingForApproval && isInteractiveTool {
+            if (isWaitingForApproval || isWaitingForUserInput) && isInteractiveTool {
                 // Interactive tools like AskUserQuestion - show chat + terminal buttons
                 HStack(spacing: 8) {
                     IconButton(icon: "bubble.left") {

@@ -186,6 +186,14 @@ enum SessionPhase: Sendable {
         return false
     }
 
+    /// Whether this is a waitingForInput phase
+    nonisolated var isWaitingForInput: Bool {
+        if case .waitingForInput = self {
+            return true
+        }
+        return false
+    }
+
     /// Extract tool name if waiting for approval
     var approvalToolName: String? {
         if case .waitingForApproval(let ctx) = self {
