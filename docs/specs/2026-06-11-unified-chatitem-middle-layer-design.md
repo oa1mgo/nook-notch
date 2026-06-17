@@ -2,7 +2,109 @@
 
 > 调研日期: 2026-06-11
 > 状态: 设计阶段（待 Phase 1+2 实施验证）
+> 修订: 2026-06-16 — `BlockOrdering` 增加 `.appendOrder` 第四种策略
+> 修订: 2026-06-17 — hook placeholder 策略由 ordering 驱动（`SessionProvider.needsHookPlaceholders`）
 > 触发: opencode thinking 排序 bug 暴露三种 provider 架构差异
+
+## Revision 2026-06-16 — `.appendOrder` 第四种排序策略
+
+### 动机
+
+Task 4（Claude adapter）实施过程发现原 spec 的 `BlockOrdering` 隐含假设「**所有 provider 都必须让 sorter 主动排序**」—— 这一点对 OpenCode 正确（事件乱序到达），对 Claude **错误**：
+
+Claude JSONL（以及未来 Codex transcript）的特性是 **append-only + monotonic** —— 文件按时间顺序写入，append 顺序天然等于显示顺序。原 spec 把它们套进 `.filePosition(messageIndex, blockIndex)` 后，触发了 incremental sync 路径上的致命 bug：
+
+- `ClaudeChatItemAdapter` 在每次 `scheduleFileSync` 触发时收到的是 `ConversationParser.parseIncremental()` 返回的 **newMessages（只有本次新增）**
+- adapter 的 `messages.enumerated()` 让 `messageIndex` 从 0 重置
+- 新插入的 chat item ordering 变成 `(0, 0)`、`(0, 1)`，被 `ChatItemSorter` 排到全 chat 顶部
+- 视觉表现：最新 assistant text、最新 thinking、`No response requested.` 全部紧贴 user prompt 出现在顶部
+
+HEAD baseline（`SessionStore.upsertBlocks()`）根本不排序，append 顺序就是 jsonl 顺序。中间层引入排序后，反而把原本正确的顺序打乱了。
+
+### 新增 case
+
+`BlockOrdering` 增加 `.appendOrder`：
+
+```swift
+enum BlockOrdering: Sendable, Equatable {
+    case filePosition(messageIndex: Int, blockIndex: Int)     // ⚠ 仅全量 file parse
+    case messageRelative(messageId: String, typePriority: BlockTypePriority, blockIndex: Int)  // OpenCode 事件流
+    case timestamp(Date)                                       // fallback
+    case appendOrder                                           // append-only + monotonic
+}
+```
+
+`.appendOrder` 的语义：**provider 声明「append 顺序就是显示顺序，sorter 不应主动改动我」**。
+
+### Sorter 配套改造
+
+`ChatItemSorter.sorted()` 增加 fast path：当所有 items 的 ordering 都是 `.appendOrder` **或 missing** 时，直接返回 `items`，不调 `Array.sorted`。
+
+`missing → 视为信任 append` 是有意为之 —— hook 路径（`processToolTracking`）直接 append item 但不更新 `blockOrderings` 字典，hook item 和 adapter item 混在一起时，hook item 的 ordering 是 missing。fast path 把 missing 等同于 `.appendOrder` 让两种来源的 item 都能正确展示。
+
+### Provider 接入指南
+
+| Provider 数据形态 | 推荐 ordering | 例子 |
+|---|---|---|
+| append-only + monotonic JSONL / transcript | `.appendOrder` | Claude JSONL, 未来 Codex transcript |
+| 事件乱序到达（reasoning / response / tool 交错） | `.messageRelative` | OpenCode |
+| 全量 file parse 且 messageIndex 全局稳定 | `.filePosition` | 历史遗留场景 |
+| 都不适用 | `.timestamp` 兜底 | — |
+
+> ⚠ **不要在 incremental sync 路径上用 `.filePosition`** —— `messageIndex` 在增量数据上无法保持全局稳定。Claude 的 incremental sync bug 正是踩到这个陷阱。
+
+> **接入新 provider？** 除非你能证明数据源会产生乱序 item，否则默认 `.appendOrder`。OpenCode 是个特例（事件总线 + 异步 part 写入），不能套用这个默认。
+
+### 修订影响
+
+- `Nook/Models/ChatItemUpdate.swift` — `BlockOrdering` 加 `case appendOrder` + 完整 doc
+- `Nook/Services/Shared/ChatItemSorter.swift` — fast path + `.appendOrder, .appendOrder → false` 兜底
+- `Nook/Services/Hooks/ClaudeChatItemAdapter.swift` — 5 处 `BlockOrdering.filePosition(...)` 改 `.appendOrder`
+- Claude adapter spec（`2026-06-16-clause-chatitem-adapter-design.md`）Task 2 ordering 列同步更新
+
+### Revision 2026-06-17 — hook placeholder 策略由 ordering 驱动
+
+#### 动机
+
+`.appendOrder` 修订解决了 **adapter 路径** 的排序问题（sorter fast path 跳过排序），但遗漏了 **hook 路径** 对 ordering 的破坏：
+
+```
+时序：
+1. Claude 生成响应 [thinking, toolUse(AskUserQuestion)]
+2. Hook PreToolUse 立即创建 Question placeholder，timestamp = Date()（T1）
+   chatItems: [userPrompt, Question(T1)]
+3. JSONL sync 到达 → adapter 创建 thinking(T0)，append 到末尾
+   chatItems: [userPrompt, Question(T1), thinking(T0)]
+4. ChatItemSorter fast path（全 .appendOrder）→ 返回原序
+   结果：Question 在 thinking 前面 ← 回归
+```
+
+根因：hook placeholder 用 `Date()` 创建（比 `message.timestamp` 晚），append 到 chatItems 末尾后，adapter 后续 append 的 thinking 只能排在它后面。sorter 的 fast path 忠实地保留了这个错误的 append 顺序。
+
+#### 架构决策
+
+**ordering 策略驱动 hook 路径行为**，而非 provider 名字打补丁：
+
+```swift
+// SessionProvider.swift
+var needsHookPlaceholders: Bool {
+    switch self {
+    case .claude, .codex: return false  // append-order，adapter 权威
+    case .opencode: return true          // 事件乱序，需要实时占位符
+    }
+}
+```
+
+- `needsHookPlaceholders == false`：hook 只更新 `toolTracker`（生命周期），不创建 chatItem。adapter 的 JSONL/transcript sync 用正确的 `message.timestamp` 创建 items。
+- `needsHookPlaceholders == true`：hook 创建实时 placeholder，sorter 负责最终排序。
+
+**为什么不用 `Date()` 修复**：对 append-order provider，任何 hook 创建的 item 都会破坏 append 顺序（Date() 永远 ≥ 最新的 message.timestamp）。唯一正确的做法是不创建。
+
+**为什么不用 position-aware insert**：只解决同消息 case，跨消息 incremental sync 仍然出错（新消息的 thinking 被插到旧消息的 placeholder 前面）。
+
+#### 涉及文件
+- `Nook/Models/SessionProvider.swift` — 新增 `needsHookPlaceholders` 属性
+- `Nook/Services/State/SessionStore.swift` — `processToolTracking` 和 `processSubagentStarted` 用 `provider.needsHookPlaceholders` 替代 `provider == .claude`
 
 ## Overview
 
@@ -81,9 +183,10 @@ struct ToolCallBlock: Sendable, Equatable {
 }
 
 enum BlockOrdering: Sendable, Equatable {
-    case filePosition(messageIndex: Int, blockIndex: Int)     // Claude/Codex JSONL
-    case messageRelative(messageId: String, blockIndex: Int)  // OpenCode 事件流
-    case timestamp(Date)                                       // fallback
+    case filePosition(messageIndex: Int, blockIndex: Int)                       // ⚠ 仅全量 file parse
+    case messageRelative(messageId: String, typePriority: BlockTypePriority, blockIndex: Int)  // OpenCode 事件流
+    case timestamp(Date)                                                          // fallback
+    case appendOrder                                                              // append-only + monotonic
 }
 
 enum BlockMutation: Sendable, Equatable {
@@ -124,8 +227,19 @@ enum ChatItemIdFactory {
 
 ```swift
 enum ChatItemSorter {
+    /// Fast path: when every item is .appendOrder or has no ordering
+    /// entry, return the input array verbatim — append order is
+    /// display order for append-only + monotonic providers, and hook
+    /// insertions are intentionally not registered in `orderings`.
     static func sorted(_ items: [ChatHistoryItem], orderings: [String: BlockOrdering]) -> [ChatHistoryItem] {
-        items.sorted { a, b in
+        if items.allSatisfy({ id in
+            guard let o = orderings[id] else { return true }
+            if case .appendOrder = o { return true }
+            return false
+        }) {
+            return items
+        }
+        return items.sorted { a, b in
             compare(orderings[a.id], orderings[b.id], fallbackA: a, fallbackB: b)
         }
     }
@@ -137,11 +251,17 @@ enum ChatItemSorter {
         switch (a, b) {
         case (.filePosition(let mi1, let bi1), .filePosition(let mi2, let bi2)):
             return (mi1, bi1) < (mi2, bi2)
-        case (.messageRelative(let m1, let b1), .messageRelative(let m2, let b2)):
-            if m1 == m2 { return b1 < b2 }
+        case (.messageRelative(let m1, let p1, let b1), .messageRelative(let m2, let p2, let b2)):
+            // typePriority enforces causal ordering within a message
+            if m1 == m2 {
+                if p1 != p2 { return p1.rawValue < p2.rawValue }
+                return b1 < b2
+            }
             return m1 < m2  // messageID 字典序通常等于时间序
         case (.timestamp(let t1), .timestamp(let t2)):
             return t1 < t2
+        case (.appendOrder, .appendOrder):
+            return false  // fast path 兜底：保持原序
         default:
             return fallbackA.timestamp < fallbackB.timestamp
         }

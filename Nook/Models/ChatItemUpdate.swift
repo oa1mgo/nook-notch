@@ -29,11 +29,17 @@ struct ChatItemUpdate: Sendable, Identifiable {
     /// footer for bash timeout/non-zero-exit) that can't be derived from
     /// the `error` string alone. Ignored for non-tool updates.
     let isError: Bool
+    /// Timestamp of the source message, so all blocks from the same
+    /// message share one timestamp. This keeps blocks grouped together
+    /// when ChatItemSorter falls back to timestamp comparison (e.g.
+    /// hook-created items have nil ordering).
+    let messageTimestamp: Date?
 
     init(
         id: String, sessionId: String, block: ChatItemBlock,
         ordering: BlockOrdering, mutation: BlockMutation,
-        provider: SessionProvider, isError: Bool = false
+        provider: SessionProvider, isError: Bool = false,
+        messageTimestamp: Date? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -42,6 +48,7 @@ struct ChatItemUpdate: Sendable, Identifiable {
         self.mutation = mutation
         self.provider = provider
         self.isError = isError
+        self.messageTimestamp = messageTimestamp
     }
 }
 
@@ -72,13 +79,26 @@ struct ChatItemToolCall: Sendable, Equatable {
 
 // MARK: - BlockOrdering
 
-/// Sort key for chat items. Each provider uses the variant that matches
-/// its data source:
-/// - Claude/Codex JSONL → filePosition (messageIndex + blockIndex from file)
-/// - OpenCode events → messageRelative (messageId + per-message blockIndex)
-/// - Fallback → timestamp
+/// Sort key for chat items. Each provider picks the variant that matches
+/// its data source's ordering guarantees:
+///
+/// | Provider data shape | Recommended case |
+/// | --- | --- |
+/// | append-only, monotonic source (Claude JSONL, hook events) | `.appendOrder` |
+/// | event stream with out-of-order arrival (OpenCode) | `.messageRelative` |
+/// | full-file parse with globally-stable index | `.filePosition` |
+/// | nothing else applies | `.timestamp` |
+///
+/// **Adding a new provider?** Default to `.appendOrder` unless you can
+/// prove your source produces items out of display order.
 enum BlockOrdering: Sendable, Equatable {
-    /// Position within a JSONL file (Claude / Codex transcript).
+    /// Position within a JSONL file (full-file parse only).
+    ///
+    /// ⚠ Do NOT use on incremental sync paths — the (messageIndex,
+    /// blockIndex) tuple is only stable when `messages` is the complete
+    /// file. On an incremental parse that returns only newly-appended
+    /// messages, messageIndex resets to 0 and the new items get sorted
+    /// to the top of the chat. Use `.appendOrder` instead in that case.
     case filePosition(messageIndex: Int, blockIndex: Int)
     /// Position relative to a message in an event stream (OpenCode).
     /// messageId encodes chronological order (opencode message IDs are
@@ -88,6 +108,20 @@ enum BlockOrdering: Sendable, Equatable {
     case messageRelative(messageId: String, typePriority: BlockTypePriority, blockIndex: Int)
     /// Fallback: raw timestamp ordering (Codex live events).
     case timestamp(Date)
+    /// Provider declares: append order IS display order — `ChatItemSorter`
+    /// must not reposition these items.
+    ///
+    /// Use for append-only + monotonic data sources where the order items
+    /// are appended to `session.chatItems` already matches the order they
+    /// should render in. Examples:
+    /// - Claude JSONL transcript (lines are written in turn order)
+    /// - Hook event stream (events fire in the order Claude writes them)
+    ///
+    /// `ChatItemSorter.sorted()` has a fast path that returns the input
+    /// array verbatim when every item declares `.appendOrder` (or has no
+    /// ordering entry at all — see the sorter doc for why missing is
+    /// treated the same way).
+    case appendOrder
 }
 
 // MARK: - BlockTypePriority

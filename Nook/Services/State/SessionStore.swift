@@ -195,6 +195,12 @@ actor SessionStore {
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createSession(from: event)
 
+        // DIAGNOSTIC (#14): log every hook event to /tmp/nook-debug.log so
+        // we can see whether PostToolUse actually fires after the user
+        // rejects AskUserQuestion in the terminal. If it doesn't, the chat
+        // view's "Waiting for approval" state will never clear.
+        DebugLog.shared.write("[hook-event] session=\(sessionId) event=\(event.event) status=\(event.status) tool=\(event.tool ?? "nil") toolUseId=\(event.toolUseId ?? "nil") notificationType=\(event.notificationType ?? "nil")")
+
         // Track new session in Mixpanel
         if isNewSession {
             mixpanel?.track(event: "Session Started")
@@ -226,6 +232,7 @@ actor SessionStore {
 
         if event.event == "PermissionRequest", let toolUseId = event.toolUseId {
             Self.logger.debug("Setting tool \(toolUseId.prefix(12), privacy: .public) status to waitingForApproval")
+            DebugLog.shared.write("[hook-tool-status] reason=permissionRequest session=\(sessionId) toolUseId=\(toolUseId) newStatus=waitingForApproval")
             updateToolStatus(in: &session, toolId: toolUseId, status: .waitingForApproval)
         }
 
@@ -711,21 +718,77 @@ actor SessionStore {
 
         switch update.mutation {
         case .insert:
-            let item = ChatHistoryItem(
-                id: update.id,
-                type: update.block.toChatHistoryItemType(),
-                timestamp: now
-            )
             if let idx = session.chatItems.firstIndex(where: { $0.id == update.id }) {
-                // Upsert: replace existing item (preserves original timestamp)
+                // ── Upsert: existing item found ─────────────────────────
                 let originalTimestamp = session.chatItems[idx].timestamp
+                let existingType = session.chatItems[idx].type
+
+                // Tool call: preserve runtime state (status, result,
+                // subagentTools) set by the hook path. Adapter provides
+                // more complete name/input/structuredResult from JSONL.
+                if case .toolCall(let newTool) = update.block,
+                   case .toolCall(let existingTool) = existingType {
+                    DebugLog.shared.write("[chat-item-update] toolCall-upsert session=\(update.sessionId) id=\(update.id) existingStatus=\(existingTool.status) adapterStatus=\(newTool.status) adapterIsError=\(update.isError) existingHasStructured=\(existingTool.structuredResult != nil) adapterHasStructured=\(newTool.structuredResult != nil)")
+                    let merged = ToolCallItem(
+                        name: newTool.name,
+                        input: newTool.input,
+                        status: existingTool.status,
+                        result: existingTool.result,
+                        // Fill in structuredResult from adapter when hook
+                        // path didn't have it (e.g. AskUserQuestion options
+                        // parsed from tool input by the adapter fallback).
+                        structuredResult: existingTool.structuredResult ?? newTool.structuredResult,
+                        subagentTools: existingTool.subagentTools
+                    )
+                    session.chatItems[idx] = ChatHistoryItem(
+                        id: update.id, type: .toolCall(merged),
+                        timestamp: originalTimestamp
+                    )
+                    blockOrderings[update.id] = update.ordering
+                    break
+                }
+
+                // User prompt: preserve once it exists — JSONL shouldn't
+                // rewrite user text.
+                if case .user = existingType {
+                    break
+                }
+
+                // Assistant text: don't overwrite non-empty with empty,
+                // and skip empty→empty churn.
+                if case .assistantText(let newText) = update.block,
+                   case .assistant(let existing) = existingType {
+                    let newTrimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let existingTrimmed = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if existingTrimmed.isEmpty && newTrimmed.isEmpty { break }
+                    if !existingTrimmed.isEmpty && newTrimmed.isEmpty { break }
+                }
+
+                // Thinking: skip empty→empty replacement.
+                if case .thinking(let newText) = update.block,
+                   case .thinking(let existing) = existingType,
+                   existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    break
+                }
+
+                // Interrupted: only insert once.
+                if case .interrupted = existingType {
+                    break
+                }
+
+                // Default: replace content, preserve timestamp.
                 session.chatItems[idx] = ChatHistoryItem(
                     id: update.id,
                     type: update.block.toChatHistoryItemType(),
                     timestamp: originalTimestamp
                 )
             } else {
-                session.chatItems.append(item)
+                session.chatItems.append(ChatHistoryItem(
+                    id: update.id,
+                    type: update.block.toChatHistoryItemType(),
+                    timestamp: update.messageTimestamp ?? now
+                ))
             }
             blockOrderings[update.id] = update.ordering
 
@@ -785,14 +848,18 @@ actor SessionStore {
             blockOrderings.removeValue(forKey: update.id)
         }
 
-        // ── Lifecycle side effects ────────────────────────────────────
-        // Mirror the side effects that the old processOpencode* methods
-        // applied (lastActivity, phase, completionNotificationAt,
-        // conversationInfo, toolTracker). Only the .insert / .updateStatus
-        // mutations carry meaningful lifecycle signals; .update / .remove
-        // are structural and don't change the session's activity state.
+        // ── Lifecycle side effects (OpenCode only) ────────────────────
+        // These side effects mirror the old processOpencode* methods
+        // (lastActivity, phase, completionNotificationAt, conversationInfo,
+        // toolTracker). They are designed for OpenCode's real-time event
+        // stream where each event carries a lifecycle signal.
+        //
+        // Claude's JSONL batch updates must NOT trigger these: phase is
+        // managed by processHookEvent(), conversationInfo by processFileUpdate()
+        // / ConversationParser, and toolTracker by processToolTracking().
 
-        if update.mutation == .insert || update.mutation == .updateStatus {
+        if update.provider == .opencode,
+           update.mutation == .insert || update.mutation == .updateStatus {
             enrichOpencodeRuntimeMetadata(session: &session)
             session.lastActivity = now
 
@@ -1011,6 +1078,37 @@ actor SessionStore {
     }
 
     private func processToolTracking(event: HookEvent, session: inout SessionState) {
+        // DIAGNOSTIC (#14): log every event entering processToolTracking
+        // so we can confirm whether PostToolUse actually arrives after a
+        // user denies AskUserQuestion in the terminal (root cause of the
+        // "stuck on Waiting for approval" symptom).
+        DebugLog.shared.write("[hook-tool-tracking] session=\(event.sessionId) event=\(event.event) toolUseId=\(event.toolUseId ?? "nil") tool=\(event.tool ?? "nil")")
+
+        // Skip hook placeholder creation for append-order providers.
+        // The adapter's JSONL/transcript sync is authoritative — it creates
+        // items with correct message.timestamp in source order. Hook
+        // PreToolUse creates placeholders with timestamp = Date() (later
+        // than the message timestamp), which breaks the append-only ordering
+        // guarantee (e.g. a Question placeholder appearing before its
+        // thinking bubble). For append-order providers, the adapter handles
+        // both tool calls and their status; the hook path only tracks
+        // lifecycle in toolTracker.
+        if !session.provider.needsHookPlaceholders {
+            if let toolUseId = event.toolUseId {
+                switch event.event {
+                case "PreToolUse":
+                    if let toolName = event.tool {
+                        session.toolTracker.startTool(id: toolUseId, name: toolName)
+                    }
+                case "PostToolUse":
+                    session.toolTracker.completeTool(id: toolUseId, success: true)
+                default:
+                    break
+                }
+            }
+            return
+        }
+
         switch event.event {
         case "PreToolUse":
             if let toolUseId = event.toolUseId, let toolName = event.tool {
@@ -1064,6 +1162,13 @@ actor SessionStore {
                     if session.chatItems[i].id == toolUseId,
                        case .toolCall(var tool) = session.chatItems[i].type,
                        tool.status == .waitingForApproval || tool.status == .running {
+                        let prevStatus = tool.status
+                        // DIAGNOSTIC (#14): confirm whether PostToolUse ever
+                        // lands and what status transition it forces. The
+                        // fact that it always sets .success (regardless of
+                        // whether the tool was rejected in the terminal) is
+                        // suspected bug A — flagged for the next iteration.
+                        DebugLog.shared.write("[hook-tool-tracking] postToolUse session=\(event.sessionId) toolUseId=\(toolUseId) prevStatus=\(prevStatus) newStatus=success")
                         tool.status = .success
                         session.chatItems[i] = ChatHistoryItem(
                             id: toolUseId,
@@ -1071,6 +1176,13 @@ actor SessionStore {
                             timestamp: session.chatItems[i].timestamp
                         )
                         break
+                    } else if session.chatItems[i].id == toolUseId,
+                              case .toolCall = session.chatItems[i].type {
+                        // DIAGNOSTIC (#14): tool was found in chatItems but
+                        // its status was neither .running nor
+                        // .waitingForApproval — i.e. PostToolUse arrived
+                        // after JSONL sync already set a terminal status.
+                        DebugLog.shared.write("[hook-tool-tracking] postToolUse-skip session=\(event.sessionId) toolUseId=\(toolUseId) reason=existing-status-not-active")
                     }
                 }
             }
@@ -1173,21 +1285,26 @@ actor SessionStore {
     /// a matching preTool (e.g. because of a race), the chatItem still shows up.
     private func processSubagentStarted(sessionId: String, taskToolId: String) {
         guard var session = sessions[sessionId] else { return }
-        if !session.chatItems.contains(where: { $0.id == taskToolId }) {
-            session.chatItems.append(
-                ChatHistoryItem(
-                    id: taskToolId,
-                    type: .toolCall(ToolCallItem(
-                        name: "task",
-                        input: [:],
-                        status: .running,
-                        result: nil,
-                        structuredResult: nil,
-                        subagentTools: []
-                    )),
-                    timestamp: Date()
+
+        // Skip chatItem placeholder for append-order providers — the
+        // adapter's JSONL sync creates items with correct timestamps.
+        if session.provider.needsHookPlaceholders {
+            if !session.chatItems.contains(where: { $0.id == taskToolId }) {
+                session.chatItems.append(
+                    ChatHistoryItem(
+                        id: taskToolId,
+                        type: .toolCall(ToolCallItem(
+                            name: "task",
+                            input: [:],
+                            status: .running,
+                            result: nil,
+                            structuredResult: nil,
+                            subagentTools: []
+                        )),
+                        timestamp: Date()
+                    )
                 )
-            )
+            }
         }
         session.subagentState.startTask(taskToolId: taskToolId)
         sessions[sessionId] = session
@@ -1427,6 +1544,8 @@ actor SessionStore {
     private func processFileUpdate(_ payload: FileUpdatePayload) async {
         guard var session = sessions[payload.sessionId] else { return }
 
+        DebugLog.shared.write("[claude-file-update] session=\(payload.sessionId) msgs=\(payload.messages.count) incremental=\(payload.isIncremental) completedTools=\(payload.completedToolIds.count)")
+
         // Update conversationInfo from JSONL (summary, lastMessage, etc.)
         let conversationInfo = await ConversationParser.shared.parse(
             sessionId: payload.sessionId,
@@ -1466,32 +1585,35 @@ actor SessionStore {
             Self.logger.debug("Clear reconciliation: kept \(session.chatItems.count) of \(previousCount) items")
         }
 
-            let blocksInThisBatch = Self.upsertBlocks(
-                messages: payload.messages,
-                completedToolIds: payload.completedToolIds,
-                toolResults: payload.toolResults,
-                structuredResults: payload.structuredResults,
-                session: &session
-            )
+        // Persist clear reconciliation before applying adapter updates,
+        // so applyChatItemUpdate() sees the filtered chatItems.
+        sessions[payload.sessionId] = session
 
-        if !payload.isIncremental {
-            session.chatItems.sort { $0.timestamp < $1.timestamp }
+        // Use ClaudeChatItemAdapter instead of upsertBlocks.
+        // Sorting is handled by ChatItemSorter in applyChatItemUpdate().
+        let chatUpdates = ClaudeChatItemAdapter.updates(fromFileUpdate: payload)
+        let typeCounts = Dictionary(grouping: chatUpdates, by: { "\($0.block)".prefix(20) }).mapValues(\.count)
+        DebugLog.shared.write("[claude-file-update] session=\(payload.sessionId) adapterUpdates=\(chatUpdates.count) types=\(typeCounts)")
+        for update in chatUpdates {
+            applyChatItemUpdate(update)
         }
 
-        session.toolTracker.lastSyncTime = Date()
+        // Re-fetch session — applyChatItemUpdate may have modified it.
+        guard var currentSession = sessions[payload.sessionId] else { return }
+        currentSession.toolTracker.lastSyncTime = Date()
 
         await populateSubagentToolsFromAgentFiles(
             sessionId: payload.sessionId,
-            session: &session,
+            session: &currentSession,
             cwd: payload.cwd,
             structuredResults: payload.structuredResults
         )
 
-        sessions[payload.sessionId] = session
+        sessions[payload.sessionId] = currentSession
 
         await emitToolCompletionEvents(
             sessionId: payload.sessionId,
-            session: session,
+            session: currentSession,
             completedToolIds: payload.completedToolIds,
             toolResults: payload.toolResults,
             structuredResults: payload.structuredResults
@@ -1574,167 +1696,16 @@ actor SessionStore {
         }
     }
 
-    /// Upsert blocks into `chatItems`.
-    ///
-    /// For every block we either UPDATE the existing item with the same id (preserving
-    /// runtime state like tool status / result / subagent children) or APPEND a new
-    /// item if the id isn't present yet. Empty text / thinking blocks are allowed in
-    /// the array — `AssistantMessageView` / `ThinkingView` render them as `EmptyView`
-    /// so we never get orphan dots, but the placeholder is present so a later
-    /// non-empty content update replaces it in place rather than disappearing.
-    ///
-    /// The earlier behaviour returned `nil` for empty text and skipped re-processing
-    /// of the same id; in long turns with multiple tool calls that combination made
-    /// the final assistant text vanish from the chat view until the next turn's
-    /// re-sync happened to re-introduce it.
-    ///
-    /// Takes `inout SessionState` rather than separate inout arrays because passing
-    /// `&session.chatItems` and `&session.toolTracker` to the same call triggers a
-    /// Swift exclusivity violation (the runtime flags both as simultaneous modify
-    /// accesses to the same struct storage). Inside this function the two fields
-    /// are accessed sequentially under a single inout scope, which is allowed.
-    static func upsertBlocks(
-        messages: [ChatMessage],
-        completedToolIds: Set<String>,
-        toolResults: [String: ConversationParser.ToolResult],
-        structuredResults: [String: ToolResultData],
-        session: inout SessionState
-    ) {
-        for message in messages {
-            for (blockIndex, block) in message.content.enumerated() {
-                switch block {
-                case .toolUse(let tool):
-                    if let idx = session.chatItems.firstIndex(where: { $0.id == tool.id }),
-                       case .toolCall(let existingTool) = session.chatItems[idx].type {
-                        session.chatItems[idx] = ChatHistoryItem(
-                            id: tool.id,
-                            type: .toolCall(ToolCallItem(
-                                name: tool.name,
-                                input: tool.input,
-                                status: existingTool.status,
-                                result: existingTool.result,
-                                structuredResult: existingTool.structuredResult,
-                                subagentTools: existingTool.subagentTools
-                            )),
-                            timestamp: message.timestamp
-                        )
-                        continue
-                    }
-                    if session.toolTracker.markSeen(tool.id) {
-                        let status: ToolStatus = completedToolIds.contains(tool.id) ? .success : .running
-                        var resultText: String? = nil
-                        if let parserResult = toolResults[tool.id] {
-                            if let stdout = parserResult.stdout, !stdout.isEmpty {
-                                resultText = stdout
-                            } else if let stderr = parserResult.stderr, !stderr.isEmpty {
-                                resultText = stderr
-                            } else if let content = parserResult.content, !content.isEmpty {
-                                resultText = content
-                            }
-                        }
-                        session.chatItems.append(ChatHistoryItem(
-                            id: tool.id,
-                            type: .toolCall(ToolCallItem(
-                                name: tool.name,
-                                input: tool.input,
-                                status: status,
-                                result: resultText,
-                                structuredResult: structuredResults[tool.id],
-                                subagentTools: []
-                            )),
-                            timestamp: message.timestamp
-                        ))
-                    }
-
-                case .text(let text):
-                    let itemId = "\(message.id)-text-\(blockIndex)"
-                    let newType: ChatHistoryItemType = (message.role == .user) ? .user(text) : .assistant(text)
-                    if let idx = session.chatItems.firstIndex(where: { $0.id == itemId }) {
-                        // Preserve user prompts once they exist — the JSONL shouldn't
-                        // rewrite user text, and overwriting an empty placeholder with
-                        // another empty placeholder just churns the view.
-                        if case .user = session.chatItems[idx].type { continue }
-                        // For assistant text, allow empty → empty (no churn) and
-                        // non-empty → replace the placeholder. Never overwrite a
-                        // non-empty assistant message with empty content.
-                        if case .assistant(let existing) = session.chatItems[idx].type,
-                           existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                           text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            continue
-                        }
-                        session.chatItems[idx] = ChatHistoryItem(
-                            id: itemId,
-                            type: newType,
-                            timestamp: message.timestamp
-                        )
-                    } else {
-                        session.chatItems.append(ChatHistoryItem(
-                            id: itemId,
-                            type: newType,
-                            timestamp: message.timestamp
-                        ))
-                    }
-
-                case .thinking(let text):
-                    let itemId = "\(message.id)-thinking-\(blockIndex)"
-                    if let idx = session.chatItems.firstIndex(where: { $0.id == itemId }) {
-                        if case .thinking(let existing) = session.chatItems[idx].type,
-                           existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                           text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            continue
-                        }
-                        session.chatItems[idx] = ChatHistoryItem(
-                            id: itemId,
-                            type: .thinking(text),
-                            timestamp: message.timestamp
-                        )
-                    } else {
-                        // Skip inserting thinking blocks with empty text
-                        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                            continue
-                        }
-                        session.chatItems.append(ChatHistoryItem(
-                            id: itemId,
-                            type: .thinking(text),
-                            timestamp: message.timestamp
-                        ))
-                    }
-
-                case .image(let imageBlock):
-                    let itemId = "\(message.id)-image-\(blockIndex)"
-                    if let idx = session.chatItems.firstIndex(where: { $0.id == itemId }) {
-                        session.chatItems[idx] = ChatHistoryItem(
-                            id: itemId,
-                            type: .image(imageBlock),
-                            timestamp: message.timestamp
-                        )
-                    } else {
-                        session.chatItems.append(ChatHistoryItem(
-                            id: itemId,
-                            type: .image(imageBlock),
-                            timestamp: message.timestamp
-                        ))
-                    }
-
-                case .interrupted:
-                    let itemId = "\(message.id)-interrupted-\(blockIndex)"
-                    if !session.chatItems.contains(where: { $0.id == itemId }) {
-                        session.chatItems.append(ChatHistoryItem(
-                            id: itemId,
-                            type: .interrupted,
-                            timestamp: message.timestamp
-                        ))
-                    }
-                }
-            }
-        }
-    }
-
     private func updateToolStatus(in session: inout SessionState, toolId: String, status: ToolStatus) {
         var found = false
         for i in 0..<session.chatItems.count {
             if session.chatItems[i].id == toolId,
                case .toolCall(var tool) = session.chatItems[i].type {
+                let prevStatus = tool.status
+                // DIAGNOSTIC (#14): log every status transition so we can
+                // verify whether the .waitingForApproval placeholder for
+                // AskUserQuestion ever gets cleared after denial.
+                DebugLog.shared.write("[hook-tool-status] update session=\(session.sessionId) toolUseId=\(toolId) prevStatus=\(prevStatus) newStatus=\(status)")
                 tool.status = status
                 session.chatItems[i] = ChatHistoryItem(
                     id: toolId,
@@ -1748,6 +1719,11 @@ actor SessionStore {
         if !found {
             let count = session.chatItems.count
             Self.logger.warning("Tool \(toolId.prefix(16), privacy: .public) not found in chatItems (count: \(count))")
+            // DIAGNOSTIC (#14): log when updateToolStatus can't find the
+            // target tool — likely culprit for "stuck on Waiting for
+            // approval" if PermissionRequest updates a toolUseId that
+            // PreToolUse never created (mismatch / out-of-order).
+            DebugLog.shared.write("[hook-tool-status] update-miss session=\(session.sessionId) toolUseId=\(toolId) requestedStatus=\(status) chatItemsCount=\(count)")
         }
     }
 
@@ -1842,21 +1818,25 @@ actor SessionStore {
     ) async {
         guard var session = sessions[sessionId] else { return }
 
+        DebugLog.shared.write("[claude-history-loaded] session=\(sessionId) msgs=\(messages.count) completedTools=\(completedTools.count)")
+
         // Update conversationInfo (summary, lastMessage, etc.)
         session.conversationInfo = conversationInfo
 
-        Self.upsertBlocks(
-            messages: messages,
-            completedToolIds: completedTools,
+        // Use ClaudeChatItemAdapter instead of upsertBlocks.
+        // Sorting is handled by ChatItemSorter in applyChatItemUpdate().
+        sessions[sessionId] = session
+
+        let chatUpdates = ClaudeChatItemAdapter.updates(
+            fromHistoryLoad: messages,
+            completedTools: completedTools,
             toolResults: toolResults,
             structuredResults: structuredResults,
-            session: &session
+            sessionId: sessionId
         )
-
-        // Sort by timestamp
-        session.chatItems.sort { $0.timestamp < $1.timestamp }
-
-        sessions[sessionId] = session
+        for update in chatUpdates {
+            applyChatItemUpdate(update)
+        }
     }
 
     // MARK: - File Sync Scheduling
