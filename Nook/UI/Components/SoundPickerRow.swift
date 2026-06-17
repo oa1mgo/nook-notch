@@ -5,7 +5,6 @@
 //  Notification sound selection picker for settings menu
 //
 
-import AppKit
 import SwiftUI
 
 struct SoundPickerRow: View {
@@ -77,10 +76,7 @@ struct SoundPickerRow: View {
                                 isSelected: selectedSound == sound,
                                 primaryTextColor: primaryTextColor
                             ) {
-                                // Play preview sound
-                                if let soundName = sound.soundName {
-                                    NSSound(named: soundName)?.play()
-                                }
+                                NotificationSoundPlayer.play(sound)
                                 selectedSound = sound
                                 AppSettings.notificationSound = sound
                             }
