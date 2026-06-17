@@ -29,6 +29,7 @@ struct ChatView: View {
     @State private var isBottomVisible: Bool = true
     @State private var codexTranscriptHistory: [ChatHistoryItem] = []
     @State private var isRefreshingCodexHistory: Bool = false
+    @State private var focusErrorMessage: String? = nil
 
     @FocusState private var isInputFocused: Bool
 
@@ -602,7 +603,8 @@ struct ChatView: View {
             canFocusTerminal: session.isInTmux || session.pid != nil,
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
-            onGoToTerminal: { focusTerminal() }
+            onGoToTerminal: { focusTerminal() },
+            focusErrorMessage: focusErrorMessage
         )
     }
 
@@ -624,61 +626,84 @@ struct ChatView: View {
     // MARK: - Actions
 
     private func focusTerminal() {
-        // Close the notch so focus can return to the terminal app. The
-        // terminal is the user's primary workspace for AskUserQuestion —
-        // leaving the notch open means the user is still looking at Nook
-        // instead of the question prompt in their terminal.
-        viewModel.notchClose()
+        // Clear any previous error message before retrying
+        focusErrorMessage = nil
+
         Task {
             DebugLog.shared.write("[focus] called session.isInTmux=\(session.isInTmux) session.pid=\(session.pid ?? -1) provider=\(session.provider)")
-            // tmux path (Claude's default): the Yabai controller walks
-            // `client_pid → terminal` via tmux's own `list-clients` and
-            // focuses the right pane. Skipped silently if yabai isn't
-            // installed.
-            if session.isInTmux, let pid = session.pid {
-                if await YabaiController.shared.focusWindow(forClaudePid: pid) {
-                    DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) succeeded")
-                    return
-                }
-                DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) failed, trying forWorkingDirectory")
-                if await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd) {
-                    DebugLog.shared.write("[focus] tmux focusWindow(forWorkingDirectory) succeeded")
-                    return
-                }
-                DebugLog.shared.write("[focus] tmux path failed, falling through to non-tmux fallback")
-                // Fall through to non-tmux fallback — yabai may not be
-                // installed or the tmux lookup may have failed.
-            }
-            // Non-tmux fallback (e.g. opencode running directly in Ghostty).
-            // Yabai focuses whole windows by PID; for a non-tmux shell we
-            // don't have a window handle, only the shell's PID. Walk the
-            // process tree up to the terminal app's PID and activate it
-            // via NSWorkspace — `activate(ignoringOtherApps:)` brings the
-            // terminal to the front so the user can interact with the
-            // opencode question popup.
-            if let pid = session.pid {
-                let activated = await focusTerminalApp(forChildPid: Int(pid))
-                if activated {
-                    DebugLog.shared.write("[focus] non-tmux focusTerminalApp succeeded")
-                    return
-                }
-                DebugLog.shared.write("[focus] non-tmux focusTerminalApp failed: could not find terminal app for pid=\(pid)")
-                // Last resort: try activating any known terminal app
-                // by bundle ID. Works when the process tree walk fails
-                // (e.g. Ghostty launched via launchd, PID namespace quirks).
-                let terminalBundleIds = ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"]
-                for bundleId in terminalBundleIds {
-                    if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
-                        let ok = app.activate()
-                        DebugLog.shared.write("[focus] last-resort activate bundleId=\(bundleId) success=\(ok)")
-                        if ok { return }
-                    }
-                }
-                DebugLog.shared.write("[focus] all focus methods failed")
+
+            // Try each focus method in order; stop at the first success.
+            // Order: tmux (yabai) → non-tmux process tree → last-resort bundle ID.
+            let focusSucceeded = await tryFocusTerminal()
+
+            if focusSucceeded {
+                // Only close the notch AFTER we know the terminal has
+                // accepted focus. Closing on a failed focus leaves the
+                // user looking at nothing — they can't see the question
+                // prompt and they don't know why.
+                DebugLog.shared.write("[focus] success, closing notch and restoring focus")
+                viewModel.notchClose()
             } else {
-                DebugLog.shared.write("[focus] session.pid is nil, cannot focus terminal")
+                // All focus methods failed. Keep the notch open so the
+                // user can still see the question and try again (or use
+                // the fallback hint to start a tmux session). Set a
+                // visible error message that gets cleared on next click.
+                DebugLog.shared.write("[focus] all methods failed, keeping notch open")
+                focusErrorMessage = "无法聚焦终端。请手动切换窗口（session.pid 缺失或终端 app 不在已知列表）"
             }
         }
+    }
+
+    /// Try every terminal focus method in order; return true on first success.
+    /// Order: tmux (yabai) → non-tmux process tree → last-resort bundle ID.
+    private func tryFocusTerminal() async -> Bool {
+        // tmux path (Claude's default): the Yabai controller walks
+        // `client_pid → terminal` via tmux's own `list-clients` and
+        // focuses the right pane. Skipped silently if yabai isn't
+        // installed.
+        if session.isInTmux, let pid = session.pid {
+            if await YabaiController.shared.focusWindow(forClaudePid: pid) {
+                DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) succeeded")
+                return true
+            }
+            DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) failed, trying forWorkingDirectory")
+            if await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd) {
+                DebugLog.shared.write("[focus] tmux focusWindow(forWorkingDirectory) succeeded")
+                return true
+            }
+            DebugLog.shared.write("[focus] tmux path failed, falling through to non-tmux fallback")
+            // Fall through to non-tmux fallback — yabai may not be
+            // installed or the tmux lookup may have failed.
+        }
+        // Non-tmux fallback (e.g. opencode running directly in Ghostty).
+        // Yabai focuses whole windows by PID; for a non-tmux shell we
+        // don't have a window handle, only the shell's PID. Walk the
+        // process tree up to the terminal app's PID and activate it
+        // via NSWorkspace — `activate(ignoringOtherApps:)` brings the
+        // terminal to the front so the user can interact with the
+        // opencode question popup.
+        if let pid = session.pid {
+            if await focusTerminalApp(forChildPid: Int(pid)) {
+                DebugLog.shared.write("[focus] non-tmux focusTerminalApp succeeded")
+                return true
+            }
+            DebugLog.shared.write("[focus] non-tmux focusTerminalApp failed: could not find terminal app for pid=\(pid)")
+            // Last resort: try activating any known terminal app
+            // by bundle ID. Works when the process tree walk fails
+            // (e.g. Ghostty launched via launchd, PID namespace quirks).
+            let terminalBundleIds = ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"]
+            for bundleId in terminalBundleIds {
+                if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+                    let ok = app.activate()
+                    DebugLog.shared.write("[focus] last-resort activate bundleId=\(bundleId) success=\(ok)")
+                    if ok { return true }
+                }
+            }
+            DebugLog.shared.write("[focus] all focus methods failed")
+        } else {
+            DebugLog.shared.write("[focus] session.pid is nil, cannot focus terminal")
+        }
+        return false
     }
 
     /// Walk up the process tree from `childPid` until we hit a known
@@ -1535,6 +1560,9 @@ struct ChatInteractivePromptBar: View {
     let primaryTextColor: Color
     let secondaryTextColor: Color
     let onGoToTerminal: () -> Void
+    /// Error message shown when Terminal focus failed on the last click.
+    /// Cleared on next click. nil = no error.
+    let focusErrorMessage: String?
 
     @State private var showContent = false
     @State private var showButton = false
@@ -1555,6 +1583,16 @@ struct ChatInteractivePromptBar: View {
                         .font(.system(size: 10))
                         .foregroundColor(secondaryTextColor.opacity(0.7))
                         .lineLimit(1)
+                }
+                if let error = focusErrorMessage {
+                    // Show the most recent focus failure in red. Cleared
+                    // on next click (parent sets focusErrorMessage = nil
+                    // at the start of focusTerminal). Shown ABOVE the
+                    // button so the user can see why the click did nothing.
+                    Text(error)
+                        .font(.system(size: 10))
+                        .foregroundColor(.red.opacity(0.9))
+                        .lineLimit(2)
                 }
             }
             .opacity(showContent ? 1 : 0)
