@@ -625,6 +625,7 @@ struct ChatView: View {
 
     private func focusTerminal() {
         Task {
+            DebugLog.shared.write("[focus] called session.isInTmux=\(session.isInTmux) session.pid=\(session.pid ?? -1) provider=\(session.provider)")
             // tmux path (Claude's default): the Yabai controller walks
             // `client_pid → terminal` via tmux's own `list-clients` and
             // focuses the right pane. Skipped silently if yabai isn't
@@ -647,6 +648,17 @@ struct ChatView: View {
                 let activated = await focusTerminalApp(forChildPid: Int(pid))
                 if !activated {
                     DebugLog.shared.write("[focus] non-tmux focus failed: could not find terminal app for pid=\(pid)")
+                    // Last resort: try activating any known terminal app
+                    // by bundle ID. Works when the process tree walk fails
+                    // (e.g. Ghostty launched via launchd, PID namespace quirks).
+                    let terminalBundleIds = ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"]
+                    for bundleId in terminalBundleIds {
+                        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+                            let ok = app.activate()
+                            DebugLog.shared.write("[focus] last-resort activate bundleId=\(bundleId) success=\(ok)")
+                            if ok { break }
+                        }
+                    }
                 }
             }
         }
