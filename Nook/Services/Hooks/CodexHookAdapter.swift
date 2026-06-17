@@ -31,7 +31,7 @@ enum CodexHookAdapter {
                 inputSummary: envelope.inputSummary
             )
 
-        case "posttooluse", "postbashtool":
+        case "posttooluse", "postbashtool", "posttoolusefailure", "postbashtoolfailure":
             guard let toolName = envelope.toolName else { return nil }
             return .postTool(
                 sessionId: envelope.sessionId,
@@ -56,7 +56,7 @@ enum CodexHookAdapter {
         case "subagentstop":
             return .subagentStopped(sessionId: envelope.sessionId, cwd: envelope.cwd)
 
-        case "stop":
+        case "stop", "stopfailure":
             return .stop(sessionId: envelope.sessionId, cwd: envelope.cwd)
 
         default:

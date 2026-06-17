@@ -40,6 +40,12 @@ actor SessionStore {
     /// after a short quiet window to avoid stale sessions lingering forever.
     private let codexIdleExpirationSeconds: TimeInterval = 600
 
+    /// Codex hooks can occasionally miss Stop, or finish events can arrive out
+    /// of order after Stop. Keep active states bounded so the closed notch does
+    /// not keep showing Vibe Glow for a stale turn.
+    private let codexActiveQuietExpirationSeconds: TimeInterval = 90
+    private let codexRunningToolQuietExpirationSeconds: TimeInterval = 600
+
     /// BlockOrdering keys for chat items (from unified ChatItemUpdate path).
     /// Maps chatItem.id → BlockOrdering so ChatItemSorter can maintain
     /// correct display order regardless of event arrival timing.
@@ -517,6 +523,12 @@ actor SessionStore {
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
+        if session.completionNotificationAt != nil {
+            session.phase = .idle
+            sessions[sessionId] = session
+            return
+        }
+
         session.completionNotificationAt = nil
         if session.phase.canTransition(to: .processing) {
             session.phase = .processing
@@ -541,6 +553,12 @@ actor SessionStore {
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
+        if session.completionNotificationAt != nil {
+            session.phase = .idle
+            sessions[sessionId] = session
+            return
+        }
+
         session.completionNotificationAt = nil
         if session.phase.canTransition(to: .processing) {
             session.phase = .processing
@@ -1049,6 +1067,9 @@ actor SessionStore {
     private func enrichCodexRuntimeMetadata(session: inout SessionState) {
         let tree = ProcessTreeBuilder.shared.buildTree()
         guard let process = bestMatchingCodexProcess(for: session.cwd, tree: tree) else {
+            session.pid = nil
+            session.tty = nil
+            session.isInTmux = false
             return
         }
 
@@ -1084,9 +1105,7 @@ actor SessionStore {
             return exactMatch
         }
 
-        return candidates
-            .filter { ProcessTreeBuilder.shared.isInTmux(pid: $0.pid, tree: tree) }
-            .max(by: { $0.pid < $1.pid })
+        return nil
     }
 
     private func processToolTracking(event: HookEvent, session: inout SessionState) {
@@ -1921,22 +1940,42 @@ actor SessionStore {
 
     /// Recheck status of all active sessions
     private func recheckAllSessions() {
-        var removedSession = false
+        var stateChanged = false
+        let now = Date()
 
         for (sessionId, session) in Array(sessions) {
             if session.phase == .ended {
                 sessions.removeValue(forKey: sessionId)
                 cancelPendingSync(sessionId: sessionId)
-                removedSession = true
+                stateChanged = true
                 continue
             }
 
             if session.provider == .codex,
                session.phase == .idle,
-               Date().timeIntervalSince(session.lastActivity) > codexIdleExpirationSeconds {
+               now.timeIntervalSince(session.lastActivity) > codexIdleExpirationSeconds {
                 sessions.removeValue(forKey: sessionId)
-                removedSession = true
+                stateChanged = true
                 continue
+            }
+
+            if session.provider == .codex,
+               session.phase.isActive {
+                let quietDuration = now.timeIntervalSince(session.lastActivity)
+                let quietLimit = hasRunningTools(in: session)
+                    ? codexRunningToolQuietExpirationSeconds
+                    : codexActiveQuietExpirationSeconds
+
+                if quietDuration > quietLimit {
+                    var updatedSession = session
+                    Self.logger.info("Codex session \(sessionId.prefix(8), privacy: .public) active state expired after \(Int(quietDuration), privacy: .public)s quiet; marking idle")
+                    updatedSession.phase = .idle
+                    updatedSession.completionNotificationAt = nil
+                    updatedSession.toolTracker.inProgress.removeAll()
+                    sessions[sessionId] = updatedSession
+                    stateChanged = true
+                    continue
+                }
             }
 
             if let pid = session.pid {
@@ -1945,7 +1984,7 @@ actor SessionStore {
                     Self.logger.info("Process \(pid) no longer running, ending session \(sessionId.prefix(8))")
                     sessions.removeValue(forKey: sessionId)
                     cancelPendingSync(sessionId: sessionId)
-                    removedSession = true
+                    stateChanged = true
                     continue
                 }
             }
@@ -1962,7 +2001,7 @@ actor SessionStore {
             }
         }
 
-        if removedSession {
+        if stateChanged {
             publishState()
         }
     }

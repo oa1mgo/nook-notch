@@ -110,11 +110,13 @@ struct CodexHookInstaller {
             ("PreToolUse", [["hooks": [handler]]]),
             ("PermissionRequest", [["hooks": [handler]]]),
             ("PostToolUse", [["hooks": [handler]]]),
+            ("PostToolUseFailure", [["hooks": [handler]]]),
             ("PreCompact", [["hooks": [handler]]]),
             ("PostCompact", [["hooks": [handler]]]),
             ("SubagentStart", [["hooks": [handler]]]),
             ("SubagentStop", [["hooks": [handler]]]),
             ("Stop", [["hooks": [handler]]]),
+            ("StopFailure", [["hooks": [handler]]]),
         ]
 
         for (event, config) in allEvents {
