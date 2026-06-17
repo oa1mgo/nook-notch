@@ -75,16 +75,16 @@ class ClaudeSessionMonitor: ObservableObject {
             onCodexEvent: { event in
                 Task {
                     switch event {
-                    case .sessionStart(let sessionId, let cwd):
-                        await SessionStore.shared.process(.codexSessionStarted(sessionId: sessionId, cwd: cwd))
+                    case .sessionStart(let sessionId, let cwd, let source):
+                        await SessionStore.shared.process(.codexSessionStarted(sessionId: sessionId, cwd: cwd, source: source))
                     case .userPromptSubmit(let sessionId, let cwd, let prompt):
                         await SessionStore.shared.process(.codexPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt))
                     case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
                         await SessionStore.shared.process(.codexToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary))
-                    case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
-                        await SessionStore.shared.process(.codexToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary))
-                    case .waitingForUserInput(let sessionId, let cwd):
-                        await SessionStore.shared.process(.codexWaitingForUserInput(sessionId: sessionId, cwd: cwd))
+                    case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let isError):
+                        await SessionStore.shared.process(.codexToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary, output: output, isError: isError))
+                    case .permissionRequest(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+                        await SessionStore.shared.process(.codexPermissionRequested(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary))
                     case .compactingStarted(let sessionId, let cwd):
                         await SessionStore.shared.process(.codexCompactingStarted(sessionId: sessionId, cwd: cwd))
                     case .compactingFinished(let sessionId, let cwd):
@@ -125,7 +125,8 @@ class ClaudeSessionMonitor: ObservableObject {
                     case .userPromptSubmitted, .assistantThinking, .assistantText,
                          .preTool, .postTool, .image:
                         // These are now routed through OpencodeChatItemAdapter
-                        // → onOpencodeChatItems → chatItemBatch. Should not
+                        // → onOpencodeChatItems → realtimeChatItemBatch.
+                        // Should not
                         // reach here in normal operation.
                         break
                     }
@@ -133,7 +134,7 @@ class ClaudeSessionMonitor: ObservableObject {
             },
             onOpencodeChatItems: { chatItems in
                 Task {
-                    await SessionStore.shared.process(.chatItemBatch(chatItems))
+                    await SessionStore.shared.process(.realtimeChatItemBatch(chatItems))
                 }
             }
         )

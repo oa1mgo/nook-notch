@@ -27,8 +27,6 @@ struct ChatView: View {
     @State private var newMessageCount: Int = 0
     @State private var previousHistoryCount: Int = 0
     @State private var isBottomVisible: Bool = true
-    @State private var codexTranscriptHistory: [ChatHistoryItem] = []
-    @State private var isRefreshingCodexHistory: Bool = false
     @State private var focusErrorMessage: String? = nil
 
     @FocusState private var isInputFocused: Bool
@@ -49,8 +47,9 @@ struct ChatView: View {
         self.secondaryTextColor = secondaryTextColor
         self._session = State(initialValue: initialSession)
 
-        // Codex sessions currently source their visible history from SessionStore
-        // rather than the Claude JSONL-backed ChatHistoryManager path.
+        // Codex sessions force an initial transcript sync below, but the
+        // visible history still flows through ChatHistoryManager like other
+        // providers.
         let cachedHistory: [ChatHistoryItem]
         let alreadyLoaded: Bool
         if initialSession.provider == .codex {
@@ -83,9 +82,9 @@ struct ChatView: View {
                 chatHeader
 
                 // Messages
-                if isLoading {
+                if isLoading && !isProcessing {
                     loadingState
-                } else if history.isEmpty {
+                } else if history.isEmpty && !isProcessing {
                     emptyState
                 } else {
                     messageList
@@ -104,7 +103,7 @@ struct ChatView: View {
                 // to live above the message list for opencode case 1 is
                 // removed in favour of the bottom bar (which sits right
                 // next to the input and is harder to miss).
-                if session.phase == .waitingForInput {
+                if session.phase == .waitingForInput || session.phase.isWaitingForTerminalApproval {
                     interactivePromptBar
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .move(edge: .bottom)),
@@ -138,20 +137,20 @@ struct ChatView: View {
             guard !hasLoadedOnce else { return }
             hasLoadedOnce = true
 
-            if session.provider == .codex {
-                await refreshCodexHistory(using: session)
-                return
-            }
-
             // Check if already loaded (from previous visit)
-            if ChatHistoryManager.shared.isLoaded(sessionId: sessionId) {
+            let shouldForceReload = session.provider == .codex
+            if !shouldForceReload && ChatHistoryManager.shared.isLoaded(sessionId: sessionId) {
                 history = ChatHistoryManager.shared.history(for: sessionId)
                 isLoading = false
                 return
             }
 
             // Load in background, show loading state
-            await ChatHistoryManager.shared.loadFromFile(sessionId: sessionId, cwd: session.cwd)
+            await ChatHistoryManager.shared.loadFromFile(
+                sessionId: sessionId,
+                cwd: session.cwd,
+                force: shouldForceReload
+            )
             history = ChatHistoryManager.shared.history(for: sessionId)
 
             withAnimation(.easeOut(duration: 0.2)) {
@@ -159,26 +158,6 @@ struct ChatView: View {
             }
         }
         .onReceive(ChatHistoryManager.shared.$histories) { histories in
-            // REGRESSION GUARD — DO NOT change to `== .claude`.
-            //
-            // Codex has its own merged-history path (transcript + live) in the
-            // $instances handler below, so it is excluded here. Claude and
-            // opencode both go through ChatHistoryManager: it subscribes to
-            // SessionStore and rebuilds `histories[sessionId]` for every
-            // provider, so we can drive the chat view straight from it.
-            //
-            // Symptom if regressed: opencode's bash/read/assistant text events
-            // are stored in chatItems (visible after navigating away and back,
-            // and visible in the session list), but the live chat view flickers
-            // once and never re-renders — the user sees a "stuck" view while
-            // the terminal shows fresh activity. This is what bit us in 0.2.0
-            // when the gate was `== .claude`; opencode fell through the same
-            // path as codex and got dropped.
-            //
-            // If you add a new provider here, ask: does it need transcript
-            // merging (codex-style)? If no, leave the gate as `!= .codex`
-            // and the new provider will work automatically.
-            guard session.provider != .codex else { return }
             // Update when count changes, last item differs, or content changes (e.g., tool status)
             if let newHistory = histories[sessionId] {
                 let countChanged = newHistory.count != history.count
@@ -223,24 +202,6 @@ struct ChatView: View {
                 let wasWaiting = isWaitingForApproval
                 session = updated
                 let isNowProcessing = updated.phase == .processing
-
-                if updated.provider == .codex {
-                    let previousCount = history.count
-                    history = mergedCodexHistory(
-                        transcriptItems: codexTranscriptHistory,
-                        liveItems: updated.chatItems
-                    )
-                    if isLoading {
-                        isLoading = false
-                    }
-                    if !isAutoscrollPaused && history.count > previousCount {
-                        shouldScrollToBottom = true
-                    }
-
-                    Task {
-                        await refreshCodexHistory(using: updated)
-                    }
-                }
 
                 if wasWaiting && isNowProcessing {
                     // Scroll to bottom after permission accepted (with slight delay)
@@ -320,76 +281,6 @@ struct ChatView: View {
             }
         }
         return ""
-    }
-
-    private func mergedCodexHistory(
-        transcriptItems: [ChatHistoryItem],
-        liveItems: [ChatHistoryItem]
-    ) -> [ChatHistoryItem] {
-        guard !transcriptItems.isEmpty else { return liveItems }
-
-        var merged = transcriptItems
-
-        for item in liveItems {
-            guard case .toolCall(let liveTool) = item.type else { continue }
-
-            let isDuplicate = merged.contains { existing in
-                guard case .toolCall(let existingTool) = existing.type else { return false }
-                return existingTool.name == liveTool.name &&
-                    existingTool.input == liveTool.input &&
-                    abs(existing.timestamp.timeIntervalSince(item.timestamp)) < 2
-            }
-
-            guard !isDuplicate else { continue }
-            merged.append(item)
-        }
-
-        return merged.sorted {
-            if $0.timestamp == $1.timestamp {
-                return $0.id < $1.id
-            }
-            return $0.timestamp < $1.timestamp
-        }
-    }
-
-    @MainActor
-    private func applyCodexHistoryRefresh(
-        transcriptItems: [ChatHistoryItem],
-        liveItems: [ChatHistoryItem]
-    ) {
-        let previousCount = history.count
-        codexTranscriptHistory = transcriptItems
-        history = mergedCodexHistory(transcriptItems: transcriptItems, liveItems: liveItems)
-
-        if isLoading {
-            withAnimation(.easeOut(duration: 0.2)) {
-                isLoading = false
-            }
-        }
-
-        if !isAutoscrollPaused && history.count > previousCount {
-            shouldScrollToBottom = true
-        }
-    }
-
-    private func refreshCodexHistory(using liveSession: SessionState) async {
-        guard liveSession.provider == .codex else { return }
-
-        let shouldStart = await MainActor.run { () -> Bool in
-            if isRefreshingCodexHistory {
-                return false
-            }
-            isRefreshingCodexHistory = true
-            return true
-        }
-        guard shouldStart else { return }
-
-        let transcriptItems = await CodexTranscriptParser.loadHistory(sessionId: sessionId)
-
-        await MainActor.run {
-            applyCodexHistoryRefresh(transcriptItems: transcriptItems, liveItems: liveSession.chatItems)
-            isRefreshingCodexHistory = false
-        }
     }
 
     private var chatInputPlaceholder: String {

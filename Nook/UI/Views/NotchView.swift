@@ -64,13 +64,13 @@ struct NotchView: View {
     }
 
     private var activePendingPermissionActivityType: NotchActivityType? {
-        if sessionMonitor.instances.contains(where: { $0.provider == .claude && $0.phase.isWaitingForApproval }) {
+        if sessionMonitor.instances.contains(where: { $0.provider == .claude && ($0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval) }) {
             return .claude
         }
-        if sessionMonitor.instances.contains(where: { $0.provider == .codex && $0.phase.isWaitingForApproval }) {
+        if sessionMonitor.instances.contains(where: { $0.provider == .codex && ($0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval) }) {
             return .codex
         }
-        if sessionMonitor.instances.contains(where: { $0.provider == .opencode && $0.phase.isWaitingForApproval }) {
+        if sessionMonitor.instances.contains(where: { $0.provider == .opencode && ($0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval) }) {
             return .opencode
         }
         return nil
@@ -78,7 +78,7 @@ struct NotchView: View {
 
     /// Whether any tracked session has a pending permission request
     private var hasPendingPermission: Bool {
-        sessionMonitor.instances.contains { $0.phase.isWaitingForApproval }
+        sessionMonitor.instances.contains { $0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval }
     }
 
     /// Whether any tracked session is waiting for user input (done/ready state) within the display window
@@ -761,8 +761,10 @@ struct NotchView: View {
         let displayDuration: TimeInterval = 30
         let now = Date()
 
-        // Get Claude sessions that are now waiting for input
-        let waitingForInputSessions = instances.filter { $0.phase == .waitingForInput }
+        // Get sessions that are now waiting for user action.
+        let waitingForInputSessions = instances.filter {
+            $0.phase == .waitingForInput || $0.phase.isWaitingForTerminalApproval
+        }
         let currentIds = Set(waitingForInputSessions.map { $0.stableId })
         let newWaitingIds = currentIds.subtracting(previousWaitingForInputIds)
 

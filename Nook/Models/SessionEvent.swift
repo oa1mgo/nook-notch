@@ -17,7 +17,7 @@ enum SessionEvent: Sendable {
     case hookReceived(HookEvent)
 
     /// A Codex hook-backed session was created or resumed
-    case codexSessionStarted(sessionId: String, cwd: String)
+    case codexSessionStarted(sessionId: String, cwd: String, source: String?)
 
     /// Codex submitted a user prompt for the current turn
     case codexPromptSubmitted(sessionId: String, cwd: String, prompt: String?)
@@ -26,16 +26,17 @@ enum SessionEvent: Sendable {
     case codexBashStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?)
 
     /// Codex finished running a Bash tool
-    case codexBashFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?)
+    case codexBashFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?, output: String?, isError: Bool)
 
     /// Codex began running any tool (Bash, apply_patch, MCP, etc.)
     case codexToolStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, input: [String: String], inputSummary: String?)
 
     /// Codex finished running any tool.
-    case codexToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?)
+    case codexToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String?, isError: Bool)
 
-    /// Codex is waiting on terminal-side user input, such as a permission prompt.
-    case codexWaitingForUserInput(sessionId: String, cwd: String)
+    /// Codex is waiting on a terminal-side approval prompt. Nook cannot answer
+    /// Codex hook prompts over the current fire-and-forget socket path.
+    case codexPermissionRequested(sessionId: String, cwd: String, toolName: String?, toolUseId: String?, input: [String: String], inputSummary: String?)
 
     /// Codex started or finished compacting context.
     case codexCompactingStarted(sessionId: String, cwd: String)
@@ -70,6 +71,10 @@ enum SessionEvent: Sendable {
 
     /// A provider adapter produced multiple chat item operations in a batch.
     case chatItemBatch([ChatItemUpdate])
+
+    /// A provider adapter produced live-stream chat item operations that
+    /// should also drive lifecycle effects such as phase/tool tracking.
+    case realtimeChatItemBatch([ChatItemUpdate])
 
     // MARK: - Permission Events (user actions)
 
@@ -243,20 +248,20 @@ extension SessionEvent: CustomStringConvertible {
         switch self {
         case .hookReceived(let event):
             return "hookReceived(\(event.event), session: \(event.sessionId.prefix(8)))"
-        case .codexSessionStarted(let sessionId, _):
+        case .codexSessionStarted(let sessionId, _, _):
             return "codexSessionStarted(session: \(sessionId.prefix(8)))"
         case .codexPromptSubmitted(let sessionId, _, _):
             return "codexPromptSubmitted(session: \(sessionId.prefix(8)))"
         case .codexBashStarted(let sessionId, _, let toolName, _, _):
             return "codexBashStarted(session: \(sessionId.prefix(8)), tool: \(toolName))"
-        case .codexBashFinished(let sessionId, _, let toolName, _, _):
+        case .codexBashFinished(let sessionId, _, let toolName, _, _, _, _):
             return "codexBashFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
         case .codexToolStarted(let sessionId, _, let toolName, _, _, _):
             return "codexToolStarted(session: \(sessionId.prefix(8)), tool: \(toolName))"
-        case .codexToolFinished(let sessionId, _, let toolName, _, _):
+        case .codexToolFinished(let sessionId, _, let toolName, _, _, _, _):
             return "codexToolFinished(session: \(sessionId.prefix(8)), tool: \(toolName))"
-        case .codexWaitingForUserInput(let sessionId, _):
-            return "codexWaitingForUserInput(session: \(sessionId.prefix(8)))"
+        case .codexPermissionRequested(let sessionId, _, let toolName, _, _, _):
+            return "codexPermissionRequested(session: \(sessionId.prefix(8)), tool: \(toolName ?? "nil"))"
         case .codexCompactingStarted(let sessionId, _):
             return "codexCompactingStarted(session: \(sessionId.prefix(8)))"
         case .codexCompactingFinished(let sessionId, _):
@@ -309,6 +314,8 @@ extension SessionEvent: CustomStringConvertible {
             return "chatItemUpdate(session: \(update.sessionId.prefix(8)), id: \(update.id.prefix(16)), mutation: \(update.mutation))"
         case .chatItemBatch(let updates):
             return "chatItemBatch(count: \(updates.count))"
+        case .realtimeChatItemBatch(let updates):
+            return "realtimeChatItemBatch(count: \(updates.count))"
         }
     }
 }

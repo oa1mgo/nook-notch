@@ -26,7 +26,7 @@ enum ChatItemSorter {
     /// writing to `orderings`, and a missing entry is treated the same
     /// way — both signals say "the order I appended is the order to
     /// display".
-    static func sorted(
+    nonisolated static func sorted(
         _ items: [ChatHistoryItem],
         orderings: [String: BlockOrdering]
     ) -> [ChatHistoryItem] {
@@ -48,7 +48,7 @@ enum ChatItemSorter {
         }
     }
 
-    private static func compare(
+    private nonisolated static func compare(
         _ a: BlockOrdering?, _ b: BlockOrdering?,
         fallbackA: ChatHistoryItem, fallbackB: ChatHistoryItem
     ) -> Bool {
@@ -95,22 +95,22 @@ enum ChatItemSorter {
 /// Generates stable, provider-scoped IDs for chat items.
 enum ChatItemIdFactory {
     /// Claude: based on JSONL message ID + block position (unchanged from existing scheme).
-    static func claudeBlockId(messageId: String, typePrefix: String, blockIndex: Int) -> String {
+    nonisolated static func claudeBlockId(messageId: String, typePrefix: String, blockIndex: Int) -> String {
         "\(messageId)-\(typePrefix)-\(blockIndex)"
     }
 
     /// OpenCode: based on message ID + logical block index (replaces timestamp-based IDs).
-    static func opencodeBlockId(messageId: String, typePrefix: String, blockIndex: Int) -> String {
+    nonisolated static func opencodeBlockId(messageId: String, typePrefix: String, blockIndex: Int) -> String {
         "opencode-\(messageId)-\(typePrefix)-\(blockIndex)"
     }
 
     /// Codex: based on transcript line index or call_id (unchanged).
-    static func codexBlockId(sessionId: String, lineIndex: Int) -> String {
+    nonisolated static func codexBlockId(sessionId: String, lineIndex: Int) -> String {
         "codex-message-\(sessionId)-\(lineIndex)"
     }
 
     /// Fallback tool ID when no provider-specific ID is available.
-    static func toolId(provider: SessionProvider, rawId: String?) -> String {
+    nonisolated static func toolId(provider: SessionProvider, rawId: String?) -> String {
         rawId ?? "\(provider.rawValue)-tool-\(Int(Date().timeIntervalSince1970 * 1000))"
     }
 }

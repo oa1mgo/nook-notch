@@ -84,6 +84,10 @@ enum SessionPhase: Sendable {
     /// A tool is waiting for user permission approval
     case waitingForApproval(PermissionContext)
 
+    /// A provider is waiting on an approval prompt that must be answered in
+    /// the terminal because Nook cannot write a decision back for it.
+    case waitingForTerminalApproval(PermissionContext)
+
     /// Context is being compacted (auto or manual)
     case compacting
 
@@ -108,6 +112,8 @@ enum SessionPhase: Sendable {
             return true
         case (.idle, .waitingForApproval):
             return true  // Direct permission request on idle session
+        case (.idle, .waitingForTerminalApproval):
+            return true
         case (.idle, .compacting):
             return true
 
@@ -115,6 +121,8 @@ enum SessionPhase: Sendable {
         case (.processing, .waitingForInput):
             return true
         case (.processing, .waitingForApproval):
+            return true
+        case (.processing, .waitingForTerminalApproval):
             return true
         case (.processing, .compacting):
             return true
@@ -139,6 +147,18 @@ enum SessionPhase: Sendable {
         case (.waitingForApproval, .waitingForApproval):
             return true  // Another tool needs approval (multiple pending permissions)
 
+        // WaitingForTerminalApproval transitions
+        case (.waitingForTerminalApproval, .processing):
+            return true
+        case (.waitingForTerminalApproval, .idle):
+            return true
+        case (.waitingForTerminalApproval, .waitingForInput):
+            return true
+        case (.waitingForTerminalApproval, .waitingForTerminalApproval):
+            return true
+        case (.waitingForTerminalApproval, .compacting):
+            return true
+
         // Compacting transitions
         case (.compacting, .processing):
             return true
@@ -161,7 +181,7 @@ enum SessionPhase: Sendable {
     /// Whether this phase indicates the session needs user attention
     nonisolated var needsAttention: Bool {
         switch self {
-        case .waitingForApproval, .waitingForInput:
+        case .waitingForApproval, .waitingForTerminalApproval, .waitingForInput:
             return true
         default:
             return false
@@ -186,6 +206,14 @@ enum SessionPhase: Sendable {
         return false
     }
 
+    /// Whether this is a terminal-side approval phase
+    nonisolated var isWaitingForTerminalApproval: Bool {
+        if case .waitingForTerminalApproval = self {
+            return true
+        }
+        return false
+    }
+
     /// Whether this is a waitingForInput phase
     nonisolated var isWaitingForInput: Bool {
         if case .waitingForInput = self {
@@ -201,6 +229,14 @@ enum SessionPhase: Sendable {
         }
         return nil
     }
+
+    /// Extract tool name if waiting for terminal-side approval
+    var terminalApprovalToolName: String? {
+        if case .waitingForTerminalApproval(let ctx) = self {
+            return ctx.toolName
+        }
+        return nil
+    }
 }
 
 // MARK: - Equatable
@@ -212,6 +248,8 @@ extension SessionPhase: Equatable {
         case (.processing, .processing): return true
         case (.waitingForInput, .waitingForInput): return true
         case (.waitingForApproval(let ctx1), .waitingForApproval(let ctx2)):
+            return ctx1 == ctx2
+        case (.waitingForTerminalApproval(let ctx1), .waitingForTerminalApproval(let ctx2)):
             return ctx1 == ctx2
         case (.compacting, .compacting): return true
         case (.ended, .ended): return true
@@ -233,6 +271,8 @@ extension SessionPhase: CustomStringConvertible {
             return "waitingForInput"
         case .waitingForApproval(let ctx):
             return "waitingForApproval(\(ctx.toolName))"
+        case .waitingForTerminalApproval(let ctx):
+            return "waitingForTerminalApproval(\(ctx.toolName))"
         case .compacting:
             return "compacting"
         case .ended:

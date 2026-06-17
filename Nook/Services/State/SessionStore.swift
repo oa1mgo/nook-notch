@@ -27,8 +27,19 @@ actor SessionStore {
     /// Pending file syncs (debounced)
     private var pendingSyncs: [String: Task<Void, Never>] = [:]
 
+    /// Pending Codex completion notifications. Codex Stop hooks can continue
+    /// the turn, so completion is emitted after a short cancelable window.
+    private var pendingCodexCompletionNotifications: [String: Task<Void, Never>] = [:]
+
+    /// In-memory transcript lower bounds after Codex `/clear`. Codex transcript
+    /// format is not a stable API, so keep this scoped to live sync only.
+    private var codexTranscriptLowerBounds: [String: Date] = [:]
+
     /// Sync debounce interval (100ms)
     private let syncDebounceNs: UInt64 = 100_000_000
+
+    /// Delay before surfacing a Codex Stop as user-visible completion.
+    private let codexCompletionDebounceNs: UInt64 = 750_000_000
 
     /// Periodic status check task
     private var statusCheckTask: Task<Void, Never>?
@@ -79,8 +90,8 @@ actor SessionStore {
         case .hookReceived(let hookEvent):
             await processHookEvent(hookEvent)
 
-        case .codexSessionStarted(let sessionId, let cwd):
-            processCodexSessionStart(sessionId: sessionId, cwd: cwd)
+        case .codexSessionStarted(let sessionId, let cwd, let source):
+            processCodexSessionStart(sessionId: sessionId, cwd: cwd, source: source)
 
         case .codexPromptSubmitted(let sessionId, let cwd, let prompt):
             processCodexPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt)
@@ -88,17 +99,17 @@ actor SessionStore {
         case .codexBashStarted(let sessionId, let cwd, let toolName, let toolUseId, let command):
             processCodexBashStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command)
 
-        case .codexBashFinished(let sessionId, let cwd, let toolName, let toolUseId, let command):
-            processCodexBashFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command)
+        case .codexBashFinished(let sessionId, let cwd, let toolName, let toolUseId, let command, let output, let isError):
+            processCodexBashFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command, output: output, isError: isError)
 
         case .codexToolStarted(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
             processCodexToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary)
 
-        case .codexToolFinished(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary):
-            processCodexToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary)
+        case .codexToolFinished(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let isError):
+            processCodexToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary, output: output, isError: isError)
 
-        case .codexWaitingForUserInput(let sessionId, let cwd):
-            processCodexWaitingForUserInput(sessionId: sessionId, cwd: cwd)
+        case .codexPermissionRequested(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+            processCodexPermissionRequested(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary)
 
         case .codexCompactingStarted(let sessionId, let cwd):
             processCodexCompactingStarted(sessionId: sessionId, cwd: cwd)
@@ -133,6 +144,11 @@ actor SessionStore {
         case .chatItemBatch(let updates):
             for update in updates {
                 applyChatItemUpdate(update)
+            }
+
+        case .realtimeChatItemBatch(let updates):
+            for update in updates {
+                applyChatItemUpdate(update, appliesLifecycleEffects: true)
             }
 
         case .permissionApproved(let sessionId, let toolUseId):
@@ -284,12 +300,35 @@ actor SessionStore {
         CodexTranscriptParser.isSubagentSession(sessionId: sessionId)
     }
 
-    private func processCodexSessionStart(sessionId: String, cwd: String) {
+    private func processCodexSessionStart(sessionId: String, cwd: String, source: String?) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
+        cancelPendingCodexCompletionNotification(sessionId: sessionId)
+        let now = Date()
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
+        if session.cwd.isEmpty, !cwd.isEmpty {
+            session = SessionState(
+                sessionId: session.sessionId,
+                provider: session.provider,
+                cwd: cwd,
+                pid: session.pid, tty: session.tty, isInTmux: session.isInTmux,
+                phase: session.phase,
+                chatItems: session.chatItems,
+                toolTracker: session.toolTracker,
+                subagentState: session.subagentState,
+                conversationInfo: session.conversationInfo,
+                needsClearReconciliation: session.needsClearReconciliation,
+                completionNotificationAt: session.completionNotificationAt,
+                lastActivity: session.lastActivity,
+                createdAt: session.createdAt
+            )
+        }
+        if source?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "clear" {
+            codexTranscriptLowerBounds[sessionId] = now
+            resetCodexConversationState(&session)
+        }
         enrichCodexRuntimeMetadata(session: &session)
-        session.lastActivity = Date()
+        session.lastActivity = now
         session.completionNotificationAt = nil
         if isNewSession || !session.phase.isActive {
             session.phase = .idle
@@ -299,10 +338,12 @@ actor SessionStore {
         if isNewSession {
             mixpanel?.track(event: "Session Started", properties: ["provider": "codex"])
         }
+        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexPromptSubmitted(sessionId: String, cwd: String, prompt: String?) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
+        cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
         let trimmedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -312,15 +353,6 @@ actor SessionStore {
         session.lastActivity = now
         session.completionNotificationAt = nil
         session.phase = .processing
-        if let trimmedPrompt, !trimmedPrompt.isEmpty {
-            session.chatItems.append(
-                ChatHistoryItem(
-                    id: "codex-user-\(sessionId)-\(Int(now.timeIntervalSince1970 * 1000))",
-                    type: .user(trimmedPrompt),
-                    timestamp: now
-                )
-            )
-        }
         session.conversationInfo = ConversationInfo(
             summary: session.conversationInfo.summary,
             lastMessage: trimmedPrompt,
@@ -332,6 +364,7 @@ actor SessionStore {
         )
 
         sessions[sessionId] = session
+        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexBashStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?) {
@@ -355,64 +388,19 @@ actor SessionStore {
         inputSummary: String?
     ) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
+        cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
-        let toolId = toolUseId ?? makeCodexToolId(for: sessionId)
 
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = now
         session.completionNotificationAt = nil
         session.phase = .processing
-        session.toolTracker.startTool(id: toolId, name: toolName)
+        if let toolUseId {
+            session.toolTracker.startTool(id: toolUseId, name: toolName)
+        }
 
         let inputPreview = inputSummary?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let displayInput: [String: String]
-        if !input.isEmpty {
-            displayInput = input
-        } else if let inputPreview, !inputPreview.isEmpty {
-            displayInput = ["summary": inputPreview]
-        } else {
-            displayInput = [:]
-        }
-        // Dedup: if a tool item with this ID already exists, update it
-        // instead of appending. Codex can re-emit `codexBashStarted` for
-        // the same callID if the underlying hook fires more than once
-        // (e.g. tmux event redelivery or duplicate socket frames). The
-        // previous version always appended, which would stack a fresh
-        // chatItem on every duplicate start and produce ~3 row-sized
-        // blank gaps in the chat. Mirror the dedup shape used by
-        // `processToolTracking` (Claude).
-        if let idx = session.chatItems.firstIndex(where: { $0.id == toolId }),
-           case .toolCall(let existing) = session.chatItems[idx].type {
-            let updated = ToolCallItem(
-                name: existing.name,
-                input: displayInput,
-                status: existing.status == .success || existing.status == .error ? existing.status : .running,
-                result: existing.result,
-                structuredResult: existing.structuredResult,
-                subagentTools: existing.subagentTools
-            )
-            session.chatItems[idx] = ChatHistoryItem(
-                id: toolId,
-                type: .toolCall(updated),
-                timestamp: session.chatItems[idx].timestamp
-            )
-        } else {
-            session.chatItems.append(
-                ChatHistoryItem(
-                    id: toolId,
-                    type: .toolCall(ToolCallItem(
-                        name: toolName,
-                        input: displayInput,
-                        status: .running,
-                        result: nil,
-                        structuredResult: nil,
-                        subagentTools: []
-                    )),
-                    timestamp: now
-                )
-            )
-        }
         session.conversationInfo = ConversationInfo(
             summary: session.conversationInfo.summary,
             lastMessage: inputPreview,
@@ -424,46 +412,48 @@ actor SessionStore {
         )
 
         sessions[sessionId] = session
+        let updates = CodexChatItemAdapter.updates(
+            from: .preTool(
+                sessionId: sessionId,
+                cwd: cwd,
+                toolName: toolName,
+                toolUseId: toolUseId,
+                input: input,
+                inputSummary: inputSummary
+            ),
+            timestamp: now
+        )
+        for update in updates {
+            applyChatItemUpdate(update)
+        }
+        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
-    private func processCodexBashFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?) {
+    private func processCodexBashFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?, output: String?, isError: Bool) {
         processCodexToolFinished(
             sessionId: sessionId,
             cwd: cwd,
             toolName: toolName,
             toolUseId: toolUseId,
-            inputSummary: command
+            inputSummary: command,
+            output: output,
+            isError: isError
         )
     }
 
-    private func processCodexToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?) {
+    private func processCodexToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String?, isError: Bool) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
-        let fallbackToolId = toolUseId ?? makeCodexToolId(for: sessionId)
         let completedTurnAt = session.completionNotificationAt
+        let completionPending = pendingCodexCompletionNotifications[sessionId] != nil
 
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = now
 
-        if let toolId = latestRunningCodexToolId(in: session, toolName: toolName, toolUseId: toolUseId) {
-            session.toolTracker.completeTool(id: toolId, success: true)
-            updateToolStatus(in: &session, toolId: toolId, status: .success)
-        } else if let toolUseId, !session.chatItems.contains(where: { $0.id == toolUseId }) {
-            session.chatItems.append(
-                ChatHistoryItem(
-                    id: fallbackToolId,
-                    type: .toolCall(ToolCallItem(
-                        name: toolName,
-                        input: inputSummary.map { ["summary": $0] } ?? [:],
-                        status: .success,
-                        result: nil,
-                        structuredResult: nil,
-                        subagentTools: []
-                    )),
-                    timestamp: now
-                )
-            )
+        let completedToolId = latestRunningCodexToolId(in: session, toolName: toolName, toolUseId: toolUseId) ?? toolUseId
+        if let toolId = completedToolId {
+            session.toolTracker.completeTool(id: toolId, success: !isError)
         }
 
         session.conversationInfo = ConversationInfo(
@@ -481,6 +471,12 @@ actor SessionStore {
             // the tool row reconcile above.
             session.phase = .idle
             session.completionNotificationAt = completedTurnAt
+        } else if completionPending {
+            // Stop has arrived and the completion notification is only being
+            // delayed to allow Stop hooks to continue. A late PostToolUse
+            // should reconcile the tool row but must not make the turn active.
+            session.phase = .idle
+            session.completionNotificationAt = nil
         } else {
             // Codex `PostToolUse` is not the end of the turn. The model may keep
             // thinking, produce text, compact, or start another tool before `Stop`.
@@ -492,22 +488,87 @@ actor SessionStore {
         }
 
         sessions[sessionId] = session
+        let updates = CodexChatItemAdapter.updates(
+            from: .postTool(
+                sessionId: sessionId,
+                cwd: cwd,
+                toolName: toolName,
+                toolUseId: completedToolId,
+                inputSummary: inputSummary,
+                output: output,
+                isError: isError
+            ),
+            timestamp: now
+        )
+        for update in updates {
+            applyChatItemUpdate(update)
+        }
+        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
-    private func processCodexWaitingForUserInput(sessionId: String, cwd: String) {
+    private func processCodexPermissionRequested(
+        sessionId: String,
+        cwd: String,
+        toolName: String?,
+        toolUseId: String?,
+        input: [String: String],
+        inputSummary: String?
+    ) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
+        cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
+        let now = Date()
         enrichCodexRuntimeMetadata(session: &session)
-        session.lastActivity = Date()
+        session.lastActivity = now
         session.completionNotificationAt = nil
-        if session.phase.canTransition(to: .waitingForInput) {
-            session.phase = .waitingForInput
+
+        let displayToolName = toolName ?? session.conversationInfo.lastToolName ?? "Tool"
+        let resolvedToolUseId = latestRunningCodexToolId(
+            in: session,
+            toolName: displayToolName,
+            toolUseId: toolUseId
+        )
+        let toolInput = input.mapValues { AnyCodable($0) }
+        let context = PermissionContext(
+            toolUseId: resolvedToolUseId ?? "",
+            toolName: displayToolName,
+            toolInput: toolInput.isEmpty ? nil : toolInput,
+            receivedAt: now
+        )
+        let targetPhase = SessionPhase.waitingForTerminalApproval(context)
+        if session.phase.canTransition(to: targetPhase) {
+            session.phase = targetPhase
         }
+
+        if let resolvedToolUseId {
+            updateToolStatus(in: &session, toolId: resolvedToolUseId, status: .waitingForApproval)
+            if var inProgress = session.toolTracker.inProgress[resolvedToolUseId] {
+                inProgress.phase = .pendingApproval
+                session.toolTracker.inProgress[resolvedToolUseId] = inProgress
+            }
+        }
+
+        let trimmedSummary = inputSummary?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var nonEmptySummary: String?
+        if let trimmedSummary, !trimmedSummary.isEmpty {
+            nonEmptySummary = trimmedSummary
+        }
+        session.conversationInfo = ConversationInfo(
+            summary: session.conversationInfo.summary,
+            lastMessage: nonEmptySummary ?? session.conversationInfo.lastMessage,
+            lastMessageRole: "tool",
+            lastToolName: displayToolName,
+            firstUserMessage: session.conversationInfo.firstUserMessage,
+            lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
+            usage: session.conversationInfo.usage
+        )
         sessions[sessionId] = session
+        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexCompactingStarted(sessionId: String, cwd: String) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
+        cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -516,6 +577,7 @@ actor SessionStore {
             session.phase = .compacting
         }
         sessions[sessionId] = session
+        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexCompactingFinished(sessionId: String, cwd: String) {
@@ -523,9 +585,10 @@ actor SessionStore {
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
-        if session.completionNotificationAt != nil {
+        if session.completionNotificationAt != nil || pendingCodexCompletionNotifications[sessionId] != nil {
             session.phase = .idle
             sessions[sessionId] = session
+            scheduleCodexTranscriptSync(sessionId: sessionId)
             return
         }
 
@@ -534,10 +597,12 @@ actor SessionStore {
             session.phase = .processing
         }
         sessions[sessionId] = session
+        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexSubagentStarted(sessionId: String, cwd: String) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
+        cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -546,6 +611,7 @@ actor SessionStore {
             session.phase = .processing
         }
         sessions[sessionId] = session
+        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexSubagentStopped(sessionId: String, cwd: String) {
@@ -553,9 +619,10 @@ actor SessionStore {
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
-        if session.completionNotificationAt != nil {
+        if session.completionNotificationAt != nil || pendingCodexCompletionNotifications[sessionId] != nil {
             session.phase = .idle
             sessions[sessionId] = session
+            scheduleCodexTranscriptSync(sessionId: sessionId)
             return
         }
 
@@ -564,18 +631,22 @@ actor SessionStore {
             session.phase = .processing
         }
         sessions[sessionId] = session
+        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexStop(sessionId: String, cwd: String) {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
+        cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
         session.phase = .idle
-        session.completionNotificationAt = Date()
+        session.completionNotificationAt = nil
         finishDanglingCodexTools(in: &session)
         session.toolTracker.inProgress.removeAll()
         sessions[sessionId] = session
+        scheduleCodexTranscriptSync(sessionId: sessionId)
+        scheduleCodexCompletionNotification(sessionId: sessionId)
     }
 
     // MARK: - OpenCode Session Processing
@@ -706,21 +777,21 @@ actor SessionStore {
 
     // MARK: - Unified ChatItem Update Processing
 
-    /// Apply a single ChatItemUpdate to session state. This is the unified
-    /// entry point for all provider chat item mutations, replacing the
-    /// provider-specific processOpencode* / processCodex* methods.
+    /// Apply a single ChatItemUpdate to session chat state. The update
+    /// itself is provider-normalized content; lifecycle effects are opt-in
+    /// for live stream routes and stay out of transcript/history sync.
     ///
     /// After each mutation, chatItems are re-sorted using ChatItemSorter
     /// to maintain correct display order based on BlockOrdering keys.
     ///
-    /// Session auto-creation: OpenCode's bus can deliver message events
-    /// ~1ms before the session.updated event that triggers sessionStart.
-    /// Rather than dropping chat items for unknown sessions (the original
-    /// guard-early-return bug), we create a minimal session placeholder
-    /// here. The imminent sessionStart passthrough will then enrich it
-    /// with cwd, pid, and other metadata via the explicit cwd-override
-    /// in processOpencodeSessionStart.
-    private func applyChatItemUpdate(_ update: ChatItemUpdate) {
+    /// Session auto-creation: live event streams can deliver chat updates
+    /// before the session-start lifecycle event. Rather than dropping those
+    /// items, create a minimal placeholder and let the provider lifecycle
+    /// path enrich cwd/pid/tty metadata when it arrives.
+    private func applyChatItemUpdate(
+        _ update: ChatItemUpdate,
+        appliesLifecycleEffects: Bool = false
+    ) {
         let now = Date()
         var session = sessions[update.sessionId] ?? SessionState(
             sessionId: update.sessionId,
@@ -733,242 +804,96 @@ actor SessionStore {
             // Fire Mixpanel immediately on auto-create so we never miss
             // the "Session Started" event even if sessionStart passthrough
             // arrives later and finds the session already existing.
-            mixpanel?.track(event: "Session Started", properties: ["provider": "opencode"])
+            mixpanel?.track(event: "Session Started", properties: ["provider": update.provider.rawValue])
         }
 
-        // ── Early guards ──────────────────────────────────────────────
-
-        // Skip empty thinking blocks — they render as orphan grey dots.
-        if case .thinking(let text) = update.block,
-           text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return
-        }
-
-        // ── Mutation ──────────────────────────────────────────────────
-
-        switch update.mutation {
-        case .insert:
-            if let idx = session.chatItems.firstIndex(where: { $0.id == update.id }) {
-                // ── Upsert: existing item found ─────────────────────────
-                let originalTimestamp = session.chatItems[idx].timestamp
-                let existingType = session.chatItems[idx].type
-
-                // Tool call: preserve runtime state (status, result,
-                // subagentTools) set by the hook path. Adapter provides
-                // more complete name/input/structuredResult from JSONL.
-                if case .toolCall(let newTool) = update.block,
-                   case .toolCall(let existingTool) = existingType {
-                    DebugLog.shared.write("[chat-item-update] toolCall-upsert session=\(update.sessionId) id=\(update.id) existingStatus=\(existingTool.status) adapterStatus=\(newTool.status) adapterIsError=\(update.isError) existingHasStructured=\(existingTool.structuredResult != nil) adapterHasStructured=\(newTool.structuredResult != nil)")
-                    let merged = ToolCallItem(
-                        name: newTool.name,
-                        input: newTool.input,
-                        status: existingTool.status,
-                        result: existingTool.result,
-                        // Fill in structuredResult from adapter when hook
-                        // path didn't have it (e.g. AskUserQuestion options
-                        // parsed from tool input by the adapter fallback).
-                        structuredResult: existingTool.structuredResult ?? newTool.structuredResult,
-                        subagentTools: existingTool.subagentTools
-                    )
-                    session.chatItems[idx] = ChatHistoryItem(
-                        id: update.id, type: .toolCall(merged),
-                        timestamp: originalTimestamp
-                    )
-                    blockOrderings[update.id] = update.ordering
-                    break
-                }
-
-                // User prompt: preserve once it exists — JSONL shouldn't
-                // rewrite user text.
-                if case .user = existingType {
-                    break
-                }
-
-                // Assistant text: don't overwrite non-empty with empty,
-                // and skip empty→empty churn.
-                if case .assistantText(let newText) = update.block,
-                   case .assistant(let existing) = existingType {
-                    let newTrimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let existingTrimmed = existing.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if existingTrimmed.isEmpty && newTrimmed.isEmpty { break }
-                    if !existingTrimmed.isEmpty && newTrimmed.isEmpty { break }
-                }
-
-                // Thinking: skip empty→empty replacement.
-                if case .thinking(let newText) = update.block,
-                   case .thinking(let existing) = existingType,
-                   existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    break
-                }
-
-                // Interrupted: only insert once.
-                if case .interrupted = existingType {
-                    break
-                }
-
-                // Default: replace content, preserve timestamp.
-                session.chatItems[idx] = ChatHistoryItem(
-                    id: update.id,
-                    type: update.block.toChatHistoryItemType(),
-                    timestamp: originalTimestamp
-                )
-            } else {
-                session.chatItems.append(ChatHistoryItem(
-                    id: update.id,
-                    type: update.block.toChatHistoryItemType(),
-                    timestamp: update.messageTimestamp ?? now
-                ))
-            }
-            blockOrderings[update.id] = update.ordering
-
-        case .update:
-            if let idx = session.chatItems.firstIndex(where: { $0.id == update.id }) {
-                let originalTimestamp = session.chatItems[idx].timestamp
-                session.chatItems[idx] = ChatHistoryItem(
-                    id: update.id,
-                    type: update.block.toChatHistoryItemType(),
-                    timestamp: originalTimestamp
-                )
-            }
-
-        case .updateStatus:
-            if case .toolCall(let block) = update.block,
-               let idx = session.chatItems.firstIndex(where: { $0.id == update.id }),
-               case .toolCall(var existing) = session.chatItems[idx].type {
-                existing.status = block.status
-                if let result = block.result {
-                    existing.result = result
-                }
-                if let structured = block.structuredResult {
-                    existing.structuredResult = structured
-                }
-                // Auto-construct TaskResult for task/Agent tools when the
-                // provider doesn't supply one (OpenCode). This uses the
-                // subagent tracking data already available in SessionStore
-                // to populate the same fields Claude's JSONL provides.
-                if existing.isSubagentContainer && existing.structuredResult == nil {
-                    let statusString: String = {
-                        switch existing.status {
-                        case .success: return "completed"
-                        case .error: return "error"
-                        case .interrupted: return "interrupted"
-                        default: return "unknown"
-                        }
-                    }()
-                    existing.structuredResult = .task(TaskResult(
-                        agentId: update.id,
-                        status: statusString,
-                        content: existing.result ?? "",
-                        prompt: nil,
-                        totalDurationMs: nil,
-                        totalTokens: nil,
-                        totalToolUseCount: existing.subagentTools.isEmpty ? nil : existing.subagentTools.count
-                    ))
-                }
-                session.chatItems[idx] = ChatHistoryItem(
-                    id: update.id,
-                    type: .toolCall(existing),
-                    timestamp: session.chatItems[idx].timestamp
-                )
-            }
-
-        case .remove:
-            session.chatItems.removeAll { $0.id == update.id }
-            blockOrderings.removeValue(forKey: update.id)
-        }
-
-        // ── Lifecycle side effects (OpenCode only) ────────────────────
-        // These side effects mirror the old processOpencode* methods
-        // (lastActivity, phase, completionNotificationAt, conversationInfo,
-        // toolTracker). They are designed for OpenCode's real-time event
-        // stream where each event carries a lifecycle signal.
-        //
-        // Claude's JSONL batch updates must NOT trigger these: phase is
-        // managed by processHookEvent(), conversationInfo by processFileUpdate()
-        // / ConversationParser, and toolTracker by processToolTracking().
-
-        if update.provider == .opencode,
-           update.mutation == .insert || update.mutation == .updateStatus {
-            enrichOpencodeRuntimeMetadata(session: &session)
-            session.lastActivity = now
-
-            switch update.block {
-            case .userPrompt(let text):
-                session.phase = .processing
-                session.completionNotificationAt = nil
-                session.conversationInfo = ConversationInfo(
-                    summary: session.conversationInfo.summary,
-                    lastMessage: text,
-                    lastMessageRole: "user",
-                    lastToolName: nil,
-                    firstUserMessage: session.conversationInfo.firstUserMessage ?? text,
-                    lastUserMessageDate: now,
-                    usage: session.conversationInfo.usage
-                )
-
-            case .assistantText(let text):
-                session.phase = hasRunningTools(in: session) ? .processing : .idle
-                session.completionNotificationAt = now
-                session.conversationInfo = ConversationInfo(
-                    summary: session.conversationInfo.summary,
-                    lastMessage: text,
-                    lastMessageRole: "assistant",
-                    lastToolName: nil,
-                    firstUserMessage: session.conversationInfo.firstUserMessage,
-                    lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
-                    usage: session.conversationInfo.usage
-                )
-
-            case .thinking:
-                // Thinking is a signal of active processing. Clear any
-                // stale completionNotificationAt (prevents premature
-                // notification if thinking starts after a tool completes
-                // but before the next assistantText), and ensure phase
-                // reflects active work even if no tool is running yet.
-                session.completionNotificationAt = nil
-                if !session.phase.isActive {
-                    session.phase = .processing
-                }
-
-            case .toolCall(let tc):
-                if update.mutation == .insert {
-                    // Tool started — track in toolTracker so that
-                    // hasRunningTools() / progress indicators work.
-                    session.toolTracker.startTool(id: update.id, name: tc.name)
-                    session.completionNotificationAt = nil
-                    session.phase = .processing
-                } else {
-                    // Tool finished (updateStatus) — use the adapter's
-                    // isError flag (which includes bash metadata detection)
-                    // for accurate success/failure tracking.
-                    session.toolTracker.completeTool(id: update.id, success: !update.isError)
-                    session.phase = hasRunningTools(in: session) ? .processing : .idle
-                }
-                session.conversationInfo = ConversationInfo(
-                    summary: session.conversationInfo.summary,
-                    lastMessage: session.conversationInfo.lastMessage,
-                    lastMessageRole: "tool",
-                    lastToolName: tc.name,
-                    firstUserMessage: session.conversationInfo.firstUserMessage,
-                    lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
-                    usage: session.conversationInfo.usage
-                )
-
-            case .image, .interrupted:
-                break
-            }
-        }
-
-        // ── Re-sort & persist ─────────────────────────────────────────
-
-        session.chatItems = ChatItemSorter.sorted(
-            session.chatItems,
-            orderings: blockOrderings
+        let didApply = ChatItemUpdateReducer.apply(
+            update,
+            items: &session.chatItems,
+            orderings: &blockOrderings,
+            now: now
         )
+        guard didApply else { return }
+
+        // ── Optional lifecycle effects ────────────────────────────────
+        // ChatItemUpdate itself only represents chat content mutations.
+        // Live-stream routes can opt into lifecycle effects at the event
+        // boundary; transcript/history sync routes should keep this false.
+        if appliesLifecycleEffects {
+            applyRealtimeChatItemLifecycle(update, to: &session, now: now)
+        }
 
         sessions[update.sessionId] = session
         DebugLog.shared.write("[chat-item-update] session=\(update.sessionId) id=\(update.id) mutation=\(update.mutation) totalItems=\(session.chatItems.count)")
+    }
+
+    private func applyRealtimeChatItemLifecycle(
+        _ update: ChatItemUpdate,
+        to session: inout SessionState,
+        now: Date
+    ) {
+        guard update.mutation == .insert || update.mutation == .updateStatus else {
+            return
+        }
+
+        session.lastActivity = now
+
+        switch update.block {
+        case .userPrompt(let text):
+            session.phase = .processing
+            session.completionNotificationAt = nil
+            session.conversationInfo = ConversationInfo(
+                summary: session.conversationInfo.summary,
+                lastMessage: text,
+                lastMessageRole: "user",
+                lastToolName: nil,
+                firstUserMessage: session.conversationInfo.firstUserMessage ?? text,
+                lastUserMessageDate: now,
+                usage: session.conversationInfo.usage
+            )
+
+        case .assistantText(let text):
+            session.phase = hasRunningTools(in: session) ? .processing : .idle
+            session.completionNotificationAt = now
+            session.conversationInfo = ConversationInfo(
+                summary: session.conversationInfo.summary,
+                lastMessage: text,
+                lastMessageRole: "assistant",
+                lastToolName: nil,
+                firstUserMessage: session.conversationInfo.firstUserMessage,
+                lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
+                usage: session.conversationInfo.usage
+            )
+
+        case .thinking:
+            // Thinking is an active-processing signal even before a tool starts.
+            session.completionNotificationAt = nil
+            if !session.phase.isActive {
+                session.phase = .processing
+            }
+
+        case .toolCall(let tc):
+            if update.mutation == .insert {
+                session.toolTracker.startTool(id: update.id, name: tc.name)
+                session.completionNotificationAt = nil
+                session.phase = .processing
+            } else {
+                session.toolTracker.completeTool(id: update.id, success: !update.isError)
+                session.phase = hasRunningTools(in: session) ? .processing : .idle
+            }
+            session.conversationInfo = ConversationInfo(
+                summary: session.conversationInfo.summary,
+                lastMessage: session.conversationInfo.lastMessage,
+                lastMessageRole: "tool",
+                lastToolName: tc.name,
+                firstUserMessage: session.conversationInfo.firstUserMessage,
+                lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
+                usage: session.conversationInfo.usage
+            )
+
+        case .image, .interrupted:
+            break
+        }
     }
 
     private func makeOpencodeToolId(for sessionId: String) -> String {
@@ -1020,9 +945,53 @@ actor SessionStore {
 
     // MARK: - Codex Helpers
 
-    private func makeCodexToolId(for sessionId: String) -> String {
-        let millis = Int(Date().timeIntervalSince1970 * 1000)
-        return "codex-bash-\(sessionId)-\(millis)"
+    private func resetCodexConversationState(_ session: inout SessionState) {
+        for item in session.chatItems {
+            blockOrderings.removeValue(forKey: item.id)
+        }
+
+        session.chatItems.removeAll()
+        session.toolTracker = ToolTracker()
+        session.subagentState = SubagentState()
+        session.conversationInfo = ConversationInfo(
+            summary: nil,
+            lastMessage: nil,
+            lastMessageRole: nil,
+            lastToolName: nil,
+            firstUserMessage: nil,
+            lastUserMessageDate: nil
+        )
+        session.needsClearReconciliation = false
+        session.completionNotificationAt = nil
+    }
+
+    private func scheduleCodexCompletionNotification(sessionId: String) {
+        cancelPendingCodexCompletionNotification(sessionId: sessionId)
+
+        pendingCodexCompletionNotifications[sessionId] = Task { [weak self, codexCompletionDebounceNs] in
+            try? await Task.sleep(nanoseconds: codexCompletionDebounceNs)
+            guard !Task.isCancelled else { return }
+            await self?.emitCodexCompletionNotification(sessionId: sessionId)
+        }
+    }
+
+    private func cancelPendingCodexCompletionNotification(sessionId: String) {
+        pendingCodexCompletionNotifications[sessionId]?.cancel()
+        pendingCodexCompletionNotifications.removeValue(forKey: sessionId)
+    }
+
+    private func emitCodexCompletionNotification(sessionId: String) {
+        pendingCodexCompletionNotifications.removeValue(forKey: sessionId)
+        guard var session = sessions[sessionId],
+              session.provider == .codex,
+              session.phase == .idle,
+              session.completionNotificationAt == nil else {
+            return
+        }
+
+        session.completionNotificationAt = Date()
+        sessions[sessionId] = session
+        publishState()
     }
 
     private func latestRunningCodexToolId(in session: SessionState, toolName: String, toolUseId: String?) -> String? {
@@ -1808,11 +1777,18 @@ actor SessionStore {
     private func processSessionEnd(sessionId: String) async {
         sessions.removeValue(forKey: sessionId)
         cancelPendingSync(sessionId: sessionId)
+        cancelPendingCodexCompletionNotification(sessionId: sessionId)
+        codexTranscriptLowerBounds.removeValue(forKey: sessionId)
     }
 
     // MARK: - History Loading
 
     private func loadHistoryFromFile(sessionId: String, cwd: String) async {
+        if sessions[sessionId]?.provider == .codex {
+            await syncCodexTranscript(sessionId: sessionId)
+            return
+        }
+
         // Parse file asynchronously
         let messages = await ConversationParser.shared.parseFullConversation(
             sessionId: sessionId,
@@ -1867,6 +1843,32 @@ actor SessionStore {
         )
         for update in chatUpdates {
             applyChatItemUpdate(update)
+        }
+    }
+
+    private func syncCodexTranscript(sessionId: String) async {
+        guard !shouldIgnoreCodexSession(sessionId) else { return }
+
+        let updates = await CodexTranscriptParser.loadUpdates(
+            sessionId: sessionId,
+            after: codexTranscriptLowerBounds[sessionId]
+        )
+        guard !updates.isEmpty else { return }
+
+        DebugLog.shared.write("[codex-transcript-sync] session=\(sessionId) updates=\(updates.count)")
+        for update in updates {
+            applyChatItemUpdate(update)
+        }
+        publishState()
+    }
+
+    private func scheduleCodexTranscriptSync(sessionId: String) {
+        cancelPendingSync(sessionId: sessionId)
+
+        pendingSyncs[sessionId] = Task { [weak self, syncDebounceNs] in
+            try? await Task.sleep(nanoseconds: syncDebounceNs)
+            guard !Task.isCancelled else { return }
+            await self?.syncCodexTranscript(sessionId: sessionId)
         }
     }
 
@@ -1947,6 +1949,8 @@ actor SessionStore {
             if session.phase == .ended {
                 sessions.removeValue(forKey: sessionId)
                 cancelPendingSync(sessionId: sessionId)
+                cancelPendingCodexCompletionNotification(sessionId: sessionId)
+                codexTranscriptLowerBounds.removeValue(forKey: sessionId)
                 stateChanged = true
                 continue
             }
@@ -1955,6 +1959,8 @@ actor SessionStore {
                session.phase == .idle,
                now.timeIntervalSince(session.lastActivity) > codexIdleExpirationSeconds {
                 sessions.removeValue(forKey: sessionId)
+                cancelPendingCodexCompletionNotification(sessionId: sessionId)
+                codexTranscriptLowerBounds.removeValue(forKey: sessionId)
                 stateChanged = true
                 continue
             }
@@ -1984,6 +1990,8 @@ actor SessionStore {
                     Self.logger.info("Process \(pid) no longer running, ending session \(sessionId.prefix(8))")
                     sessions.removeValue(forKey: sessionId)
                     cancelPendingSync(sessionId: sessionId)
+                    cancelPendingCodexCompletionNotification(sessionId: sessionId)
+                    codexTranscriptLowerBounds.removeValue(forKey: sessionId)
                     stateChanged = true
                     continue
                 }

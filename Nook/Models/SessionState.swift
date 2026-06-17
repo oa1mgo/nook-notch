@@ -114,10 +114,12 @@ struct SessionState: Equatable, Identifiable, Sendable {
 
     /// The active permission context, if any
     var activePermission: PermissionContext? {
-        if case .waitingForApproval(let ctx) = phase {
+        switch phase {
+        case .waitingForApproval(let ctx), .waitingForTerminalApproval(let ctx):
             return ctx
+        default:
+            return nil
         }
-        return nil
     }
 
     // MARK: - UI Convenience Properties

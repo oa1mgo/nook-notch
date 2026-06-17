@@ -140,7 +140,7 @@ struct ClaudeInstancesView: View {
     /// Approval requests share priority with processing to maintain stable ordering
     private func phasePriority(_ phase: SessionPhase) -> Int {
         switch phase {
-        case .waitingForApproval, .processing, .compacting: return 0
+        case .waitingForApproval, .waitingForTerminalApproval, .processing, .compacting: return 0
         case .waitingForInput: return 1
         case .idle, .ended: return 2
         }
@@ -364,6 +364,10 @@ struct InstanceRow: View {
         session.phase.isWaitingForApproval
     }
 
+    private var isWaitingForTerminalApproval: Bool {
+        session.phase.isWaitingForTerminalApproval
+    }
+
     /// Whether the session is waiting for user input (AskUserQuestion).
     /// Unified across providers: Claude sends status: "waiting_for_input",
     /// OpenCode sends PermissionRequest — both resolve to .waitingForInput.
@@ -388,6 +392,8 @@ struct InstanceRow: View {
             return "Ready"
         case .waitingForApproval:
             return "Waiting for approval"
+        case .waitingForTerminalApproval:
+            return "Approval needed in terminal"
         case .idle:
             return "Idle"
         case .ended:
@@ -426,7 +432,8 @@ struct InstanceRow: View {
                 }
 
                 // Show tool call when waiting for approval/input, otherwise last activity
-                if (isWaitingForApproval || isWaitingForUserInput), let toolName = session.pendingToolName {
+                if (isWaitingForApproval || isWaitingForTerminalApproval || isWaitingForUserInput),
+                   let toolName = session.pendingToolName {
                     // Show tool name in amber + input on same line
                     HStack(spacing: 4) {
                         Text(MCPToolFormatter.formatToolName(toolName))
@@ -500,8 +507,8 @@ struct InstanceRow: View {
             Spacer(minLength: 0)
 
             // Action icons or approval buttons
-            if (isWaitingForApproval || isWaitingForUserInput) && isInteractiveTool {
-                // Interactive tools like AskUserQuestion - show chat + terminal buttons
+            if isWaitingForTerminalApproval || ((isWaitingForApproval || isWaitingForUserInput) && isInteractiveTool) {
+                // Interactive tools and terminal-side approval prompts need terminal focus.
                 HStack(spacing: 8) {
                     IconButton(icon: "bubble.left") {
                         onChat()
@@ -574,7 +581,7 @@ struct InstanceRow: View {
         switch session.phase {
         case .processing, .compacting:
             ProcessingSpinner(provider: session.provider)
-        case .waitingForApproval:
+        case .waitingForApproval, .waitingForTerminalApproval:
             ProcessingSpinner(color: TerminalColors.amber)
         case .waitingForInput:
             // Pixel speech bubble (12×12) — visually distinct from the

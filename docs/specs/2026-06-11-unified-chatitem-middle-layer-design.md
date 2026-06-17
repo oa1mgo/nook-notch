@@ -4,6 +4,7 @@
 > 状态: 设计阶段（待 Phase 1+2 实施验证）
 > 修订: 2026-06-16 — `BlockOrdering` 增加 `.appendOrder` 第四种策略
 > 修订: 2026-06-17 — hook placeholder 策略由 ordering 驱动（`SessionProvider.needsHookPlaceholders`）
+> 修订: 2026-06-17 — content mutation reducer 与 live lifecycle 路由分离
 > 触发: opencode thinking 排序 bug 暴露三种 provider 架构差异
 
 ## Revision 2026-06-16 — `.appendOrder` 第四种排序策略
@@ -106,6 +107,38 @@ var needsHookPlaceholders: Bool {
 - `Nook/Models/SessionProvider.swift` — 新增 `needsHookPlaceholders` 属性
 - `Nook/Services/State/SessionStore.swift` — `processToolTracking` 和 `processSubagentStarted` 用 `provider.needsHookPlaceholders` 替代 `provider == .claude`
 
+### Revision 2026-06-17 — content mutation reducer 与 live lifecycle 路由分离
+
+#### 动机
+
+Codex 接入时暴露了一个新的架构边界问题：`ChatItemUpdate` 应该只是 **provider-normalized content mutation**，不应该为了某个 provider 的实时性需求增加字段或在 `applyChatItemUpdate()` 里写 `provider == ...` 特判。
+
+同时，OpenCode 的 event stream 确实需要实时驱动 `phase` / `toolTracker` / `conversationInfo`，而 Claude/Codex 的 JSONL/transcript sync 不应该因为历史回放触发生命周期副作用。
+
+#### 架构决策
+
+把链路拆成三层：
+
+1. **Adapter 层**：provider 原始事件 / transcript → `[ChatItemUpdate]`
+2. **Reducer 层**：`ChatItemUpdateReducer` 只做 `chatItems + blockOrderings` 的纯 content mutation
+3. **Session lifecycle 层**：事件路由显式选择是否应用 realtime lifecycle
+
+对应事件语义：
+
+```swift
+case chatItemBatch([ChatItemUpdate])          // transcript/history content sync only
+case realtimeChatItemBatch([ChatItemUpdate])  // live stream content + phase/toolTracker
+```
+
+`ChatItemUpdate` 本身不携带 lifecycle 语义。新 provider 接入时，如果数据来自历史文件/append-only transcript，走 `chatItemBatch`；如果数据来自实时事件流且需要立即更新 session 状态，走 `realtimeChatItemBatch`。
+
+#### 涉及文件
+
+- `Nook/Services/Shared/ChatItemUpdateReducer.swift` — 新增 provider-agnostic content reducer
+- `Nook/Services/State/SessionStore.swift` — `applyChatItemUpdate()` 调 reducer；realtime lifecycle 由 `appliesLifecycleEffects` 显式 opt-in
+- `Nook/Models/SessionEvent.swift` — 新增 `realtimeChatItemBatch`
+- `Nook/Services/Session/ClaudeSessionMonitor.swift` — OpenCode live stream 路由到 `realtimeChatItemBatch`
+
 ## Overview
 
 Nook 当前支持三种 AI agent provider（Claude Code、OpenCode、Codex），但它们各自以完全不同的方式构建 `chatItems`，导致 SessionStore 成为 provider-specific 逻辑的集中地。本次重构引入一个 provider-agnostic 的中间格式 `ChatItemUpdate`，让所有 provider adapter 输出统一的有序块序列，由 SessionStore 通过单一入口处理。
@@ -140,12 +173,12 @@ SessionStore 的 `process()` 包含 30+ case 巨型 switch，ChatView 需要 `!=
 
 改造后:
   Claude → ClaudeChatItemAdapter → [ChatItemUpdate] ─┐
-  OpenCode → OpencodeChatItemAdapter → [ChatItemUpdate] ├→ SessionStore.applyChatItemUpdate()
+  OpenCode → OpencodeChatItemAdapter → [ChatItemUpdate] ├→ ChatItemUpdateReducer
   Codex → CodexChatItemAdapter → [ChatItemUpdate] ────┘         ↓
                                                           ChatItemSorter.sorted()
 ```
 
-所有 provider 通过同一个 `applyChatItemUpdate()` 入口，排序由 `ChatItemSorter` 统一保证。
+所有 provider 的 content mutation 通过同一个 reducer，排序由 `ChatItemSorter` 统一保证。Session lifecycle 不由 reducer 隐式推断；只有 live stream 事件路由显式选择 realtime lifecycle。
 
 ## Data Model
 

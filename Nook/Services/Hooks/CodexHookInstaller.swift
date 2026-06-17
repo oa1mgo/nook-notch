@@ -102,6 +102,16 @@ struct CodexHookInstaller {
         }
 
         var hooks = json["hooks"] as? [String: Any] ?? [:]
+        for (event, value) in Array(hooks) {
+            guard var entries = value as? [[String: Any]] else { continue }
+            entries = entries.compactMap { removingNookHooks(from: $0) }
+            if entries.isEmpty {
+                hooks.removeValue(forKey: event)
+            } else {
+                hooks[event] = entries
+            }
+        }
+
         let command = "\(detectPythonExecutable()) \(shellQuote(bridgeScript.path))"
         let handler: [String: Any] = ["type": "command", "command": command]
         let allEvents: [(String, [[String: Any]])] = [
@@ -110,13 +120,11 @@ struct CodexHookInstaller {
             ("PreToolUse", [["hooks": [handler]]]),
             ("PermissionRequest", [["hooks": [handler]]]),
             ("PostToolUse", [["hooks": [handler]]]),
-            ("PostToolUseFailure", [["hooks": [handler]]]),
             ("PreCompact", [["hooks": [handler]]]),
             ("PostCompact", [["hooks": [handler]]]),
             ("SubagentStart", [["hooks": [handler]]]),
             ("SubagentStop", [["hooks": [handler]]]),
             ("Stop", [["hooks": [handler]]]),
-            ("StopFailure", [["hooks": [handler]]]),
         ]
 
         for (event, config) in allEvents {

@@ -11,7 +11,11 @@ enum CodexHookAdapter {
     static func adapt(_ envelope: CodexHookEnvelope) -> CodexSessionEvent? {
         switch envelope.normalizedEventName {
         case "sessionstart":
-            return .sessionStart(sessionId: envelope.sessionId, cwd: envelope.cwd)
+            return .sessionStart(
+                sessionId: envelope.sessionId,
+                cwd: envelope.cwd,
+                source: envelope.source
+            )
 
         case "userpromptsubmit":
             return .userPromptSubmit(
@@ -31,18 +35,27 @@ enum CodexHookAdapter {
                 inputSummary: envelope.inputSummary
             )
 
-        case "posttooluse", "postbashtool", "posttoolusefailure", "postbashtoolfailure":
+        case "posttooluse", "postbashtool":
             guard let toolName = envelope.toolName else { return nil }
             return .postTool(
                 sessionId: envelope.sessionId,
                 cwd: envelope.cwd,
                 toolName: toolName,
                 toolUseId: envelope.toolUseId,
-                inputSummary: envelope.inputSummary
+                inputSummary: envelope.inputSummary,
+                output: envelope.toolOutputSummary,
+                isError: envelope.toolResponseIndicatesError
             )
 
         case "permissionrequest":
-            return .waitingForUserInput(sessionId: envelope.sessionId, cwd: envelope.cwd)
+            return .permissionRequest(
+                sessionId: envelope.sessionId,
+                cwd: envelope.cwd,
+                toolName: envelope.toolName,
+                toolUseId: envelope.toolUseId,
+                input: envelope.displayInput,
+                inputSummary: envelope.inputSummary
+            )
 
         case "precompact":
             return .compactingStarted(sessionId: envelope.sessionId, cwd: envelope.cwd)
@@ -56,7 +69,7 @@ enum CodexHookAdapter {
         case "subagentstop":
             return .subagentStopped(sessionId: envelope.sessionId, cwd: envelope.cwd)
 
-        case "stop", "stopfailure":
+        case "stop":
             return .stop(sessionId: envelope.sessionId, cwd: envelope.cwd)
 
         default:

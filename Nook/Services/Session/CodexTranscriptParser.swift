@@ -8,11 +8,15 @@
 import Foundation
 
 enum CodexTranscriptParser {
-    nonisolated static func loadHistory(sessionId: String) async -> [ChatHistoryItem] {
+    nonisolated static func loadUpdates(sessionId: String, after lowerBound: Date? = nil) async -> [ChatItemUpdate] {
         await Task.detached(priority: .userInitiated) {
             guard let url = transcriptURL(for: sessionId) else { return [] }
-            return parseTranscript(at: url, sessionId: sessionId)
+            return parseTranscriptUpdates(at: url, sessionId: sessionId, after: lowerBound)
         }.value
+    }
+
+    nonisolated static func loadHistory(sessionId: String) async -> [ChatHistoryItem] {
+        history(from: await loadUpdates(sessionId: sessionId))
     }
 
     nonisolated static func isSubagentSession(sessionId: String) -> Bool {
@@ -73,15 +77,18 @@ enum CodexTranscriptParser {
         return nil
     }
 
-    private nonisolated static func parseTranscript(at url: URL, sessionId: String) -> [ChatHistoryItem] {
+    private nonisolated static func parseTranscriptUpdates(
+        at url: URL,
+        sessionId: String,
+        after lowerBound: Date?
+    ) -> [ChatItemUpdate] {
         guard let data = try? Data(contentsOf: url),
               let contents = String(data: data, encoding: .utf8) else {
             return []
         }
 
         let lines = contents.split(whereSeparator: \.isNewline)
-        var items: [ChatHistoryItem] = []
-        var toolIndexByCallId: [String: Int] = [:]
+        var updates: [ChatItemUpdate] = []
 
         for (lineIndex, line) in lines.enumerated() {
             guard let jsonData = line.data(using: .utf8),
@@ -91,7 +98,17 @@ enum CodexTranscriptParser {
                 continue
             }
 
-            let timestamp = parseTimestamp(raw["timestamp"] as? String)
+            let timestamp: Date
+            if let parsedTimestamp = parseTimestamp(raw["timestamp"] as? String) {
+                timestamp = parsedTimestamp
+            } else if lowerBound != nil {
+                continue
+            } else {
+                timestamp = Date()
+            }
+            if let lowerBound, timestamp <= lowerBound {
+                continue
+            }
 
             guard envelopeType == "response_item",
                   let payloadType = payload["type"] as? String else {
@@ -107,63 +124,57 @@ enum CodexTranscriptParser {
 
                 let text = extractMessageText(from: payload["content"])
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-
-                let itemType: ChatHistoryItemType = role == "user" ? .user(text) : .assistant(text)
-                items.append(
-                    ChatHistoryItem(
-                        id: "codex-message-\(sessionId)-\(lineIndex)",
-                        type: itemType,
-                        timestamp: timestamp
-                    )
-                )
-
-            case "function_call", "custom_tool_call":
-                let callId = (payload["call_id"] as? String) ?? "codex-tool-\(sessionId)-\(lineIndex)"
-                let name = (payload["name"] as? String) ?? "Tool"
-                let input = parseToolInput(payload: payload)
-                let toolItem = ChatHistoryItem(
-                    id: callId,
-                    type: .toolCall(ToolCallItem(
-                        name: name,
-                        input: input,
-                        status: .running,
-                        result: nil,
-                        structuredResult: nil,
-                        subagentTools: []
-                    )),
+                if let update = CodexChatItemAdapter.messageUpdate(
+                    sessionId: sessionId,
+                    lineIndex: lineIndex,
+                    role: role,
+                    text: text,
                     timestamp: timestamp
-                )
-                items.append(toolItem)
-                toolIndexByCallId[callId] = items.count - 1
-
-            case "function_call_output", "custom_tool_call_output":
-                guard let callId = payload["call_id"] as? String,
-                      let index = toolIndexByCallId[callId],
-                      index < items.count,
-                      case .toolCall(var tool) = items[index].type else {
-                    continue
+                ) {
+                    updates.append(update)
                 }
 
-                tool.status = .success
-                tool.result = normalizeToolOutput(payload["output"] as? String)
-                items[index] = ChatHistoryItem(
-                    id: items[index].id,
-                    type: .toolCall(tool),
-                    timestamp: items[index].timestamp
-                )
+            case "function_call", "custom_tool_call":
+                let callId = payload["call_id"] as? String
+                let name = (payload["name"] as? String) ?? "Tool"
+                let input = parseToolInput(payload: payload)
+                updates.append(CodexChatItemAdapter.toolCallUpdate(
+                    sessionId: sessionId,
+                    lineIndex: lineIndex,
+                    callId: callId,
+                    name: name,
+                    input: input,
+                    timestamp: timestamp
+                ))
+
+            case "function_call_output", "custom_tool_call_output":
+                guard let callId = payload["call_id"] as? String else {
+                    continue
+                }
+                updates.append(CodexChatItemAdapter.toolOutputUpdate(
+                    sessionId: sessionId,
+                    callId: callId,
+                    result: normalizeToolOutput(payload["output"] as? String),
+                    timestamp: timestamp
+                ))
 
             default:
                 continue
             }
         }
 
-        return items.sorted {
-            if $0.timestamp == $1.timestamp {
-                return $0.id < $1.id
-            }
-            return $0.timestamp < $1.timestamp
+        return updates
+    }
+
+    private nonisolated static func history(from updates: [ChatItemUpdate]) -> [ChatHistoryItem] {
+        var items: [ChatHistoryItem] = []
+        var orderings: [String: BlockOrdering] = [:]
+
+        for update in updates {
+            ChatItemUpdateReducer.apply(update, items: &items, orderings: &orderings)
         }
+
+        return items
     }
 
     private nonisolated static func extractMessageText(from rawContent: Any?) -> String {
@@ -229,15 +240,15 @@ enum CodexTranscriptParser {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private nonisolated static func parseTimestamp(_ raw: String?) -> Date {
-        guard let raw else { return Date() }
+    private nonisolated static func parseTimestamp(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
         if let date = Self.makeFractionalSecondsFormatter().date(from: raw) {
             return date
         }
         if let date = Self.makeBasicInternetFormatter().date(from: raw) {
             return date
         }
-        return Date()
+        return nil
     }
 
     private nonisolated static func makeFractionalSecondsFormatter() -> ISO8601DateFormatter {

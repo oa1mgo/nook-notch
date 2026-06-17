@@ -9,8 +9,7 @@
 <!-- 下一步候选，按优先级 -->
 1. **Critical #3** — `createMinimalConfig()` 在 JSON 损坏时会覆盖原文件，先备份再覆盖更安全
 2. **yabai 缺失的 UX 提示**（来自 2026-06-17 用户反馈）— 没装 yabai 时 fallback 能工作但精度低。考虑设置页加说明或失败时一次性提示
-3. **Codex 走 ChatItem 中间层**（独立任务）— Claude 已迁移，OpenCode 用 hook 路径。Codex 还在用旧 `codexTranscriptHistory` 路径，未来要统一
-4. **Bug J 长期监控**（见 Blockers）— 当前 0 复现但保留诊断 log
+3. **Bug J 长期监控**（见 Blockers）— 当前 0 复现但保留诊断 log
 
 ## ⏸️ Paused Tasks
 | Task | 状态 | 阻塞点 / 入口 |
@@ -19,6 +18,7 @@
 | #79 Bug I | 诊断已就位，race 未被证实 | 3 条诊断 log 已部署。当前 opencode v1.15.13 下 `⚠ DIAG #79` 从未命中，`subagent routing HIT` 正常工作。保留诊断作为基线，暂不修复 |
 
 ## ✅ Recently Completed
+- **Codex ChatItem adapter 迁移** — 新增 `CodexChatItemAdapter`，`CodexTranscriptParser` 输出 `[ChatItemUpdate]`，`SessionStore` 通过 debounce transcript sync 应用 Codex transcript。`ChatItemUpdateReducer` 统一处理 content mutation；live stream lifecycle 由 `realtimeChatItemBatch` 显式选择，避免在中间层写 provider 特判。Codex live hook 保留 phase/toolTracker/通知生命周期，只有稳定 `toolUseId` 的 tool row 走 adapter live update。`ChatView` 删除 `codexTranscriptHistory` / `mergedCodexHistory()` / `refreshCodexHistory()`，Codex 和其他 provider 一样从 `ChatHistoryManager` 订阅 `session.chatItems`。
 - **#22aad3e Terminal focus 鲁棒性** — `focusTerminal()` 重构：先尝试所有 focus 方法，**成功才关 notch + restore focus**；失败保留 notch + 红色错误提示（`focusErrorMessage`，自动在 `ChatInteractivePromptBar` 左侧显示）。`tryFocusTerminal()` 抽出独立 helper。修复 22aad3e 之前 beb9b06 太激进的"先关 notch 再 focus"行为（失败时用户两边都看不到）。
 - **#74eb2d0 Terminal 按钮 adaptive theme 不可见** — `ChatInteractivePromptBar` 的 Terminal 按钮背景用 `primaryTextColor.opacity(0.92)` + 黑色前景。Adaptive background 模式下 `primaryTextColor = expandedNotchTheme.primaryText`（可能是黑色），导致黑底黑字完全看不见。修复：用固定 `Color.black.opacity(0.85)` 背景 + 白字，与主题无关。
 - **#a2baf94 修正 `question.asked` 错误判断** — `OpencodeHookAdapter.swift` 注释 + PROGRESS.md #83 修正：原 2026-06-17 早期"v1.17.x 不发 question.asked"是错误判断，同一天 08:36 测试中 `[opencode] event type=question.asked` 正常到达。早期缺失是 opencode/plugin socket 启动时序问题（socket 没绑定），不是事件不存在。`handleQuestionAsked` 恢复 PRIMARY path。
@@ -26,7 +26,7 @@
 - **#58202f5 统一 AskUserQuestion phase** — `SessionEvent.determinePhase()` 里 `ToolKind.classify(tool) == .askUserQuestion` 时返回 `.waitingForInput` 而非 `.waitingForApproval`。`SessionPhase` 新增 `isWaitingForInput`。`InstanceRow` 对 `.waitingForInput` + interactive tool 显示 chat + terminal 按钮（和 `.waitingForApproval` 路径一致）。
 - **#dadcfa3 AskUserQuestion hasResult + tool name alias** — `hasResult` 对 `.askUserQuestion` 永远 `true`（选项是静态内容）。`MCPToolFormatter.toolAliases` 加 OpenCode 小写映射（`question` → `Question` 等），OpenCode "question" 不再小写显示。
 - **#334911d AskUserQuestion 选项展示 + preview + status** — `AskUserQuestionResultContent` 重写：header + question + A/B/C/D option list + 描述 + 选中高亮（绿色 + checkmark）。`ToolCallView` 对 AskUserQuestion 豁免 `.running` / `.waitingForApproval` 守卫（chevron 和内容）。`inputPreview` 显示 "请选择...(N 个选项)" 而非 raw JSON。`ToolStatusDisplay` 加 `.askUserQuestion` → "Waiting for answer..."。新增 `docs/specs/2026-06-16-claude-adapter-completeness-fix.md`。
-- **#650ac68 Claude adapter 迁移 + .appendOrder + hook gating** — `BlockOrdering` 加 `.appendOrder` case。`ChatItemSorter` 加 fast path。`SessionProvider.needsHookPlaceholders` 替换 `provider == .claude` 打补丁。`SessionStore` 删 `upsertBlocks()`，走 `ClaudeChatItemAdapter`。structuredResult 合并改成 `existing ?? new`。`applyChatItemUpdate` 的 lifecycle side effects 限 `provider == .opencode`。新增 `docs/specs/2026-06-16-clause-chatitem-adapter-design.md`。
+- **#650ac68 Claude adapter 迁移 + .appendOrder + hook gating** — `BlockOrdering` 加 `.appendOrder` case。`ChatItemSorter` 加 fast path。`SessionProvider.needsHookPlaceholders` 替换 `provider == .claude` 打补丁。`SessionStore` 删 `upsertBlocks()`，走 `ClaudeChatItemAdapter`。structuredResult 合并改成 `existing ?? new`。新增 `docs/specs/2026-06-16-clause-chatitem-adapter-design.md`。
 - **#83 opencode `question.asked` 行为澄清** — `OpencodeHookAdapter.swift` 注释更新：原 2026-06-17 早期观察 "v1.17.x 不发 `question.asked`" 是错误判断 — 后续同一天 08:36 测试时日志清晰显示 `[opencode] event type=question.asked` 正常到达。`handleQuestionAsked` 恢复为 PRIMARY path，`handleToolPart` 里 `tool=question` 检测保留为 defensive fallback（idempotent）。代码无逻辑改动。
 - **#64 清理 unbounded session-scoped state** — 新增 `cleanupState(forSession:)` 函数，在 `handleSessionStatus(idle)`、`handleSessionIdle`、子代理 `session.idle` 三处调用。清理 per-session dicts（sessionCwd/latestUserMsgID/consumedUserPromptBySession 等）、subagent dicts（subagentToParent/subagentTaskToolId 双向清理）、message-scoped dicts（通过 messageSession 反查过滤）。`runningToolCallIds` 保留不清理（keyed by callID，无 session 映射，但 bounded by active calls）。
 - **handleToolPart error status** — `handleToolPart` 的 status switch 新增 `case "error"`：去重 switch 中移除 callID 并记录日志；事件产出 switch 中 emit `.postTool(output: nil, error: error)`；task tool 的 error 状态也触发 `subagentStopped`。
@@ -76,6 +76,8 @@
 ### ChatItem 中间层抽象（2026-06-17 落地）
 - `BlockOrdering` 四种 case：`.filePosition`（全量 parse）、`.messageRelative`（OpenCode 事件流）、`.timestamp`（fallback）、`.appendOrder`（append-only + monotonic，Claude JSONL）
 - `ChatItemSorter.sorted()` fast path：全 `.appendOrder` 或 missing → 返回原数组不排序
+- `ChatItemUpdateReducer` 是纯 content mutation reducer；SessionStore 只负责 session auto-create、可选 realtime lifecycle、publish
+- `chatItemBatch` 表示 transcript/history 内容同步；`realtimeChatItemBatch` 表示 live stream 内容更新并驱动 phase/toolTracker
 - `SessionProvider.needsHookPlaceholders` 驱动 hook placeholder 创建（claude/codex=false, opencode=true）
 - 接入新 provider：除非能证明数据源乱序，否则默认 `.appendOrder`
 
@@ -84,7 +86,10 @@
 - **主战场文件**:
   - `Nook/Services/Hooks/OpencodeHookAdapter.swift`（核心事件路由 + v1.17.x 注释）
   - `Nook/Services/Hooks/ClaudeChatItemAdapter.swift`（Claude JSONL → ChatItemUpdate，新）
+  - `Nook/Services/Hooks/CodexChatItemAdapter.swift`（Codex transcript/live hook → ChatItemUpdate，新）
+  - `Nook/Services/Session/CodexTranscriptParser.swift`（Codex transcript → ChatItemUpdate）
   - `Nook/Models/ChatItemUpdate.swift`（中间层 + `BlockOrdering.appendOrder`）
+  - `Nook/Services/Shared/ChatItemUpdateReducer.swift`（provider-agnostic content mutation）
   - `Nook/Services/Shared/ChatItemSorter.swift`（fast path）
   - `Nook/Models/SessionProvider.swift`（`needsHookPlaceholders`）
   - `Nook/Services/State/SessionStore.swift`（chatItems 状态机 + publishState）

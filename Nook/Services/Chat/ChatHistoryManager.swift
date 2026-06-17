@@ -35,8 +35,8 @@ class ChatHistoryManager: ObservableObject {
         loadedSessions.contains(sessionId)
     }
 
-    func loadFromFile(sessionId: String, cwd: String) async {
-        guard !loadedSessions.contains(sessionId) else { return }
+    func loadFromFile(sessionId: String, cwd: String, force: Bool = false) async {
+        guard force || !loadedSessions.contains(sessionId) else { return }
         loadedSessions.insert(sessionId)
         await SessionStore.shared.process(.loadHistory(sessionId: sessionId, cwd: cwd))
     }
