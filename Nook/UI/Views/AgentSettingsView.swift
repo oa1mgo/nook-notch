@@ -178,18 +178,24 @@ struct AgentSettingsView: View {
 
     private var claudeDirPickerOptions: some View {
         VStack(spacing: 2) {
-            pickerOptionButton(
+            SettingsSubPickerRow(
                 label: "Auto-detect",
                 sublabel: resolvedAutoDetectPath,
-                isSelected: !isCustomClaudeDir
+                sublabelDesign: .monospaced,
+                isSelected: !isCustomClaudeDir,
+                primaryTextColor: primaryTextColor,
+                secondaryTextColor: secondaryTextColor
             ) {
                 applyClaudeDirChoice(path: "")
             }
 
-            pickerOptionButton(
+            SettingsSubPickerRow(
                 label: "Choose folder…",
                 sublabel: isCustomClaudeDir ? shortenedPath(currentClaudeDir) : nil,
-                isSelected: isCustomClaudeDir
+                sublabelDesign: .monospaced,
+                isSelected: isCustomClaudeDir,
+                primaryTextColor: primaryTextColor,
+                secondaryTextColor: secondaryTextColor
             ) {
                 openClaudeFolderPicker()
             }
@@ -202,39 +208,6 @@ struct AgentSettingsView: View {
 
     private var resolvedAutoDetectPath: String {
         shortenedPath(ClaudePaths.claudeDir.path)
-    }
-
-    private func pickerOptionButton(label: String, sublabel: String?, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(isSelected ? TerminalColors.green : Color.white.opacity(0.2))
-                    .frame(width: 6, height: 6)
-
-                Text(label)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(primaryTextColor.opacity(0.82))
-
-                if let sublabel {
-                    Text(sublabel)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(secondaryTextColor)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(TerminalColors.green)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Hooks Toggle

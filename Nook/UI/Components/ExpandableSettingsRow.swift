@@ -101,6 +101,72 @@ struct ExpandableSettingsRow<Content: View>: View {
     }
 }
 
+// MARK: - Sub Picker Row (二级选项条目，用于 SoundPicker / ScreenPicker / ClaudeDirPicker)
+
+struct SettingsSubPickerRow: View {
+    let label: String
+    var sublabel: String? = nil
+    var sublabelDesign: Font.Design = .default
+    /// When true, sublabel is stacked below label (VStack); otherwise inline (HStack).
+    var verticalSublabel: Bool = false
+    let isSelected: Bool
+    var primaryTextColor: Color = .white
+    var secondaryTextColor: Color = .white.opacity(0.4)
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(isSelected ? TerminalColors.green : Color.white.opacity(0.2))
+                    .frame(width: 6, height: 6)
+
+                if verticalSublabel {
+                    VStack(alignment: .leading, spacing: 1) {
+                        labelView
+                        if let sublabel { sublabelView }
+                    }
+                } else {
+                    labelView
+                    if let sublabel { sublabelView }
+                }
+
+                Spacer()
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(TerminalColors.green)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+
+    private var labelView: some View {
+        Text(label)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(primaryTextColor.opacity(isHovered ? 1.0 : 0.82))
+    }
+
+    private var sublabelView: some View {
+        Text(sublabel!)
+            .font(.system(size: 10, design: sublabelDesign))
+            .foregroundColor(secondaryTextColor)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+}
+
 // MARK: - Sub Toggle Row (二级 toggle 条目)
 
 struct SettingsSubToggleRow: View {
