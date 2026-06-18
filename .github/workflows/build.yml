@@ -12,4 +12,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build
-        run: xcodebuild -scheme Nook -configuration Debug build
+        run: xcodebuild -scheme Nook -configuration Debug MACOSX_DEPLOYMENT_TARGET=15.5 build
