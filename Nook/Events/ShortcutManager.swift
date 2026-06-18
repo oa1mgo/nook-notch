@@ -70,7 +70,7 @@ class ShortcutManager {
         guard let combo = toggleNotchCombo else { return }
 
         hotKeyIDCounter += 1
-        var hotKeyID = EventHotKeyID(signature: 0x4E4F4F4B, id: hotKeyIDCounter)
+        let hotKeyID = EventHotKeyID(signature: 0x4E4F4F4B, id: hotKeyIDCounter)
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
             UInt32(combo.keyCode),

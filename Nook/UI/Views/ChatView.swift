@@ -1105,8 +1105,8 @@ struct ToolCallView: View {
                             .foregroundColor(textColor.opacity(0.7))
                             .lineLimit(1)
                             .truncationMode(.tail)
-                    } else if let todos = tool.input["todos"] as? [[String: Any]] {
-                        Text("Todo (\(todos.count) tasks)")
+                    } else if tool.input["todos"] != nil {
+                        Text("Todo")
                             .font(.system(size: 11))
                             .foregroundColor(textColor.opacity(0.7))
                             .lineLimit(1)

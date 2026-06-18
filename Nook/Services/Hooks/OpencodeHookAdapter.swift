@@ -321,7 +321,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         guard let state = part["state"] as? [String: Any] else { return [] }
         guard let status = state["status"] as? String else { return [] }
 
-        let messageId = part["messageID"] as? String
+        let _ = part["messageID"] as? String
         // The Task tool itself is the parent-side event; the child never sees
         // its own task invocation, so this guard is just defensive.
         guard toolName != "task" else { return [] }
@@ -967,7 +967,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 input: Self.stringifyInput(input ?? [:]),
                 messageId: messageId
             )
-            if let childId, wasNewlyLinked {
+            if let _ = childId, wasNewlyLinked {
                 return [.subagentStarted(sessionId: sessionId, taskToolId: callId), pre]
             }
             return [pre]

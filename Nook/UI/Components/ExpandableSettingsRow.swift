@@ -126,11 +126,11 @@ struct SettingsSubPickerRow: View {
                 if verticalSublabel {
                     VStack(alignment: .leading, spacing: 1) {
                         labelView
-                        if let sublabel { sublabelView }
+                        if sublabel != nil { sublabelView }
                     }
                 } else {
                     labelView
-                    if let sublabel { sublabelView }
+                    if sublabel != nil { sublabelView }
                 }
 
                 Spacer()
