@@ -20,6 +20,7 @@ struct MCPToolFormatter {
         "AgentOutputTool": "Await Agent",
         "AskUserQuestion": "Question",
         "TodoWrite": "Todo",
+        "TaskUpdate": "Todo",
         "TodoRead": "Todo",
         "WebFetch": "Fetch",
         "WebSearch": "Search",

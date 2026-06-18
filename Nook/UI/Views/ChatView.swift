@@ -909,10 +909,15 @@ struct ToolCallView: View {
     ///      while running so the user sees live activity).
     ///   2. Anything else with a result AND not Edit → chevron toggles
     ///      ToolResultContent (Edit always shows its diff via showContent).
+    ///   TaskUpdate (`.todoWrite` with `taskId` input) is excluded —
+    ///   its result is a plain status-confirmation string with no
+    ///   structured content worth expanding.
     /// Uses provider-agnostic kind — opencode emits "edit" lowercase while
     /// Claude emits "Edit" PascalCase.
     private var canExpand: Bool {
         if tool.isSubagentContainer { return !tool.subagentTools.isEmpty }
+        // TaskUpdate: single-task status change — no expandable content.
+        if tool.kind == .todoWrite && tool.input["taskId"] != nil { return false }
         return tool.kind != .edit && hasResult
     }
 
@@ -1079,10 +1084,44 @@ struct ToolCallView: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
+                } else if tool.kind == .todoWrite {
+                    // Two sub-shapes share `.todoWrite`:
+                    //   • TaskUpdate  → input has `taskId` + `status`
+                    //     (single-task status delta, e.g. "#1 → completed")
+                    //   • TodoWrite   → input has `todos` array
+                    //     (full list replacement, e.g. "Todo (7 tasks)")
+                    if let taskId = tool.input["taskId"],
+                       let status = tool.input["status"] {
+                        Text("#\(taskId) → \(status)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else if let todosJson = tool.input["todos"],
+                              let data = todosJson.data(using: .utf8),
+                              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                        Text("Todo (\(array.count) tasks)")
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else if let todos = tool.input["todos"] as? [[String: Any]] {
+                        Text("Todo (\(todos.count) tasks)")
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Text(tool.statusDisplay.text)
+                            .font(.system(size: 11))
+                            .foregroundColor(textColor.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 } else {
                     // Defensive fallback for any tool that doesn't have an
                     // explicit branch above (glob, webFetch, webSearch,
-                    // write, edit, askUserQuestion, plan-mode, todoWrite,
+                    // write, edit, askUserQuestion, plan-mode,
                     // killShell, bashOutput, agentOutputTool without a
                     // description, unknown MCP tools, etc.). Without this
                     // those tools would render as a bare "Completed" /

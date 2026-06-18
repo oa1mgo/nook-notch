@@ -11,7 +11,7 @@
 //
 //  Tool names differ across providers:
 //    - Claude Code emits PascalCase ("Bash", "Read", "Edit", "Write",
-//      "Grep", "Glob", "Task", "Agent", "TodoWrite", "WebFetch",
+//      "Grep", "Glob", "Task", "Agent", "TodoWrite", "TaskUpdate", "WebFetch",
 //      "WebSearch", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
 //      "AgentOutputTool", "BashOutput", "KillShell")
 //    - OpenCode emits lowercase ("bash", "read", "edit", "write",
@@ -60,7 +60,7 @@ enum ToolKind: Sendable, Equatable {
         case "grep": return .grep
         case "glob": return .glob
         case "task", "agent": return .task          // Claude "Agent" is the subagent container too
-        case "todowrite", "todo": return .todoWrite
+        case "todowrite", "todo", "taskupdate": return .todoWrite
         case "webfetch": return .webFetch
         case "websearch": return .webSearch
         case "question", "askuserquestion": return .askUserQuestion
