@@ -12,6 +12,15 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          config: cliff.toml
+          args: --tag ${{ github.ref_name }}
 
       - name: Build
         run: |
@@ -31,7 +40,6 @@ jobs:
           DMG_PATH="${{ github.workspace }}/Nook.dmg"
           DMG_VOLUME="Nook"
 
-          # Create a temporary DMG
           hdiutil create -volname "$DMG_VOLUME" \
             -srcfolder "$APP_PATH" \
             -ov -format UDZO \
@@ -40,7 +48,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body: ${{ steps.cliff.outputs.content }}
           files: |
             Nook.app.zip
             Nook.dmg
-          generate_release_notes: true
