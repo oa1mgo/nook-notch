@@ -39,6 +39,20 @@ enum PerformanceSection: String, CaseIterable, Hashable {
         case .network: return "Network"
         }
     }
+
+    /// Static SF Symbol used in settings UI (battery icon is dynamic in live views).
+    var settingsIcon: String {
+        switch self {
+        case .overview: return "gauge.with.dots.needle.33percent"
+        case .cpu: return "cpu"
+        case .memory: return "memorychip"
+        case .battery: return "battery.100"
+        case .network: return "antenna.radiowaves.left.and.right"
+        }
+    }
+
+    /// All detail sections in fixed display order (excludes `.overview`).
+    static var detailAll: [PerformanceSection] { [.cpu, .memory, .battery, .network] }
 }
 
 enum NotchContentType: Equatable {
@@ -592,12 +606,17 @@ class NotchViewModel: ObservableObject {
     var shortcutsItemCount: Int { 1 + ShortcutAction.allCases.count + 1 }
     /// Total focusable items in the agents page (just Back for now)
     let agentsItemCount: Int = 1
-    /// Total focusable items in the performance settings page (Back + 2 toggles)
-    let performanceSettingsItemCount: Int = 3
+    /// Whether the "Visible Metrics" section is expanded in performance settings.
+    @Published var performanceSettingsMetricsExpanded: Bool = false
+    /// Total focusable items in the performance settings page.
+    /// Back + 2 toggles + 1 header + (4 sub-toggles when expanded).
+    var performanceSettingsItemCount: Int {
+        performanceSettingsMetricsExpanded ? 8 : 4
+    }
     /// Total focusable items in the current performance page.
     var performanceItemCount: Int {
         if case .performance(.overview) = contentType {
-            return 1 + PerformanceSection.allCases.filter { $0 != .overview }.count
+            return 1 + AppSettings.performanceVisibleSections.count
         }
         return 1
     }

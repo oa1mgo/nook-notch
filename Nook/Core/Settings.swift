@@ -38,6 +38,7 @@ enum AppSettings {
     nonisolated static let vibeGlowEnabledKey = "vibeGlowEnabled"
     nonisolated static let performanceMonitorEnabledKey = "performanceMonitorEnabled"
     nonisolated static let musicAbovePerformanceKey = "musicAbovePerformance"
+    nonisolated static let performanceVisibleSectionsKey = "performanceVisibleSections"
     nonisolated static let shortcutsKey = "nook_shortcut_bindings"
 
     // MARK: - Keys
@@ -50,6 +51,7 @@ enum AppSettings {
         nonisolated static let vibeGlowEnabled = AppSettings.vibeGlowEnabledKey
         nonisolated static let performanceMonitorEnabled = AppSettings.performanceMonitorEnabledKey
         nonisolated static let musicAbovePerformance = AppSettings.musicAbovePerformanceKey
+        nonisolated static let performanceVisibleSections = AppSettings.performanceVisibleSectionsKey
         nonisolated static let autoInstallHooks = "autoInstallHooks"
         nonisolated static let claudeHooksEnabled = "claudeHooksEnabled"
         nonisolated static let codexHooksEnabled = "codexHooksEnabled"
@@ -64,6 +66,7 @@ enum AppSettings {
             Keys.vibeGlowEnabled: false,
             Keys.performanceMonitorEnabled: true,
             Keys.musicAbovePerformance: false,
+            Keys.performanceVisibleSections: "cpu,memory,battery,network",
             Keys.autoInstallHooks: true,
             Keys.claudeHooksEnabled: true,
             Keys.codexHooksEnabled: true,
@@ -180,6 +183,25 @@ enum AppSettings {
         }
         set {
             defaults.set(newValue, forKey: Keys.musicAbovePerformance)
+        }
+    }
+
+    // MARK: - Performance Visible Sections
+
+    /// The performance sections shown as cards on the overview page and as tiles
+    /// on the instances-page summary row. Stored as a comma-separated string of
+    /// raw values, always returned in the fixed enum order.
+    nonisolated static var performanceVisibleSections: [PerformanceSection] {
+        get {
+            let raw = defaults.string(forKey: Keys.performanceVisibleSections) ?? "cpu,memory,battery,network"
+            let set = Set(raw.split(separator: ",").map { String($0) })
+            let result = PerformanceSection.detailAll.filter { set.contains($0.rawValue) }
+            // Defensive: if fewer than 2 visible (corrupted store), fall back to all.
+            return result.count >= 2 ? result : PerformanceSection.detailAll
+        }
+        set {
+            let raw = newValue.map(\.rawValue).joined(separator: ",")
+            defaults.set(raw, forKey: Keys.performanceVisibleSections)
         }
     }
 
