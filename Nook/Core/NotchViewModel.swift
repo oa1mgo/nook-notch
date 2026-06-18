@@ -46,6 +46,7 @@ enum NotchContentType: Equatable {
     case menu
     case shortcuts
     case agents
+    case performanceSettings
     case performance(PerformanceSection)
     case chat(SessionState)
 
@@ -55,6 +56,7 @@ enum NotchContentType: Equatable {
         case .menu: return "menu"
         case .shortcuts: return "shortcuts"
         case .agents: return "agents"
+        case .performanceSettings: return "performanceSettings"
         case .performance(let section): return "performance-\(section.rawValue)"
         case .chat(let session): return "chat-\(session.sessionId)"
         }
@@ -98,6 +100,8 @@ class NotchViewModel: ObservableObject {
     @Published var menuContentHeight: CGFloat = 552
     /// Live-measured content height of the agents page VStack (via GeometryReader).
     @Published var agentsContentHeight: CGFloat = 260
+    /// Live-measured content height of the performance settings page VStack.
+    @Published var performanceSettingsContentHeight: CGFloat = 260
     /// Live-measured content heights of performance pages, keyed by section.
     @Published var performanceContentHeights: [PerformanceSection: CGFloat] = [:]
 
@@ -150,6 +154,12 @@ class NotchViewModel: ObservableObject {
                 width: min(screenRect.width * 0.4, 480),
                 height: agentsContentHeight + headerHeight + 12
             )
+        case .performanceSettings:
+            let headerHeight = max(24, geometry.deviceNotchRect.height)
+            return CGSize(
+                width: min(screenRect.width * 0.4, 480),
+                height: performanceSettingsContentHeight + headerHeight + 12
+            )
         case .performance(let section):
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
@@ -186,13 +196,11 @@ class NotchViewModel: ObservableObject {
         static let contentSpacing: CGFloat = 8
         static let targetVisibleRows: CGFloat = 3.2
         static let listRowSpacing: CGFloat = 2
-        static let listVerticalPadding: CGFloat = 4
         static let emptyStateHeight: CGFloat = 84
         static let emptyHeight: CGFloat = 112
         static let emptyHeightWithMusic: CGFloat = 228
         static let fallbackRowHeight: CGFloat = 58
-        static let performanceTopInset: CGFloat = 8
-        static let fallbackPerformanceRowHeight: CGFloat = 44 + performanceTopInset
+        static let fallbackPerformanceRowHeight: CGFloat = 44
         static let fallbackMusicBlockHeight: CGFloat = emptyHeightWithMusic - emptyHeight
     }
 
@@ -278,8 +286,7 @@ class NotchViewModel: ObservableObject {
         let visibleRowsHeight = rowHeight * clampedVisibleRows
         let visibleSpacingCount = max(0, ceil(clampedVisibleRows) - 1)
         let spacingHeight = InstancesPageLayout.listRowSpacing * visibleSpacingCount
-        let verticalPaddingHeight = InstancesPageLayout.listVerticalPadding * 2
-        return visibleRowsHeight + spacingHeight + verticalPaddingHeight
+        return visibleRowsHeight + spacingHeight
     }
 
     // MARK: - Event Handling
@@ -514,6 +521,12 @@ class NotchViewModel: ObservableObject {
             } else {
                 settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
             }
+        case .performanceSettings:
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = performanceSettingsItemCount - 1
+            } else {
+                settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
+            }
         case .chat:
             NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.up)
         }
@@ -557,6 +570,12 @@ class NotchViewModel: ObservableObject {
             } else {
                 settingsFocusedIndex = min(performanceItemCount - 1, settingsFocusedIndex + 1)
             }
+        case .performanceSettings:
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = 0
+            } else {
+                settingsFocusedIndex = min(performanceSettingsItemCount - 1, settingsFocusedIndex + 1)
+            }
         case .chat:
             NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.down)
         }
@@ -573,6 +592,8 @@ class NotchViewModel: ObservableObject {
     var shortcutsItemCount: Int { 1 + ShortcutAction.allCases.count + 1 }
     /// Total focusable items in the agents page (just Back for now)
     let agentsItemCount: Int = 1
+    /// Total focusable items in the performance settings page (Back + 2 toggles)
+    let performanceSettingsItemCount: Int = 3
     /// Total focusable items in the current performance page.
     var performanceItemCount: Int {
         if case .performance(.overview) = contentType {

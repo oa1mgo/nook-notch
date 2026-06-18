@@ -34,40 +34,35 @@ struct PerformanceSummaryRow: View {
                     label: "CPU",
                     detail: PerformanceFormat.percent(snapshot.cpuUsage),
                     icon: "cpu",
-                    tint: PerformancePalette.cpu(snapshot.cpuUsage)
+                    tint: PerformancePalette.cpu(snapshot.cpuUsage),
+                    isHighlighted: isHovered
                 )
 
                 PerformanceHomeMetric(
                     label: "Memory",
                     detail: PerformanceFormat.memoryPair(snapshot.memory),
                     icon: "memorychip",
-                    tint: PerformancePalette.memory(snapshot.memory.usage)
+                    tint: PerformancePalette.memory(snapshot.memory.usage),
+                    isHighlighted: isHovered
                 )
 
                 PerformanceHomeMetric(
                     label: "Battery",
                     detail: batteryText,
                     icon: batteryIcon,
-                    tint: PerformancePalette.battery(snapshot.battery)
+                    tint: PerformancePalette.battery(snapshot.battery),
+                    isHighlighted: isHovered
                 )
 
                 PerformanceHomeMetric(
                     label: "Network",
                     detail: PerformanceFormat.compactNetwork(snapshot.network),
                     icon: "antenna.radiowaves.left.and.right",
-                    tint: TerminalColors.cyan
+                    tint: TerminalColors.cyan,
+                    isHighlighted: isHovered
                 )
             }
-            .padding(.horizontal, 8)
             .frame(height: 44)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isHovered ? Color.white.opacity(0.08) : Color.white.opacity(0.05))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(isHovered ? 0.14 : 0.06), lineWidth: 1)
-            )
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
@@ -449,6 +444,7 @@ private struct PerformanceHomeMetric: View {
     let detail: String
     let icon: String
     let tint: Color
+    var isHighlighted: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -478,7 +474,7 @@ private struct PerformanceHomeMetric: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color.white.opacity(0.035))
+                .fill(Color.white.opacity(isHighlighted ? 0.08 : 0.035))
         )
     }
 }

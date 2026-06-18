@@ -34,7 +34,6 @@ struct NotchMenuView: View {
     @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
     @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
     @AppStorage(AppSettings.vibeGlowEnabledKey) private var vibeGlowEnabled = false
-    @AppStorage(AppSettings.performanceMonitorEnabledKey) private var performanceMonitorEnabled = true
 
     var body: some View {
         // ScrollView so the menu gracefully scrolls when content exceeds the
@@ -80,11 +79,21 @@ struct NotchMenuView: View {
                 }
 
                 MenuRow(
+                    icon: "gauge.with.dots.needle.33percent",
+                    label: "Performance...",
+                    trailingIcon: "chevron.right",
+                    primaryTextColor: primaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 4
+                ) {
+                    viewModel.pushTo(.performanceSettings)
+                }
+
+                MenuRow(
                     icon: "keyboard",
                     label: "Keyboard Shortcuts...",
                     trailingIcon: "chevron.right",
                     primaryTextColor: primaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 4
+                    isFocused: viewModel.settingsFocusedIndex == 5
                 ) {
                     viewModel.pushTo(.shortcuts)
                 }
@@ -100,7 +109,7 @@ struct NotchMenuView: View {
                     isOn: artworkAdaptiveBackgroundEnabled,
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 5
+                    isFocused: viewModel.settingsFocusedIndex == 6
                 ) {
                     artworkAdaptiveBackgroundEnabled.toggle()
                 }
@@ -111,7 +120,7 @@ struct NotchMenuView: View {
                     isOn: musicEdgeGlowEnabled,
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 6
+                    isFocused: viewModel.settingsFocusedIndex == 7
                 ) {
                     musicEdgeGlowEnabled.toggle()
                 }
@@ -122,20 +131,9 @@ struct NotchMenuView: View {
                     isOn: vibeGlowEnabled,
                     primaryTextColor: primaryTextColor,
                     secondaryTextColor: secondaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 7
-                ) {
-                    vibeGlowEnabled.toggle()
-                }
-
-                MenuToggleRow(
-                    icon: "gauge.with.dots.needle.33percent",
-                    label: "Performance Monitor",
-                    isOn: performanceMonitorEnabled,
-                    primaryTextColor: primaryTextColor,
-                    secondaryTextColor: secondaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == 8
                 ) {
-                    performanceMonitorEnabled.toggle()
+                    vibeGlowEnabled.toggle()
                 }
 
                 Divider()
@@ -233,11 +231,11 @@ struct NotchMenuView: View {
         case 1: withAnimation(.easeInOut(duration: 0.2)) { screenSelector.isPickerExpanded.toggle() }
         case 2: withAnimation(.easeInOut(duration: 0.2)) { soundSelector.isPickerExpanded.toggle() }
         case 3: viewModel.pushTo(.agents)
-        case 4: viewModel.pushTo(.shortcuts)
-        case 5: artworkAdaptiveBackgroundEnabled.toggle()
-        case 6: musicEdgeGlowEnabled.toggle()
-        case 7: vibeGlowEnabled.toggle()
-        case 8: performanceMonitorEnabled.toggle()
+        case 4: viewModel.pushTo(.performanceSettings)
+        case 5: viewModel.pushTo(.shortcuts)
+        case 6: artworkAdaptiveBackgroundEnabled.toggle()
+        case 7: musicEdgeGlowEnabled.toggle()
+        case 8: vibeGlowEnabled.toggle()
         case 9:
             do {
                 if launchAtLogin {

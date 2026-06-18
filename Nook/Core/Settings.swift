@@ -37,6 +37,7 @@ enum AppSettings {
     nonisolated static let musicEdgeGlowEnabledKey = "musicEdgeGlowEnabled"
     nonisolated static let vibeGlowEnabledKey = "vibeGlowEnabled"
     nonisolated static let performanceMonitorEnabledKey = "performanceMonitorEnabled"
+    nonisolated static let musicAbovePerformanceKey = "musicAbovePerformance"
     nonisolated static let shortcutsKey = "nook_shortcut_bindings"
 
     // MARK: - Keys
@@ -48,6 +49,7 @@ enum AppSettings {
         nonisolated static let musicEdgeGlowEnabled = AppSettings.musicEdgeGlowEnabledKey
         nonisolated static let vibeGlowEnabled = AppSettings.vibeGlowEnabledKey
         nonisolated static let performanceMonitorEnabled = AppSettings.performanceMonitorEnabledKey
+        nonisolated static let musicAbovePerformance = AppSettings.musicAbovePerformanceKey
         nonisolated static let autoInstallHooks = "autoInstallHooks"
         nonisolated static let claudeHooksEnabled = "claudeHooksEnabled"
         nonisolated static let codexHooksEnabled = "codexHooksEnabled"
@@ -61,6 +63,7 @@ enum AppSettings {
             Keys.musicEdgeGlowEnabled: true,
             Keys.vibeGlowEnabled: false,
             Keys.performanceMonitorEnabled: true,
+            Keys.musicAbovePerformance: false,
             Keys.autoInstallHooks: true,
             Keys.claudeHooksEnabled: true,
             Keys.codexHooksEnabled: true,
@@ -161,6 +164,22 @@ enum AppSettings {
         }
         set {
             defaults.set(newValue, forKey: Keys.performanceMonitorEnabled)
+        }
+    }
+
+    // MARK: - Music Above Performance
+
+    /// Controls whether the music card renders above the performance row on the
+    /// instances page. Defaults to false (performance on top).
+    nonisolated static var musicAbovePerformance: Bool {
+        get {
+            if defaults.object(forKey: Keys.musicAbovePerformance) == nil {
+                return false
+            }
+            return defaults.bool(forKey: Keys.musicAbovePerformance)
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.musicAbovePerformance)
         }
     }
 

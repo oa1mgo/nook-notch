@@ -619,6 +619,13 @@ struct NotchView: View {
                     secondaryTextColor: expandedSecondaryTextColor,
                     separatorColor: expandedSeparatorColor
                 )
+            case .performanceSettings:
+                PerformanceSettingsView(
+                    viewModel: viewModel,
+                    primaryTextColor: expandedPrimaryTextColor,
+                    secondaryTextColor: expandedSecondaryTextColor,
+                    separatorColor: expandedSeparatorColor
+                )
             case .performance(let section):
                 PerformanceDetailView(
                     viewModel: viewModel,
