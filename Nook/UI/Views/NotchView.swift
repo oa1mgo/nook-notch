@@ -26,7 +26,7 @@ struct NotchView: View {
     }
 
     @ObservedObject var viewModel: NotchViewModel
-    @StateObject private var sessionMonitor = ClaudeSessionMonitor()
+    @StateObject private var sessionMonitor = SessionMonitor()
     @StateObject private var activityCoordinator = NotchActivityCoordinator.shared
     @StateObject private var musicManager = MusicManager()
     @StateObject private var performanceMonitor = PerformanceMonitor()
@@ -508,21 +508,9 @@ struct NotchView: View {
             // Left side - icons at natural size
             if showClosedActivity {
                 HStack(spacing: 4) {
-                    if closedActivityType == .codex {
-                        CodexPulseIcon(size: 14, color: closedActivityTint, isAnimating: true)
-                            .padding(1)
-                            .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
-                    } else if closedActivityType == .opencode {
-                        Image(systemName: SessionProvider.opencode.systemImage)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(closedActivityTint)
-                            .frame(width: 16, height: 16)
-                            .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
-                    } else {
-                        ClaudeCrabIcon(size: 14, color: closedActivityTint, animateLegs: isProcessing)
-                            .padding(1)
-                            .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
-                    }
+                    AgentIcon(provider: closedActivityProvider, size: 14, color: closedActivityTint, animate: isProcessing)
+                        .padding(1)
+                        .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
 
                     if hasPendingPermission {
                         PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
@@ -603,7 +591,7 @@ struct NotchView: View {
         Group {
             switch viewModel.contentType {
             case .instances:
-                ClaudeInstancesView(
+                SessionListView(
                     sessionMonitor: sessionMonitor,
                     viewModel: viewModel,
                     musicManager: musicManager,
@@ -626,6 +614,13 @@ struct NotchView: View {
                 )
             case .agents:
                 AgentSettingsView(
+                    viewModel: viewModel,
+                    primaryTextColor: expandedPrimaryTextColor,
+                    secondaryTextColor: expandedSecondaryTextColor,
+                    separatorColor: expandedSeparatorColor
+                )
+            case .performanceSettings:
+                PerformanceSettingsView(
                     viewModel: viewModel,
                     primaryTextColor: expandedPrimaryTextColor,
                     secondaryTextColor: expandedSecondaryTextColor,

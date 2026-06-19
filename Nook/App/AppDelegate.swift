@@ -85,6 +85,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     }
 
+    @MainActor
     private func handleScreenChange() {
         _ = windowManager?.setupNotchWindow()
     }

@@ -22,56 +22,69 @@ struct PerformanceSummaryRow: View {
     let action: () -> Void
 
     @State private var isHovered = false
+    @AppStorage(AppSettings.performanceVisibleSectionsKey) private var visibleSectionsRaw: String = "cpu,memory,battery,network"
 
     private var snapshot: PerformanceSnapshot {
         monitor.snapshot
     }
 
+    private var visibleSections: [PerformanceSection] {
+        let set = Set(visibleSectionsRaw.split(separator: ",").map { String($0) })
+        return PerformanceSection.detailAll.filter { set.contains($0.rawValue) }
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                PerformanceHomeMetric(
-                    label: "CPU",
-                    detail: PerformanceFormat.percent(snapshot.cpuUsage),
-                    icon: "cpu",
-                    tint: PerformancePalette.cpu(snapshot.cpuUsage)
-                )
-
-                PerformanceHomeMetric(
-                    label: "Memory",
-                    detail: PerformanceFormat.memoryPair(snapshot.memory),
-                    icon: "memorychip",
-                    tint: PerformancePalette.memory(snapshot.memory.usage)
-                )
-
-                PerformanceHomeMetric(
-                    label: "Battery",
-                    detail: batteryText,
-                    icon: batteryIcon,
-                    tint: PerformancePalette.battery(snapshot.battery)
-                )
-
-                PerformanceHomeMetric(
-                    label: "Network",
-                    detail: PerformanceFormat.compactNetwork(snapshot.network),
-                    icon: "antenna.radiowaves.left.and.right",
-                    tint: TerminalColors.cyan
-                )
+                ForEach(visibleSections, id: \.self) { section in
+                    metricTile(for: section)
+                }
             }
-            .padding(.horizontal, 8)
             .frame(height: 44)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isHovered ? Color.white.opacity(0.08) : Color.white.opacity(0.05))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(isHovered ? 0.14 : 0.06), lineWidth: 1)
-            )
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
+    }
+
+    @ViewBuilder
+    private func metricTile(for section: PerformanceSection) -> some View {
+        switch section {
+        case .cpu:
+            PerformanceHomeMetric(
+                label: "CPU",
+                detail: PerformanceFormat.percent(snapshot.cpuUsage),
+                icon: "cpu",
+                tint: PerformancePalette.cpu(snapshot.cpuUsage),
+                isHighlighted: isHovered
+            )
+        case .memory:
+            PerformanceHomeMetric(
+                label: "Memory",
+                detail: PerformanceFormat.memoryPair(snapshot.memory),
+                icon: "memorychip",
+                tint: PerformancePalette.memory(snapshot.memory.usage),
+                isHighlighted: isHovered
+            )
+        case .battery:
+            PerformanceHomeMetric(
+                label: "Battery",
+                detail: batteryText,
+                icon: batteryIcon,
+                tint: PerformancePalette.battery(snapshot.battery),
+                isHighlighted: isHovered
+            )
+        case .network:
+            PerformanceHomeMetric(
+                label: "Network",
+                detail: PerformanceFormat.compactNetwork(snapshot.network),
+                icon: "antenna.radiowaves.left.and.right",
+                tint: TerminalColors.cyan,
+                isHighlighted: isHovered
+            )
+        case .overview:
+            EmptyView()
+        }
     }
 
     private var batteryIcon: String {
@@ -96,7 +109,12 @@ struct PerformanceDetailView: View {
 
     @State private var didAppear = false
 
-    private let detailSections: [PerformanceSection] = [.cpu, .memory, .battery, .network]
+    @AppStorage(AppSettings.performanceVisibleSectionsKey) private var visibleSectionsRaw: String = "cpu,memory,battery,network"
+
+    private var detailSections: [PerformanceSection] {
+        let set = Set(visibleSectionsRaw.split(separator: ",").map { String($0) })
+        return PerformanceSection.detailAll.filter { set.contains($0.rawValue) }
+    }
 
     private var snapshot: PerformanceSnapshot {
         monitor.snapshot
@@ -449,6 +467,7 @@ private struct PerformanceHomeMetric: View {
     let detail: String
     let icon: String
     let tint: Color
+    var isHighlighted: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -478,7 +497,7 @@ private struct PerformanceHomeMetric: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color.white.opacity(0.035))
+                .fill(Color.white.opacity(isHighlighted ? 0.08 : 0.035))
         )
     }
 }

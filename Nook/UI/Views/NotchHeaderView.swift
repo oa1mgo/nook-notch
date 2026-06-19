@@ -8,6 +8,35 @@
 import Combine
 import SwiftUI
 
+// MARK: - AgentIcon
+
+/// Provider-aware agent activity icon. Dispatches to the provider's
+/// visual identity (ClaudeCrabIcon for Claude, CodexPulseIcon for Codex,
+/// SF Symbol for OpenCode). The `animate` parameter controls
+/// activity-indicator animations (e.g. leg walking, core pulse).
+struct AgentIcon: View {
+    let provider: SessionProvider
+    var size: CGFloat = 14
+    var color: Color = .white
+    var animate: Bool = false
+
+    var body: some View {
+        switch provider {
+        case .claude:
+            ClaudeCrabIcon(size: size, color: color, animateLegs: animate)
+        case .codex:
+            CodexPulseIcon(size: size, color: color, isAnimating: animate)
+        case .opencode:
+            Image(systemName: provider.systemImage)
+                .font(.system(size: size * 0.79, weight: .semibold))
+                .foregroundColor(color)
+                .frame(width: size, height: size)
+        }
+    }
+}
+
+// MARK: - ClaudeCrabIcon
+
 struct ClaudeCrabIcon: View {
     let size: CGFloat
     let color: Color

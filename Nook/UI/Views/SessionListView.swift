@@ -1,5 +1,5 @@
 //
-//  ClaudeInstancesView.swift
+//  SessionListView.swift
 //  Nook
 //
 //  Minimal instances list matching Dynamic Island aesthetic
@@ -8,12 +8,13 @@
 import Combine
 import SwiftUI
 
-struct ClaudeInstancesView: View {
-    @ObservedObject var sessionMonitor: ClaudeSessionMonitor
+struct SessionListView: View {
+    @ObservedObject var sessionMonitor: SessionMonitor
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject var musicManager: MusicManager
     @ObservedObject var performanceMonitor: PerformanceMonitor
     let isPerformanceMonitorEnabled: Bool
+    @AppStorage(AppSettings.musicAbovePerformanceKey) private var musicAbovePerformance: Bool = false
 
     @State private var instanceRowHeight: CGFloat = 0
     @State private var performanceRowHeight: CGFloat = 0
@@ -51,17 +52,30 @@ struct ClaudeInstancesView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if showsPerformanceRow {
-                PerformanceSummaryRow(monitor: performanceMonitor) {
-                    viewModel.pushTo(.performance(.overview))
+            if musicAbovePerformance {
+                if showsMusicCard {
+                    MusicCardView(musicManager: musicManager)
+                        .measureHeight(using: MusicCardHeightKey.self) { musicCardHeight = $0 }
                 }
-                .padding(.top, InstancesListLayout.performanceTopInset)
-                .measureHeight(using: PerformanceRowHeightKey.self) { performanceRowHeight = $0 }
-            }
 
-            if showsMusicCard {
-                MusicCardView(musicManager: musicManager)
-                    .measureHeight(using: MusicCardHeightKey.self) { musicCardHeight = $0 }
+                if showsPerformanceRow {
+                    PerformanceSummaryRow(monitor: performanceMonitor) {
+                        viewModel.pushTo(.performance(.overview))
+                    }
+                    .measureHeight(using: PerformanceRowHeightKey.self) { performanceRowHeight = $0 }
+                }
+            } else {
+                if showsPerformanceRow {
+                    PerformanceSummaryRow(monitor: performanceMonitor) {
+                        viewModel.pushTo(.performance(.overview))
+                    }
+                    .measureHeight(using: PerformanceRowHeightKey.self) { performanceRowHeight = $0 }
+                }
+
+                if showsMusicCard {
+                    MusicCardView(musicManager: musicManager)
+                        .measureHeight(using: MusicCardHeightKey.self) { musicCardHeight = $0 }
+                }
             }
 
             if sessionMonitor.instances.isEmpty {
@@ -77,6 +91,9 @@ struct ClaudeInstancesView: View {
             syncLayoutMetrics()
         }
         .onChange(of: isPerformanceMonitorEnabled) { _, _ in
+            syncLayoutMetrics()
+        }
+        .onChange(of: musicAbovePerformance) { _, _ in
             syncLayoutMetrics()
         }
         .onChange(of: performanceRowHeight) { _, _ in
@@ -168,7 +185,6 @@ struct ClaudeInstancesView: View {
                         .id(session.stableId)
                     }
                 }
-                .padding(.vertical, 4)
             }
             .scrollBounceBehavior(.basedOnSize)
             .frame(maxHeight: resolvedInstancesListMaxHeight)
@@ -220,10 +236,8 @@ struct ClaudeInstancesView: View {
 
 private enum InstancesListLayout {
     static let targetVisibleRows: CGFloat = 3.2
-    static let contentSpacing: CGFloat = 8
-    static let performanceTopInset: CGFloat = 8
+    static let contentSpacing: CGFloat = 6
     static let listRowSpacing: CGFloat = 2
-    static let listVerticalPadding: CGFloat = 4
     static let emptyStateHeight: CGFloat = 84
 
     static func maxListHeight(rowHeight: CGFloat) -> CGFloat {
@@ -249,8 +263,7 @@ private enum InstancesListLayout {
         let visibleRowsHeight = max(0, rowHeight) * clampedVisibleRows
         let visibleSpacingCount = max(0, ceil(clampedVisibleRows) - 1)
         let spacingHeight = listRowSpacing * visibleSpacingCount
-        let verticalPaddingHeight = listVerticalPadding * 2
-        return visibleRowsHeight + spacingHeight + verticalPaddingHeight
+        return visibleRowsHeight + spacingHeight
     }
 }
 
@@ -301,7 +314,7 @@ private extension View {
     }
 }
 
-private extension ClaudeInstancesView {
+private extension SessionListView {
     func syncLayoutMetrics() {
         guard viewModel.contentType == .instances else { return }
 

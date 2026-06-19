@@ -81,7 +81,7 @@ struct AgentSettingsView: View {
         let hooksOn = hooksInstalled(provider)
 
         VStack(spacing: 2) {
-            agentMainRow(provider: provider, installed: installed, hooksOn: hooksOn)
+            agentMainRow(provider: provider, installed: installed)
 
             if installed {
                 VStack(spacing: 2) {
@@ -102,7 +102,7 @@ struct AgentSettingsView: View {
     // MARK: - Main Row (merged: icon + name + path + hooks indicator)
 
     @ViewBuilder
-    private func agentMainRow(provider: SessionProvider, installed: Bool, hooksOn: Bool) -> some View {
+    private func agentMainRow(provider: SessionProvider, installed: Bool) -> some View {
         let bg = RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03))
 
         if provider == .claude {
@@ -134,8 +134,6 @@ struct AgentSettingsView: View {
                     Image(systemName: claudeDirPickerExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 9))
                         .foregroundColor(secondaryTextColor)
-
-                    hooksIndicator(hooksOn: hooksOn)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -162,8 +160,6 @@ struct AgentSettingsView: View {
                         .foregroundColor(secondaryTextColor)
                         .lineLimit(1)
                         .truncationMode(.middle)
-
-                    hooksIndicator(hooksOn: hooksOn)
                 } else {
                     Spacer()
 
@@ -178,30 +174,28 @@ struct AgentSettingsView: View {
         }
     }
 
-    /// Decorative dot only in the main row.  No On/Off text — use
-    /// the Hooks sub-row below for toggling.
-    private func hooksIndicator(hooksOn: Bool) -> some View {
-        Circle()
-            .fill(hooksOn ? TerminalColors.green : Color.white.opacity(0.3))
-            .frame(width: 6, height: 6)
-    }
-
     // MARK: - Claude Directory Picker Options
 
     private var claudeDirPickerOptions: some View {
         VStack(spacing: 2) {
-            pickerOptionButton(
+            SettingsSubPickerRow(
                 label: "Auto-detect",
                 sublabel: resolvedAutoDetectPath,
-                isSelected: !isCustomClaudeDir
+                sublabelDesign: .monospaced,
+                isSelected: !isCustomClaudeDir,
+                primaryTextColor: primaryTextColor,
+                secondaryTextColor: secondaryTextColor
             ) {
                 applyClaudeDirChoice(path: "")
             }
 
-            pickerOptionButton(
+            SettingsSubPickerRow(
                 label: "Choose folder…",
                 sublabel: isCustomClaudeDir ? shortenedPath(currentClaudeDir) : nil,
-                isSelected: isCustomClaudeDir
+                sublabelDesign: .monospaced,
+                isSelected: isCustomClaudeDir,
+                primaryTextColor: primaryTextColor,
+                secondaryTextColor: secondaryTextColor
             ) {
                 openClaudeFolderPicker()
             }
@@ -216,65 +210,21 @@ struct AgentSettingsView: View {
         shortenedPath(ClaudePaths.claudeDir.path)
     }
 
-    private func pickerOptionButton(label: String, sublabel: String?, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(isSelected ? TerminalColors.green : Color.white.opacity(0.2))
-                    .frame(width: 6, height: 6)
-
-                Text(label)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(primaryTextColor.opacity(0.82))
-
-                if let sublabel {
-                    Text(sublabel)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(secondaryTextColor)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(TerminalColors.green)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-        }
-        .buttonStyle(.plain)
-    }
-
     // MARK: - Hooks Toggle
 
     private func hooksToggle(provider: SessionProvider, hooksOn: Bool) -> some View {
-        Button {
+        SettingsSubToggleRow(
+            label: "Hooks",
+            isOn: hooksOn,
+            primaryTextColor: primaryTextColor,
+            secondaryTextColor: secondaryTextColor,
+            isFocused: false,
+            locked: false
+        ) {
             withAnimation {
                 toggleHooks(provider: provider, currentlyOn: hooksOn)
             }
-        } label: {
-            HStack(spacing: 8) {
-                Text("Hooks")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(primaryTextColor.opacity(0.82))
-
-                Spacer()
-
-                Circle()
-                    .fill(hooksOn ? TerminalColors.green : Color.white.opacity(0.3))
-                    .frame(width: 6, height: 6)
-                Text(hooksOn ? "On" : "Off")
-                    .font(.system(size: 11))
-                    .foregroundColor(secondaryTextColor)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Debug Log Section

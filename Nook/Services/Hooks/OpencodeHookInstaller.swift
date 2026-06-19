@@ -118,7 +118,7 @@ struct OpencodeHookInstaller {
 
             guard FileManager.default.fileExists(atPath: pkg.path),
                   FileManager.default.fileExists(atPath: idx.path),
-                  let content = try? String(contentsOf: pkg),
+                  let content = try? String(contentsOf: pkg, encoding: .utf8),
                   content.contains("\"nook\"")
             else { continue }
 
@@ -168,7 +168,7 @@ struct OpencodeHookInstaller {
             if FileManager.default.fileExists(atPath: resolved) {
                 // Handle glob patterns like .nvm/versions/node/*/bin
                 if resolved.contains("*") {
-                    let baseDir = (resolved as NSString)
+                    let _ = (resolved as NSString)
                         .deletingLastPathComponent  // .../node/*/bin
                         .replacingOccurrences(of: "/*/", with: "/") // not great
                     // Skip glob for now; rely on `which` fallback.
@@ -211,7 +211,7 @@ struct OpencodeHookInstaller {
     ///
     /// Note: this approach may lose any existing comments in the JSONC file.
     private static func installViaConfigEdit() {
-        guard var config = try? String(contentsOf: configFile, encoding: .utf8) else {
+        guard let config = try? String(contentsOf: configFile, encoding: .utf8) else {
             createMinimalConfig()
             return
         }

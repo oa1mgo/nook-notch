@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          config: cliff.toml
+          args: --tag ${{ github.ref_name }}
+
+      - name: Build
+        run: |
+          xcodebuild -scheme Nook -configuration Release \
+            MACOSX_DEPLOYMENT_TARGET=15.5 \
+            -derivedDataPath build \
+            build
+
+      - name: Package ZIP
+        run: |
+          cd build/Build/Products/Release
+          zip -r "${{ github.workspace }}/Nook.app.zip" Nook.app
+
+      - name: Package DMG
+        run: |
+          APP_PATH="build/Build/Products/Release/Nook.app"
+          DMG_PATH="${{ github.workspace }}/Nook.dmg"
+          DMG_VOLUME="Nook"
+
+          hdiutil create -volname "$DMG_VOLUME" \
+            -srcfolder "$APP_PATH" \
+            -ov -format UDZO \
+            "$DMG_PATH"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.cliff.outputs.content }}
+          files: |
+            Nook.app.zip
+            Nook.dmg

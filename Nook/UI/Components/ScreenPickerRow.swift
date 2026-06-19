@@ -12,93 +12,53 @@ struct ScreenPickerRow: View {
     var primaryTextColor: Color = .white
     var secondaryTextColor: Color = .white.opacity(0.4)
     var isFocused: Bool = false
-    @State private var isHovered = false
 
-    private var isExpanded: Bool {
-        get { screenSelector.isPickerExpanded }
-    }
-
-    private func setExpanded(_ value: Bool) {
-        screenSelector.isPickerExpanded = value
+    private var isExpandedBinding: Binding<Bool> {
+        Binding(
+            get: { screenSelector.isPickerExpanded },
+            set: { screenSelector.isPickerExpanded = $0 }
+        )
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Main row - shows current selection
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    setExpanded(!isExpanded)
+        ExpandableSettingsRow(
+            icon: "display",
+            label: "Screen",
+            trailingText: currentSelectionLabel,
+            primaryTextColor: primaryTextColor,
+            secondaryTextColor: secondaryTextColor,
+            isFocused: isFocused,
+            isExpanded: isExpandedBinding
+        ) {
+            VStack(spacing: 2) {
+                SettingsSubPickerRow(
+                    label: "Automatic",
+                    sublabel: "Built-in or Main",
+                    verticalSublabel: true,
+                    isSelected: screenSelector.selectionMode == .automatic,
+                    primaryTextColor: primaryTextColor,
+                    secondaryTextColor: secondaryTextColor
+                ) {
+                    screenSelector.selectAutomatic()
+                    triggerWindowRecreation()
+                    collapseAfterDelay()
                 }
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "display")
-                        .font(.system(size: 12))
-                        .foregroundColor(textColor)
-                        .frame(width: 16)
 
-                    Text("Screen")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(textColor)
-
-                    Spacer()
-
-                    Text(currentSelectionLabel)
-                        .font(.system(size: 11))
-                        .foregroundColor(secondaryTextColor)
-                        .lineLimit(1)
-
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10))
-                        .foregroundColor(secondaryTextColor)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isFocused ? Color.white.opacity(0.12) : (isHovered ? Color.white.opacity(0.08) : Color.clear))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(isFocused ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1)
-                )
-            }
-            .buttonStyle(.plain)
-            .onHover { isHovered = $0 }
-
-            // Expanded screen list
-            if isExpanded {
-                VStack(spacing: 2) {
-                    // Automatic option
-                    ScreenOptionRow(
-                        label: "Automatic",
-                        sublabel: "Built-in or Main",
-                        isSelected: screenSelector.selectionMode == .automatic,
+                ForEach(screenSelector.availableScreens, id: \.self) { screen in
+                    SettingsSubPickerRow(
+                        label: screen.localizedName,
+                        sublabel: screenSublabel(for: screen),
+                        verticalSublabel: true,
+                        isSelected: screenSelector.selectionMode == .specificScreen &&
+                                    screenSelector.isSelected(screen),
                         primaryTextColor: primaryTextColor,
                         secondaryTextColor: secondaryTextColor
                     ) {
-                        screenSelector.selectAutomatic()
+                        screenSelector.selectScreen(screen)
                         triggerWindowRecreation()
                         collapseAfterDelay()
                     }
-
-                    // Individual screens
-                    ForEach(screenSelector.availableScreens, id: \.self) { screen in
-                        ScreenOptionRow(
-                            label: screen.localizedName,
-                            sublabel: screenSublabel(for: screen),
-                            isSelected: screenSelector.selectionMode == .specificScreen &&
-                                       screenSelector.isSelected(screen),
-                            primaryTextColor: primaryTextColor,
-                            secondaryTextColor: secondaryTextColor
-                        ) {
-                            screenSelector.selectScreen(screen)
-                            triggerWindowRecreation()
-                            collapseAfterDelay()
-                        }
-                    }
                 }
-                .padding(.leading, 28)
-                .padding(.top, 4)
             }
         }
     }
@@ -115,10 +75,6 @@ struct ScreenPickerRow: View {
         }
     }
 
-    private var textColor: Color {
-        primaryTextColor.opacity(isHovered ? 1.0 : 0.82)
-    }
-
     private func screenSublabel(for screen: NSScreen) -> String? {
         var parts: [String] = []
         if screen.isBuiltinDisplay {
@@ -131,7 +87,6 @@ struct ScreenPickerRow: View {
     }
 
     private func triggerWindowRecreation() {
-        // Notify to recreate the window
         NotificationCenter.default.post(
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
@@ -141,59 +96,8 @@ struct ScreenPickerRow: View {
     private func collapseAfterDelay() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             withAnimation(.easeInOut(duration: 0.2)) {
-                setExpanded(false)
+                screenSelector.isPickerExpanded = false
             }
         }
-    }
-}
-
-// MARK: - Screen Option Row
-
-private struct ScreenOptionRow: View {
-    let label: String
-    let sublabel: String?
-    let isSelected: Bool
-    let primaryTextColor: Color
-    let secondaryTextColor: Color
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(isSelected ? TerminalColors.green : Color.white.opacity(0.2))
-                    .frame(width: 6, height: 6)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(label)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(primaryTextColor.opacity(isHovered ? 1.0 : 0.82))
-
-                    if let sublabel = sublabel {
-                        Text(sublabel)
-                            .font(.system(size: 10))
-                            .foregroundColor(secondaryTextColor)
-                    }
-                }
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(TerminalColors.green)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
     }
 }

@@ -17,6 +17,7 @@ class WindowManager {
     private var currentScreenFrame: NSRect?
 
     /// Set up or recreate the notch window
+    @MainActor
     func setupNotchWindow() -> NotchWindowController? {
         // Use ScreenSelector for screen selection
         let screenSelector = ScreenSelector.shared
