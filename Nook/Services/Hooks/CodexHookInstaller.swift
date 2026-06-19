@@ -39,6 +39,7 @@ struct CodexHookInstaller {
 
             try:
                 event = json.loads(payload.decode("utf-8"))
+                event.setdefault("origin", "codex")
                 event.setdefault("cwd", os.getcwd())
                 payload = (json.dumps(event, separators=(",", ":")) + "\\n").encode("utf-8")
             except Exception:

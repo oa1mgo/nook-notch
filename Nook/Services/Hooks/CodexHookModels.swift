@@ -12,7 +12,9 @@ struct CodexHookEnvelope: Decodable, Sendable {
     let event: String
     let sessionId: String
     let cwd: String
+    let origin: String?
     let source: String?
+    let status: String?
     let toolName: String?
     let toolUseId: String?
     let toolInput: [String: AnyCodable]?
@@ -27,7 +29,9 @@ struct CodexHookEnvelope: Decodable, Sendable {
         case sessionId = "session_id"
         case sessionIdCamel = "sessionId"
         case cwd
+        case origin
         case source
+        case status
         case toolName = "tool_name"
         case toolNameCamel = "toolName"
         case tool
@@ -57,7 +61,9 @@ struct CodexHookEnvelope: Decodable, Sendable {
         event = try Self.decodeString(container, keys: [.event, .hookEventName])
         sessionId = try Self.decodeString(container, keys: [.sessionId, .sessionIdCamel])
         cwd = Self.decodeOptionalString(container, keys: [.cwd]) ?? FileManager.default.currentDirectoryPath
+        origin = Self.decodeOptionalString(container, keys: [.origin])
         source = Self.decodeOptionalString(container, keys: [.source])
+        status = Self.decodeOptionalString(container, keys: [.status])
         toolName = Self.decodeOptionalString(container, keys: [.toolName, .toolNameCamel, .tool, .name])
         toolUseId = Self.decodeOptionalString(container, keys: [.toolUseId, .toolUseIdCamel, .callId, .callIdCamel])
         toolInput = Self.decodeOptionalToolInput(container)
@@ -75,6 +81,18 @@ struct CodexHookEnvelope: Decodable, Sendable {
             .replacingOccurrences(of: "-", with: "")
             .replacingOccurrences(of: " ", with: "")
             .lowercased()
+    }
+
+    var isCodexPayload: Bool {
+        if let normalizedOrigin = origin?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           !normalizedOrigin.isEmpty {
+            return normalizedOrigin == "codex"
+        }
+
+        // Older Nook Codex bridge scripts did not stamp an origin. Claude Code's
+        // bridge uses the same event/session_id/cwd keys but always carries a
+        // status field for the legacy HookEvent state machine.
+        return status == nil
     }
 
     var isBashTool: Bool {

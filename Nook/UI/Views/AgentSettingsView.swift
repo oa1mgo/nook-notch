@@ -172,7 +172,10 @@ struct AgentSettingsView: View {
 
     @ViewBuilder
     private func settingsProviderIcon(_ provider: SessionProvider) -> some View {
-        if provider == .cursor {
+        if provider == .codex {
+            CodexLogoIcon(size: 16, color: SessionLoadingStyle.tint(for: .codex))
+                .frame(width: 16)
+        } else if provider == .cursor {
             CursorLogoIcon(size: 16, color: primaryTextColor.opacity(0.82))
                 .frame(width: 16)
         } else {

@@ -108,21 +108,18 @@ struct NotchView: View {
 
     /// Extra width for expanding activities (like Dynamic Island)
     private var expansionWidth: CGFloat {
-        // Base expansion: two side icon areas (each = sideWidth)
         let baseExpansion = 2 * max(0, closedNotchSize.height - 12) + 20
 
         if showMusicActivity {
             return baseExpansion
         }
 
-        guard !suppressesClosedAgentActivity else {
+        guard !suppressesHeaderAgentActivity else {
             return 0
         }
 
-        // Permission indicator adds width on left side only
         let permissionIndicatorWidth: CGFloat = hasPendingPermission ? 18 : 0
 
-        // Expand for processing activity
         if activityCoordinator.expandingActivity.show {
             switch activityCoordinator.expandingActivity.type {
             case .claude, .codex, .opencode, .cursor:
@@ -132,12 +129,10 @@ struct NotchView: View {
             }
         }
 
-        // Expand for pending permissions (left indicator) or waiting for input (checkmark on right)
         if hasPendingPermission {
             return baseExpansion + permissionIndicatorWidth
         }
 
-        // Waiting for input just shows checkmark on right, no extra left indicator
         if hasWaitingForInput {
             return baseExpansion
         }
@@ -418,17 +413,16 @@ struct NotchView: View {
         isAdaptiveBackgroundEnabled ? expandedNotchTheme.headerIcon : .white.opacity(0.4)
     }
 
-    /// Whether to show the expanded closed state (processing, pending permission, or waiting for input)
-    private var showClosedActivity: Bool {
-        showCompactMusicActivity || (!suppressesClosedAgentActivity && (isProcessing || hasPendingPermission || hasWaitingForInput))
+    private var showHeaderAgentActivity: Bool {
+        !suppressesHeaderAgentActivity && (isProcessing || hasPendingPermission || hasWaitingForInput)
     }
 
     private var usesClosedVibeMode: Bool {
         vibeGlowEnabled && viewModel.status != .opened && isAnyProcessing
     }
 
-    private var suppressesClosedAgentActivity: Bool {
-        usesClosedVibeMode
+    private var suppressesHeaderAgentActivity: Bool {
+        vibeGlowEnabled
     }
 
     private var vibeGlowVisible: Bool {
@@ -514,47 +508,44 @@ struct NotchView: View {
                 .frame(width: closedContentWidth, height: closedNotchSize.height, alignment: .leading)
                 .frame(height: closedNotchSize.height)
         } else {
-        HStack(spacing: 0) {
-            // Left side - icons at natural size
-            if showClosedActivity {
-                HStack(spacing: 4) {
-                    AgentIcon(provider: closedActivityProvider, size: 14, color: closedActivityTint, animate: isProcessing)
-                        .padding(1)
-                        .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showClosedActivity)
-
-                    if hasPendingPermission {
-                        PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
+            HStack(spacing: 0) {
+                if showHeaderAgentActivity {
+                    HStack(spacing: 4) {
+                        AgentIcon(provider: closedActivityProvider, size: 14, color: closedActivityTint, animate: isProcessing)
                             .padding(1)
-                            .matchedGeometryEffect(id: "status-indicator", in: activityNamespace, isSource: showClosedActivity)
+                            .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showHeaderAgentActivity)
+
+                        if hasPendingPermission {
+                            PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
+                                .padding(1)
+                                .matchedGeometryEffect(id: "status-indicator", in: activityNamespace, isSource: showHeaderAgentActivity)
+                        }
+                    }
+                }
+
+                if viewModel.status == .opened {
+                    openedHeaderContent
+                } else if !showHeaderAgentActivity {
+                    Spacer()
+                } else {
+                    Spacer()
+                        .background(Color.black)
+                }
+
+                if showHeaderAgentActivity {
+                    if isProcessing || hasPendingPermission {
+                        ProcessingSpinner(provider: closedActivityProvider)
+                            .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showHeaderAgentActivity)
+                    } else if hasWaitingForInput {
+                        ReadyForInputIndicatorIcon(size: 14, color: TerminalColors.green)
+                            .padding(1)
+                            .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showHeaderAgentActivity)
                     }
                 }
             }
-
-            // Center spacer
-            if viewModel.status == .opened {
-                openedHeaderContent
-            } else if !showClosedActivity {
-                Spacer()
-            } else {
-                Spacer()
-                    .background(Color.black)
-            }
-
-            // Right side - icons at natural size
-            if showClosedActivity {
-                if isProcessing || hasPendingPermission {
-                    ProcessingSpinner(provider: closedActivityProvider)
-                        .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
-                } else if hasWaitingForInput {
-                    ReadyForInputIndicatorIcon(size: 14, color: TerminalColors.green)
-                        .padding(1)
-                        .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
-                }
-            }
-        }
-        .padding(.horizontal, 7)
-        .frame(width: viewModel.status == .opened ? nil : closedContentWidth + (isBouncing ? 16 : 0))
-        .frame(height: closedNotchSize.height)
+            .padding(.horizontal, 7)
+            .frame(width: viewModel.status == .opened ? nil : closedContentWidth + (isBouncing ? 16 : 0))
+            .frame(height: closedNotchSize.height)
         }
     }
 

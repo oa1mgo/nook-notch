@@ -555,7 +555,8 @@ class HookSocketServer {
             return .cursorSkipped(eventName: cursorEnvelope.hookEventName)
         }
 
-        if let codexEnvelope = try? JSONDecoder().decode(CodexHookEnvelope.self, from: data) {
+        if let codexEnvelope = try? JSONDecoder().decode(CodexHookEnvelope.self, from: data),
+           codexEnvelope.isCodexPayload {
             guard let codexEvent = CodexHookAdapter.adapt(codexEnvelope) else {
                 return .unsupportedCodex(eventName: codexEnvelope.event)
             }
