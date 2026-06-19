@@ -56,6 +56,7 @@ enum AppSettings {
         nonisolated static let claudeHooksEnabled = "claudeHooksEnabled"
         nonisolated static let codexHooksEnabled = "codexHooksEnabled"
         nonisolated static let opencodeHooksEnabled = "opencodeHooksEnabled"
+        nonisolated static let cursorHooksEnabled = "cursorHooksEnabled"
         nonisolated static let debugLogEnabled = "debugLogEnabled"
     }
 
@@ -71,6 +72,7 @@ enum AppSettings {
             Keys.claudeHooksEnabled: true,
             Keys.codexHooksEnabled: true,
             Keys.opencodeHooksEnabled: false,
+            Keys.cursorHooksEnabled: true,
             Keys.debugLogEnabled: false,
         ])
     }
@@ -226,6 +228,11 @@ enum AppSettings {
     nonisolated static var opencodeHooksEnabled: Bool {
         get { defaults.bool(forKey: Keys.opencodeHooksEnabled) }
         set { defaults.set(newValue, forKey: Keys.opencodeHooksEnabled) }
+    }
+
+    nonisolated static var cursorHooksEnabled: Bool {
+        get { defaults.bool(forKey: Keys.cursorHooksEnabled) }
+        set { defaults.set(newValue, forKey: Keys.cursorHooksEnabled) }
     }
 
     /// When true, internal log output is mirrored to

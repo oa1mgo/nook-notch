@@ -3,7 +3,7 @@
 //  Nook
 //
 //  Provider-agnostic intermediate format for chat item operations.
-//  All providers (Claude, OpenCode, Codex) translate their native events
+//  All providers (Claude, OpenCode, Codex, Cursor) translate their native events
 //  into ChatItemUpdate before passing to SessionStore.applyChatItemUpdate().
 //
 //  Design spec: docs/specs/2026-06-11-unified-chatitem-middle-layer-design.md

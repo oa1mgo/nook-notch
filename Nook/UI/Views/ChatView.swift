@@ -55,6 +55,9 @@ struct ChatView: View {
         if initialSession.provider == .codex {
             cachedHistory = initialSession.chatItems
             alreadyLoaded = false
+        } else if initialSession.provider == .cursor {
+            cachedHistory = initialSession.chatItems
+            alreadyLoaded = true
         } else {
             cachedHistory = ChatHistoryManager.shared.history(for: sessionId)
             alreadyLoaded = !cachedHistory.isEmpty
@@ -300,6 +303,8 @@ struct ChatView: View {
             return "Codex needs your input"
         case .opencode:
             return "OpenCode needs your input"
+        case .cursor:
+            return "Cursor needs your input"
         }
     }
 
@@ -1593,6 +1598,7 @@ struct ChatInteractivePromptBar: View {
         case .claude: return "Claude Code needs your input"
         case .codex: return "Codex needs your input"
         case .opencode: return "OpenCode needs your input"
+        case .cursor: return "Cursor needs your input"
         }
     }
 
@@ -1604,6 +1610,7 @@ struct ChatInteractivePromptBar: View {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
         case .opencode: return "OpenCode"
+        case .cursor: return "Cursor"
         }
     }
 

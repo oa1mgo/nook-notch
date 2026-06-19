@@ -60,6 +60,9 @@ struct NotchView: View {
         if sessionMonitor.instances.contains(where: { $0.provider == .opencode && ($0.phase == .processing || $0.phase == .compacting) }) {
             return .opencode
         }
+        if sessionMonitor.instances.contains(where: { $0.provider == .cursor && ($0.phase == .processing || $0.phase == .compacting) }) {
+            return .cursor
+        }
         return nil
     }
 
@@ -72,6 +75,9 @@ struct NotchView: View {
         }
         if sessionMonitor.instances.contains(where: { $0.provider == .opencode && ($0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval) }) {
             return .opencode
+        }
+        if sessionMonitor.instances.contains(where: { $0.provider == .cursor && ($0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval) }) {
+            return .cursor
         }
         return nil
     }
@@ -119,7 +125,7 @@ struct NotchView: View {
         // Expand for processing activity
         if activityCoordinator.expandingActivity.show {
             switch activityCoordinator.expandingActivity.type {
-            case .claude, .codex, .opencode:
+            case .claude, .codex, .opencode, .cursor:
                 return baseExpansion + permissionIndicatorWidth
             case .none:
                 break
@@ -307,7 +313,7 @@ struct NotchView: View {
         guard activityCoordinator.expandingActivity.show else { return false }
 
         switch activityCoordinator.expandingActivity.type {
-        case .claude, .codex, .opencode:
+        case .claude, .codex, .opencode, .cursor:
             return true
         case .none:
             return false
@@ -338,6 +344,8 @@ struct NotchView: View {
             return .codex
         case .opencode:
             return .opencode
+        case .cursor:
+            return .cursor
         case .claude, .none:
             return .claude
         }
@@ -355,6 +363,8 @@ struct NotchView: View {
             return .codex
         case .opencode:
             return .opencode
+        case .cursor:
+            return .cursor
         }
     }
 
@@ -770,7 +780,7 @@ struct NotchView: View {
 
         // Track synthetic Codex completion notifications emitted on Stop.
         let codexCompletionSessions = instances.filter {
-            $0.provider == .codex && $0.completionNotificationAt != nil
+            ($0.provider == .codex || $0.provider == .cursor) && $0.completionNotificationAt != nil
         }
         var currentCompletionMarkers: [String: Date] = [:]
         var newCompletionSessions: [SessionState] = []

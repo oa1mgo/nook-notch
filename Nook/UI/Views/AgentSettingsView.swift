@@ -11,12 +11,14 @@ struct AgentSettingsView: View {
     @State private var claudeHooksInstalled = false
     @State private var codexHooksInstalled = false
     @State private var opencodeHooksInstalled = false
+    @State private var cursorHooksInstalled = false
     @State private var debugLogOn: Bool = AppSettings.debugLogEnabled
     @State private var didAppear = false
 
     private var claudeInstalled: Bool { AgentPathsResolver.isInstalled(.claude) }
     private var codexInstalled: Bool { AgentPathsResolver.isInstalled(.codex) }
     private var opencodeInstalled: Bool { AgentPathsResolver.isInstalled(.opencode) }
+    private var cursorInstalled: Bool { AgentPathsResolver.isInstalled(.cursor) }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -114,10 +116,7 @@ struct AgentSettingsView: View {
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: provider.systemImage)
-                        .font(.system(size: 12))
-                        .foregroundColor(primaryTextColor.opacity(0.82))
-                        .frame(width: 16)
+                    settingsProviderIcon(provider)
 
                     Text(provider.displayName)
                         .font(.system(size: 13, weight: .medium))
@@ -141,12 +140,9 @@ struct AgentSettingsView: View {
             .buttonStyle(.plain)
             .background(bg)
         } else {
-            // Codex / OpenCode: static row with decorative indicator.
+            // Codex / OpenCode / Cursor: static row with decorative indicator.
             HStack(spacing: 10) {
-                Image(systemName: provider.systemImage)
-                    .font(.system(size: 12))
-                    .foregroundColor(primaryTextColor.opacity(0.82))
-                    .frame(width: 16)
+                settingsProviderIcon(provider)
 
                 Text(provider.displayName)
                     .font(.system(size: 13, weight: .medium))
@@ -171,6 +167,19 @@ struct AgentSettingsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(bg)
+        }
+    }
+
+    @ViewBuilder
+    private func settingsProviderIcon(_ provider: SessionProvider) -> some View {
+        if provider == .cursor {
+            CursorLogoIcon(size: 16, color: primaryTextColor.opacity(0.82))
+                .frame(width: 16)
+        } else {
+            Image(systemName: provider.systemImage)
+                .font(.system(size: 12))
+                .foregroundColor(primaryTextColor.opacity(0.82))
+                .frame(width: 16)
         }
     }
 
@@ -314,6 +323,15 @@ struct AgentSettingsView: View {
                 opencodeHooksInstalled = true
             }
             AppSettings.opencodeHooksEnabled = !currentlyOn
+        case .cursor:
+            if currentlyOn {
+                CursorHookInstaller.uninstall()
+                cursorHooksInstalled = false
+            } else {
+                CursorHookInstaller.installIfNeeded()
+                cursorHooksInstalled = true
+            }
+            AppSettings.cursorHooksEnabled = !currentlyOn
         }
     }
 
@@ -365,6 +383,7 @@ struct AgentSettingsView: View {
         case .claude: return claudeHooksInstalled
         case .codex: return codexHooksInstalled
         case .opencode: return opencodeHooksInstalled
+        case .cursor: return cursorHooksInstalled
         }
     }
 
@@ -372,6 +391,7 @@ struct AgentSettingsView: View {
         claudeHooksInstalled = HookInstaller.isInstalled()
         codexHooksInstalled = CodexHookInstaller.isInstalled()
         opencodeHooksInstalled = OpencodeHookInstaller.isInstalled()
+        cursorHooksInstalled = CursorHookInstaller.isInstalled()
         currentClaudeDir = AppSettings.claudeDirectoryName
     }
 

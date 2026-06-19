@@ -10,6 +10,8 @@ struct AgentPathsResolver {
             return homeDir.appendingPathComponent(".codex")
         case .opencode:
             return homeDir.appendingPathComponent(".config/opencode")
+        case .cursor:
+            return homeDir.appendingPathComponent(".cursor")
         }
     }
 
@@ -21,6 +23,8 @@ struct AgentPathsResolver {
             return directory(for: .codex).appendingPathComponent("hooks")
         case .opencode:
             return directory(for: .opencode).appendingPathComponent("hooks")
+        case .cursor:
+            return directory(for: .cursor).appendingPathComponent("hooks")
         }
     }
 

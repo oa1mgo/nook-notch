@@ -136,6 +136,29 @@ class SessionMonitor: ObservableObject {
                 Task {
                     await SessionStore.shared.process(.realtimeChatItemBatch(chatItems))
                 }
+            },
+            onCursorEvent: { event in
+                Task {
+                    switch event {
+                    case .sessionStart(let sessionId, let cwd):
+                        await SessionStore.shared.process(.cursorSessionStarted(sessionId: sessionId, cwd: cwd))
+                    case .processingStarted(let sessionId, let cwd):
+                        await SessionStore.shared.process(.cursorProcessingStarted(sessionId: sessionId, cwd: cwd))
+                    case .compactingStarted(let sessionId, let cwd):
+                        await SessionStore.shared.process(.cursorCompactingStarted(sessionId: sessionId, cwd: cwd))
+                    case .stop(let sessionId, let cwd, let status):
+                        CursorChatItemAdapter.shared.clearSession(sessionId)
+                        await SessionStore.shared.process(.cursorStopped(sessionId: sessionId, cwd: cwd, status: status))
+                    case .sessionEnd(let sessionId):
+                        CursorChatItemAdapter.shared.clearSession(sessionId)
+                        await SessionStore.shared.process(.cursorSessionEnded(sessionId: sessionId))
+                    }
+                }
+            },
+            onCursorChatItems: { chatItems in
+                Task {
+                    await SessionStore.shared.process(.realtimeChatItemBatch(chatItems))
+                }
             }
         )
     }

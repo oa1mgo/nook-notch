@@ -11,12 +11,14 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
     case claude
     case codex
     case opencode
+    case cursor
 
     var displayName: String {
         switch self {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
         case .opencode: return "OpenCode"
+        case .cursor: return "Cursor"
         }
     }
 
@@ -25,6 +27,7 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
         case .claude: return "circle.hexagongrid"
         case .codex: return "chevron.left.forwardslash.chevron.right"
         case .opencode: return "terminal"
+        case .cursor: return "cube"
         }
     }
 
@@ -33,6 +36,7 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
         case .claude: return ".claude"
         case .codex: return ".codex"
         case .opencode: return ".config/opencode"
+        case .cursor: return ".cursor"
         }
     }
 
@@ -45,7 +49,7 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
     ///   guarantee (e.g. a Question placeholder appearing before its thinking
     ///   bubble). The adapter creates items with correct `message.timestamp`
     ///   in source order — no placeholder needed.
-    /// - **`true`** (event-driven providers: OpenCode): events arrive
+    /// - **`true`** (event-driven providers: OpenCode, Cursor): events arrive
     ///   out-of-order; real-time placeholders give the user live feedback
     ///   while the sorter handles final ordering.
     ///
@@ -54,7 +58,7 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
     var needsHookPlaceholders: Bool {
         switch self {
         case .claude, .codex: return false
-        case .opencode: return true
+        case .opencode, .cursor: return true
         }
     }
 }

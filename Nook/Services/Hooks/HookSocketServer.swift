@@ -118,6 +118,12 @@ typealias OpencodeHookEventHandler = @Sendable (OpencodeSessionEvent) -> Void
 /// Callback for OpenCode chat item updates (from OpencodeChatItemAdapter)
 typealias OpencodeChatItemsHandler = @Sendable ([ChatItemUpdate]) -> Void
 
+/// Callback for Cursor hook events
+typealias CursorHookEventHandler = @Sendable (CursorSessionEvent) -> Void
+
+/// Callback for Cursor chat item updates (from CursorChatItemAdapter)
+typealias CursorChatItemsHandler = @Sendable ([ChatItemUpdate]) -> Void
+
 
 /// Callback for permission response failures (socket died)
 typealias PermissionFailureHandler = @Sendable (_ sessionId: String, _ toolUseId: String) -> Void
@@ -134,6 +140,8 @@ class HookSocketServer {
     private var codexEventHandler: CodexHookEventHandler?
     private var opencodeEventHandler: OpencodeHookEventHandler?
     private var opencodeChatItemsHandler: OpencodeChatItemsHandler?
+    private var cursorEventHandler: CursorHookEventHandler?
+    private var cursorChatItemsHandler: CursorChatItemsHandler?
     private var permissionFailureHandler: PermissionFailureHandler?
     private let queue = DispatchQueue(label: "com.celestial.Nook.socket", qos: .userInitiated)
 
@@ -155,7 +163,9 @@ class HookSocketServer {
         onPermissionFailure: PermissionFailureHandler? = nil,
         onCodexEvent: CodexHookEventHandler? = nil,
         onOpencodeEvent: OpencodeHookEventHandler? = nil,
-        onOpencodeChatItems: OpencodeChatItemsHandler? = nil
+        onOpencodeChatItems: OpencodeChatItemsHandler? = nil,
+        onCursorEvent: CursorHookEventHandler? = nil,
+        onCursorChatItems: CursorChatItemsHandler? = nil
     ) {
         queue.async { [weak self] in
             self?.startServer(
@@ -163,7 +173,9 @@ class HookSocketServer {
                 onPermissionFailure: onPermissionFailure,
                 onCodexEvent: onCodexEvent,
                 onOpencodeEvent: onOpencodeEvent,
-                onOpencodeChatItems: onOpencodeChatItems
+                onOpencodeChatItems: onOpencodeChatItems,
+                onCursorEvent: onCursorEvent,
+                onCursorChatItems: onCursorChatItems
             )
         }
     }
@@ -173,7 +185,9 @@ class HookSocketServer {
         onPermissionFailure: PermissionFailureHandler?,
         onCodexEvent: CodexHookEventHandler?,
         onOpencodeEvent: OpencodeHookEventHandler?,
-        onOpencodeChatItems: OpencodeChatItemsHandler?
+        onOpencodeChatItems: OpencodeChatItemsHandler?,
+        onCursorEvent: CursorHookEventHandler?,
+        onCursorChatItems: CursorChatItemsHandler?
     ) {
         guard serverSocket < 0 else { return }
 
@@ -181,6 +195,8 @@ class HookSocketServer {
         codexEventHandler = onCodexEvent
         opencodeEventHandler = onOpencodeEvent
         opencodeChatItemsHandler = onOpencodeChatItems
+        cursorEventHandler = onCursorEvent
+        cursorChatItemsHandler = onCursorChatItems
         permissionFailureHandler = onPermissionFailure
 
         unlink(Self.socketPath)
@@ -248,6 +264,9 @@ class HookSocketServer {
         unlink(Self.socketPath)
         codexEventHandler = nil
         opencodeChatItemsHandler = nil
+        opencodeEventHandler = nil
+        cursorEventHandler = nil
+        cursorChatItemsHandler = nil
 
         permissionsLock.lock()
         for (_, pending) in pendingPermissions {
@@ -490,6 +509,20 @@ class HookSocketServer {
             // this event (e.g. session.status busy, step-start, session.diff).
             logger.debug("OpenCode event skipped by adapter: type=\(type)")
 
+        case .cursorChatItems(let chatItems, let passthrough):
+            close(clientSocket)
+            if !chatItems.isEmpty {
+                cursorChatItemsHandler?(chatItems)
+            }
+            for event in passthrough {
+                socketLog("Received Cursor passthrough: \(String(describing: event))")
+                cursorEventHandler?(event)
+            }
+
+        case .cursorSkipped(let eventName):
+            close(clientSocket)
+            logger.debug("Cursor event skipped by adapter: event=\(eventName)")
+
         case .unknown:
             let raw = String(data: data, encoding: .utf8) ?? "?"
             socketLog("Failed to parse event (raw=\(raw))")
@@ -503,11 +536,25 @@ class HookSocketServer {
         case opencode([OpencodeSessionEvent])
         case opencodeChatItems([ChatItemUpdate], [OpencodeSessionEvent])
         case opencodeSkipped(type: String)
+        case cursorChatItems([ChatItemUpdate], [CursorSessionEvent])
+        case cursorSkipped(eventName: String)
         case unsupportedCodex(eventName: String)
         case unknown
     }
 
     private func decodeIncomingEvent(from data: Data) -> DecodedHookPayload {
+        // Cursor hook payloads can contain fields that are also accepted by
+        // Claude's broad HookEvent decoder. Let the Cursor module classify
+        // its own payload shape before trying provider-generic legacy shapes.
+        if let cursorEnvelope = try? JSONDecoder().decode(CursorHookEnvelope.self, from: data),
+           cursorEnvelope.isCursorPayload {
+            let result = CursorChatItemAdapter.shared.adaptAndConvert(cursorEnvelope)
+            if !result.chatItemUpdates.isEmpty || !result.passthroughEvents.isEmpty {
+                return .cursorChatItems(result.chatItemUpdates, result.passthroughEvents)
+            }
+            return .cursorSkipped(eventName: cursorEnvelope.hookEventName)
+        }
+
         if let claudeEvent = try? JSONDecoder().decode(HookEvent.self, from: data) {
             return .claude(claudeEvent)
         }

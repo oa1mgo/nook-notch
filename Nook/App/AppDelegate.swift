@@ -73,6 +73,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if AppSettings.claudeHooksEnabled { HookInstaller.installIfNeeded() }
             if AppSettings.codexHooksEnabled { CodexHookInstaller.installIfNeeded() }
             if AppSettings.opencodeHooksEnabled { OpencodeHookInstaller.installIfNeeded() }
+            if AppSettings.cursorHooksEnabled { CursorHookInstaller.installIfNeeded() }
         }
         NSApplication.shared.setActivationPolicy(.accessory)
 

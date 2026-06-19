@@ -12,7 +12,7 @@ import SwiftUI
 
 /// Provider-aware agent activity icon. Dispatches to the provider's
 /// visual identity (ClaudeCrabIcon for Claude, CodexPulseIcon for Codex,
-/// SF Symbol for OpenCode). The `animate` parameter controls
+/// CursorLogoIcon for Cursor, SF Symbol for OpenCode). The `animate` parameter controls
 /// activity-indicator animations (e.g. leg walking, core pulse).
 struct AgentIcon: View {
     let provider: SessionProvider
@@ -31,7 +31,73 @@ struct AgentIcon: View {
                 .font(.system(size: size * 0.79, weight: .semibold))
                 .foregroundColor(color)
                 .frame(width: size, height: size)
+        case .cursor:
+            CursorLogoIcon(size: size, color: color)
         }
+    }
+}
+
+struct CursorLogoIcon: View {
+    let size: CGFloat
+    let color: Color
+
+    init(size: CGFloat = 16, color: Color = Color(red: 0.70, green: 0.70, blue: 0.68)) {
+        self.size = size
+        self.color = color
+    }
+
+    var body: some View {
+        Canvas { context, canvasSize in
+            let edge = min(canvasSize.width, canvasSize.height)
+            let scale = edge / 100
+            let xOffset = (canvasSize.width - edge) / 2
+            let yOffset = (canvasSize.height - edge) / 2
+
+            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: xOffset + x * scale, y: yOffset + y * scale)
+            }
+
+            func polygon(_ points: [CGPoint]) -> Path {
+                var path = Path()
+                guard let first = points.first else { return path }
+                path.move(to: first)
+                for point in points.dropFirst() {
+                    path.addLine(to: point)
+                }
+                path.closeSubpath()
+                return path
+            }
+
+            let top = point(50, 3)
+            let upperRight = point(94, 27)
+            let lowerRight = point(94, 72)
+            let bottom = point(50, 97)
+            let lowerLeft = point(6, 72)
+            let upperLeft = point(6, 27)
+            let center = point(50, 52)
+
+            context.fill(
+                polygon([top, upperRight, lowerRight, bottom, lowerLeft, upperLeft]),
+                with: .color(Color.black.opacity(0.50))
+            )
+            context.fill(
+                polygon([upperLeft, center, bottom, lowerLeft]),
+                with: .color(color.opacity(0.58))
+            )
+            context.fill(
+                polygon([center, lowerRight, bottom]),
+                with: .color(color.opacity(0.42))
+            )
+            context.fill(
+                polygon([upperLeft, upperRight, center]),
+                with: .color(Color.white.opacity(0.92))
+            )
+            context.fill(
+                polygon([upperRight, point(63, 91), center]),
+                with: .color(Color.white.opacity(0.72))
+            )
+        }
+        .frame(width: size, height: size)
     }
 }
 

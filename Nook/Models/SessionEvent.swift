@@ -62,6 +62,21 @@ enum SessionEvent: Sendable {
     /// OpenCode stopped the current turn
     case opencodeStopped(sessionId: String, cwd: String)
 
+    /// Cursor composer conversation was created or resumed
+    case cursorSessionStarted(sessionId: String, cwd: String)
+
+    /// Cursor entered a working state (prompt submitted, tool/result/thought/response event)
+    case cursorProcessingStarted(sessionId: String, cwd: String)
+
+    /// Cursor started compacting context.
+    case cursorCompactingStarted(sessionId: String, cwd: String)
+
+    /// Cursor stopped the current agent loop.
+    case cursorStopped(sessionId: String, cwd: String, status: String?)
+
+    /// Cursor composer conversation ended.
+    case cursorSessionEnded(sessionId: String)
+
     // MARK: - Unified ChatItem Updates (from provider adapters)
 
     /// A provider adapter produced a chat item operation (insert/update/remove).
@@ -280,6 +295,16 @@ extension SessionEvent: CustomStringConvertible {
             return "opencodeWaitingForUserInput(session: \(sessionId.prefix(8)))"
         case .opencodeStopped(let sessionId, _):
             return "opencodeStopped(session: \(sessionId.prefix(8)))"
+        case .cursorSessionStarted(let sessionId, _):
+            return "cursorSessionStarted(session: \(sessionId.prefix(8)))"
+        case .cursorProcessingStarted(let sessionId, _):
+            return "cursorProcessingStarted(session: \(sessionId.prefix(8)))"
+        case .cursorCompactingStarted(let sessionId, _):
+            return "cursorCompactingStarted(session: \(sessionId.prefix(8)))"
+        case .cursorStopped(let sessionId, _, let status):
+            return "cursorStopped(session: \(sessionId.prefix(8)), status: \(status ?? "nil"))"
+        case .cursorSessionEnded(let sessionId):
+            return "cursorSessionEnded(session: \(sessionId.prefix(8)))"
         case .permissionApproved(let sessionId, let toolUseId):
             return "permissionApproved(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .permissionDenied(let sessionId, let toolUseId, _):

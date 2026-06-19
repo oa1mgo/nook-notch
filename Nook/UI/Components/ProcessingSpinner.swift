@@ -20,6 +20,8 @@ enum SessionLoadingStyle {
             return Color(red: 0.35, green: 0.62, blue: 0.96)
         case .opencode:
             return Color(red: 0.40, green: 0.80, blue: 0.40)
+        case .cursor:
+            return Color(red: 0.70, green: 0.70, blue: 0.68)
         }
     }
 }

@@ -138,6 +138,21 @@ actor SessionStore {
         case .opencodeStopped(let sessionId, let cwd):
             processOpencodeStop(sessionId: sessionId, cwd: cwd)
 
+        case .cursorSessionStarted(let sessionId, let cwd):
+            processCursorSessionStart(sessionId: sessionId, cwd: cwd)
+
+        case .cursorProcessingStarted(let sessionId, let cwd):
+            processCursorProcessingStarted(sessionId: sessionId, cwd: cwd)
+
+        case .cursorCompactingStarted(let sessionId, let cwd):
+            processCursorCompactingStarted(sessionId: sessionId, cwd: cwd)
+
+        case .cursorStopped(let sessionId, let cwd, let status):
+            processCursorStop(sessionId: sessionId, cwd: cwd, status: status)
+
+        case .cursorSessionEnded(let sessionId):
+            processCursorSessionEnd(sessionId: sessionId)
+
         case .chatItemUpdate(let update):
             applyChatItemUpdate(update)
 
@@ -214,6 +229,12 @@ actor SessionStore {
 
     private func processHookEvent(_ event: HookEvent) async {
         let sessionId = event.sessionId
+        if let existingSession = sessions[sessionId],
+           existingSession.provider != .claude {
+            writeDebugLogAsync("[hook-event] ignored provider-mismatch session=\(sessionId) existingProvider=\(existingSession.provider.rawValue) event=\(event.event)")
+            return
+        }
+
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createSession(from: event)
 
@@ -300,7 +321,22 @@ actor SessionStore {
         CodexTranscriptParser.isSubagentSession(sessionId: sessionId)
     }
 
+    private func shouldProcessProviderSession(
+        sessionId: String,
+        provider: SessionProvider,
+        eventName: String
+    ) -> Bool {
+        guard let existingSession = sessions[sessionId],
+              existingSession.provider != provider else {
+            return true
+        }
+
+        writeDebugLogAsync("[\(provider.rawValue)-lifecycle] ignored provider-mismatch session=\(sessionId) existingProvider=\(existingSession.provider.rawValue) event=\(eventName)")
+        return false
+    }
+
     private func processCodexSessionStart(sessionId: String, cwd: String, source: String?) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "sessionStart") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         cancelPendingCodexCompletionNotification(sessionId: sessionId)
         let now = Date()
@@ -342,6 +378,7 @@ actor SessionStore {
     }
 
     private func processCodexPromptSubmitted(sessionId: String, cwd: String, prompt: String?) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "userPromptSubmit") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
@@ -387,6 +424,7 @@ actor SessionStore {
         input: [String: String],
         inputSummary: String?
     ) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "toolStarted") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
@@ -442,6 +480,7 @@ actor SessionStore {
     }
 
     private func processCodexToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String?, isError: Bool) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "toolFinished") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
@@ -514,6 +553,7 @@ actor SessionStore {
         input: [String: String],
         inputSummary: String?
     ) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "permissionRequest") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
@@ -567,6 +607,7 @@ actor SessionStore {
     }
 
     private func processCodexCompactingStarted(sessionId: String, cwd: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "preCompact") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
@@ -581,6 +622,7 @@ actor SessionStore {
     }
 
     private func processCodexCompactingFinished(sessionId: String, cwd: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "postCompact") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
@@ -601,6 +643,7 @@ actor SessionStore {
     }
 
     private func processCodexSubagentStarted(sessionId: String, cwd: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "subagentStart") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
@@ -615,6 +658,7 @@ actor SessionStore {
     }
 
     private func processCodexSubagentStopped(sessionId: String, cwd: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "subagentStop") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
@@ -635,6 +679,7 @@ actor SessionStore {
     }
 
     private func processCodexStop(sessionId: String, cwd: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "stop") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         cancelPendingCodexCompletionNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
@@ -775,6 +820,63 @@ actor SessionStore {
         publishState()
     }
 
+    // MARK: - Cursor Session Processing
+
+    private func processCursorSessionStart(sessionId: String, cwd: String) {
+        applyCursorLifecycle(sessionId: sessionId, event: .sessionStart(cwd: cwd))
+    }
+
+    private func processCursorProcessingStarted(sessionId: String, cwd: String) {
+        applyCursorLifecycle(sessionId: sessionId, event: .processingStarted(cwd: cwd))
+    }
+
+    private func processCursorCompactingStarted(sessionId: String, cwd: String) {
+        applyCursorLifecycle(sessionId: sessionId, event: .compactingStarted(cwd: cwd))
+    }
+
+    private func processCursorStop(sessionId: String, cwd: String, status: String?) {
+        applyCursorLifecycle(sessionId: sessionId, event: .stop(cwd: cwd, status: status))
+    }
+
+    private func processCursorSessionEnd(sessionId: String) {
+        applyCursorLifecycle(sessionId: sessionId, event: .sessionEnd)
+    }
+
+    private func applyCursorLifecycle(
+        sessionId: String,
+        event: CursorSessionStateReducer.Event
+    ) {
+        if let existingSession = sessions[sessionId],
+           existingSession.provider != .cursor {
+            writeDebugLogAsync("[cursor-lifecycle] ignored provider-mismatch session=\(sessionId) existingProvider=\(existingSession.provider.rawValue)")
+            return
+        }
+
+        let result = CursorSessionStateReducer.reduce(
+            existingSession: sessions[sessionId],
+            sessionId: sessionId,
+            event: event
+        )
+
+        if let session = result.session {
+            sessions[sessionId] = session
+        }
+
+        if let debugMessage = result.debugMessage {
+            writeDebugLogAsync(debugMessage)
+        }
+
+        if result.didCreateSession {
+            mixpanel?.track(event: "Session Started", properties: ["provider": "cursor"])
+        }
+    }
+
+    private nonisolated func writeDebugLogAsync(_ message: String) {
+        Task { @MainActor in
+            DebugLog.shared.write(message)
+        }
+    }
+
     // MARK: - Unified ChatItem Update Processing
 
     /// Apply a single ChatItemUpdate to session chat state. The update
@@ -792,6 +894,12 @@ actor SessionStore {
         _ update: ChatItemUpdate,
         appliesLifecycleEffects: Bool = false
     ) {
+        if let existingSession = sessions[update.sessionId],
+           existingSession.provider != update.provider {
+            writeDebugLogAsync("[chat-item-update] ignored provider-mismatch session=\(update.sessionId) existingProvider=\(existingSession.provider.rawValue) updateProvider=\(update.provider.rawValue) id=\(update.id)")
+            return
+        }
+
         let now = Date()
         var session = sessions[update.sessionId] ?? SessionState(
             sessionId: update.sessionId,
@@ -1786,6 +1894,9 @@ actor SessionStore {
     private func loadHistoryFromFile(sessionId: String, cwd: String) async {
         if sessions[sessionId]?.provider == .codex {
             await syncCodexTranscript(sessionId: sessionId)
+            return
+        }
+        if sessions[sessionId]?.provider == .cursor {
             return
         }
 
