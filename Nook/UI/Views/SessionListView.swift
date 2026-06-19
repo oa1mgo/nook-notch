@@ -372,7 +372,7 @@ struct InstanceRow: View {
         case .opencode:
             return Color(red: 0.40, green: 0.80, blue: 0.40).opacity(0.28)
         case .cursor:
-            return Color(red: 0.12, green: 0.12, blue: 0.12).opacity(0.82)
+            return Color(red: 0.12, green: 0.12, blue: 0.12).opacity(0.42)
         }
     }
 
