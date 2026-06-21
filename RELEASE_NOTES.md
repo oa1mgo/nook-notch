@@ -6,6 +6,7 @@ What's New
 
   - Cursor Sessions — adds Cursor session monitoring, hook ingestion, and chat history support alongside Claude Code, Codex, and opencode.
   - Agent Transcript Reliability — improves Codex lifecycle routing, transcript synchronization, terminal approval state, and provider-specific chat item updates.
+  - Codex Completion Feedback — restores completion sounds after Codex Stop while keeping completed Codex turns out of the active session list.
   - Agent UI Polish — refreshes provider icons and badges, keeps Vibe Glow focused on the glow effect, and hides header activity controls while Vibe Glow is enabled.
   - Opencode and Chat Rendering — improves AskUserQuestion handling, subagent output cleanup, image attachments, GFM table rendering, and tool result presentation.
   - Performance Settings — adds configurable performance metric detail settings with reusable settings rows.
