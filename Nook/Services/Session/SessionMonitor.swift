@@ -15,6 +15,8 @@ class SessionMonitor: ObservableObject {
     @Published var instances: [SessionState] = []
     @Published var pendingInstances: [SessionState] = []
 
+    private nonisolated static let codexHookEventQueue = AsyncHookEventQueue()
+
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -73,29 +75,8 @@ class SessionMonitor: ObservableObject {
                 }
             },
             onCodexEvent: { event in
-                Task {
-                    switch event {
-                    case .sessionStart(let sessionId, let cwd, let source):
-                        await SessionStore.shared.process(.codexSessionStarted(sessionId: sessionId, cwd: cwd, source: source))
-                    case .userPromptSubmit(let sessionId, let cwd, let prompt):
-                        await SessionStore.shared.process(.codexPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt))
-                    case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
-                        await SessionStore.shared.process(.codexToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary))
-                    case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let isError):
-                        await SessionStore.shared.process(.codexToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary, output: output, isError: isError))
-                    case .permissionRequest(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
-                        await SessionStore.shared.process(.codexPermissionRequested(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary))
-                    case .compactingStarted(let sessionId, let cwd):
-                        await SessionStore.shared.process(.codexCompactingStarted(sessionId: sessionId, cwd: cwd))
-                    case .compactingFinished(let sessionId, let cwd):
-                        await SessionStore.shared.process(.codexCompactingFinished(sessionId: sessionId, cwd: cwd))
-                    case .subagentStarted(let sessionId, let cwd):
-                        await SessionStore.shared.process(.codexSubagentStarted(sessionId: sessionId, cwd: cwd))
-                    case .subagentStopped(let sessionId, let cwd):
-                        await SessionStore.shared.process(.codexSubagentStopped(sessionId: sessionId, cwd: cwd))
-                    case .stop(let sessionId, let cwd):
-                        await SessionStore.shared.process(.codexStopped(sessionId: sessionId, cwd: cwd))
-                    }
+                SessionMonitor.codexHookEventQueue.enqueue {
+                    await SessionMonitor.processCodexHookEvent(event)
                 }
             },
             onOpencodeEvent: { event in
@@ -161,6 +142,31 @@ class SessionMonitor: ObservableObject {
                 }
             }
         )
+    }
+
+    private nonisolated static func processCodexHookEvent(_ event: CodexSessionEvent) async {
+        switch event {
+        case .sessionStart(let sessionId, let cwd, let source):
+            await SessionStore.shared.process(.codexSessionStarted(sessionId: sessionId, cwd: cwd, source: source))
+        case .userPromptSubmit(let sessionId, let cwd, let prompt):
+            await SessionStore.shared.process(.codexPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt))
+        case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+            await SessionStore.shared.process(.codexToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary))
+        case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let isError):
+            await SessionStore.shared.process(.codexToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary, output: output, isError: isError))
+        case .permissionRequest(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+            await SessionStore.shared.process(.codexPermissionRequested(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary))
+        case .compactingStarted(let sessionId, let cwd):
+            await SessionStore.shared.process(.codexCompactingStarted(sessionId: sessionId, cwd: cwd))
+        case .compactingFinished(let sessionId, let cwd):
+            await SessionStore.shared.process(.codexCompactingFinished(sessionId: sessionId, cwd: cwd))
+        case .subagentStarted(let sessionId, let cwd):
+            await SessionStore.shared.process(.codexSubagentStarted(sessionId: sessionId, cwd: cwd))
+        case .subagentStopped(let sessionId, let cwd):
+            await SessionStore.shared.process(.codexSubagentStopped(sessionId: sessionId, cwd: cwd))
+        case .stop(let sessionId, let cwd):
+            await SessionStore.shared.process(.codexStopped(sessionId: sessionId, cwd: cwd))
+        }
     }
 
     func stopMonitoring() {
@@ -230,6 +236,24 @@ class SessionMonitor: ObservableObject {
         Task {
             await SessionStore.shared.process(.loadHistory(sessionId: sessionId, cwd: cwd))
         }
+    }
+}
+
+private nonisolated final class AsyncHookEventQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tail: Task<Void, Never>?
+
+    nonisolated init() {}
+
+    nonisolated func enqueue(_ operation: @escaping @Sendable () async -> Void) {
+        lock.lock()
+        let previous = tail
+        let task = Task {
+            await previous?.value
+            await operation()
+        }
+        tail = task
+        lock.unlock()
     }
 }
 

@@ -769,14 +769,15 @@ struct NotchView: View {
             waitingForInputTimestamps[session.stableId] = now
         }
 
-        // Track synthetic Codex completion notifications emitted on Stop.
-        let codexCompletionSessions = instances.filter {
-            ($0.provider == .codex || $0.provider == .cursor) && $0.completionNotificationAt != nil
+        // Track synthetic completion notifications for providers that keep a
+        // short completed marker in the active session list.
+        let completionMarkerSessions = instances.filter {
+            $0.provider == .cursor && $0.completionNotificationAt != nil
         }
         var currentCompletionMarkers: [String: Date] = [:]
         var newCompletionSessions: [SessionState] = []
 
-        for session in codexCompletionSessions {
+        for session in completionMarkerSessions {
             guard let completionAt = session.completionNotificationAt else { continue }
             currentCompletionMarkers[session.stableId] = completionAt
 
@@ -800,7 +801,7 @@ struct NotchView: View {
         let newlyWaitingSessions = waitingForInputSessions.filter { newWaitingIds.contains($0.stableId) }
         let newlyCompletedSessions = newlyWaitingSessions + newCompletionSessions
 
-        // Bounce the notch when a session newly enters waiting-for-input or Codex emits a stop completion.
+        // Bounce the notch when a session newly enters waiting-for-input or emits a completion marker.
         if !newlyCompletedSessions.isEmpty {
 
             // Play notification sound if the session is not actively focused

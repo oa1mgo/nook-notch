@@ -27,19 +27,17 @@ actor SessionStore {
     /// Pending file syncs (debounced)
     private var pendingSyncs: [String: Task<Void, Never>] = [:]
 
-    /// Pending Codex completion notifications. Codex Stop hooks can continue
-    /// the turn, so completion is emitted after a short cancelable window.
-    private var pendingCodexCompletionNotifications: [String: Task<Void, Never>] = [:]
-
     /// In-memory transcript lower bounds after Codex `/clear`. Codex transcript
-    /// format is not a stable API, so keep this scoped to live sync only.
+    /// format is not a stable API, so use it only for explicit history loads.
     private var codexTranscriptLowerBounds: [String: Date] = [:]
+
+    /// Codex can deliver trailing PostToolUse/PostCompact-style hooks after Stop.
+    /// Keep a short tombstone so those late events cannot recreate a completed
+    /// session in the active session list.
+    private var recentlyStoppedCodexSessions: [String: Date] = [:]
 
     /// Sync debounce interval (100ms)
     private let syncDebounceNs: UInt64 = 100_000_000
-
-    /// Delay before surfacing a Codex Stop as user-visible completion.
-    private let codexCompletionDebounceNs: UInt64 = 750_000_000
 
     /// Periodic status check task
     private var statusCheckTask: Task<Void, Never>?
@@ -56,6 +54,7 @@ actor SessionStore {
     /// not keep showing Vibe Glow for a stale turn.
     private let codexActiveQuietExpirationSeconds: TimeInterval = 90
     private let codexRunningToolQuietExpirationSeconds: TimeInterval = 600
+    private let codexLateEventIgnoreSeconds: TimeInterval = 10
 
     /// BlockOrdering keys for chat items (from unified ChatItemUpdate path).
     /// Maps chatItem.id → BlockOrdering so ChatItemSorter can maintain
@@ -335,10 +334,30 @@ actor SessionStore {
         return false
     }
 
+    private func markCodexSessionStopped(sessionId: String, at date: Date = Date()) {
+        recentlyStoppedCodexSessions[sessionId] = date
+    }
+
+    private func clearCodexStoppedMarker(sessionId: String) {
+        recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
+    }
+
+    private func shouldDropLateCodexEvent(sessionId: String, eventName: String, now: Date = Date()) -> Bool {
+        guard let stoppedAt = recentlyStoppedCodexSessions[sessionId] else { return false }
+
+        if now.timeIntervalSince(stoppedAt) <= codexLateEventIgnoreSeconds {
+            writeDebugLogAsync("[codex-lifecycle] ignored late event session=\(sessionId) event=\(eventName)")
+            return true
+        }
+
+        recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
+        return false
+    }
+
     private func processCodexSessionStart(sessionId: String, cwd: String, source: String?) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "sessionStart") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        cancelPendingCodexCompletionNotification(sessionId: sessionId)
+        clearCodexStoppedMarker(sessionId: sessionId)
         let now = Date()
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
@@ -375,13 +394,12 @@ actor SessionStore {
             mixpanel?.track(event: "Session Started", properties: ["provider": "codex"])
         }
         writeDebugLogAsync("[codex-lifecycle] sessionStart session=\(sessionId) source=\(source ?? "nil") phase=\(String(describing: session.phase)) cwd=\(session.cwd)")
-        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexPromptSubmitted(sessionId: String, cwd: String, prompt: String?) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "userPromptSubmit") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        cancelPendingCodexCompletionNotification(sessionId: sessionId)
+        clearCodexStoppedMarker(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
         let trimmedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -403,7 +421,6 @@ actor SessionStore {
 
         sessions[sessionId] = session
         writeDebugLogAsync("[codex-lifecycle] userPromptSubmit session=\(sessionId) phase=\(String(describing: session.phase)) promptChars=\(trimmedPrompt?.count ?? 0)")
-        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexBashStarted(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?) {
@@ -428,7 +445,7 @@ actor SessionStore {
     ) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "toolStarted") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        cancelPendingCodexCompletionNotification(sessionId: sessionId)
+        clearCodexStoppedMarker(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
 
@@ -467,7 +484,6 @@ actor SessionStore {
         for update in updates {
             applyChatItemUpdate(update)
         }
-        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexBashFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, command: String?, output: String?, isError: Bool) {
@@ -485,10 +501,12 @@ actor SessionStore {
     private func processCodexToolFinished(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String?, isError: Bool) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "toolFinished") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
+        guard !shouldDropLateCodexEvent(sessionId: sessionId, eventName: "toolFinished") else { return }
+        guard var session = sessions[sessionId] else {
+            writeDebugLogAsync("[codex-lifecycle] ignored toolFinished missing-session session=\(sessionId) tool=\(toolName)")
+            return
+        }
         let now = Date()
-        let completedTurnAt = session.completionNotificationAt
-        let completionPending = pendingCodexCompletionNotifications[sessionId] != nil
 
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = now
@@ -507,30 +525,17 @@ actor SessionStore {
             lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
             usage: session.conversationInfo.usage
         )
-        if let completedTurnAt {
-            // A late PostToolUse can arrive after Codex has already emitted
-            // Stop for the turn. Keep the turn completed while still letting
-            // the tool row reconcile above.
-            session.phase = .idle
-            session.completionNotificationAt = completedTurnAt
-        } else if completionPending {
-            // Stop has arrived and the completion notification is only being
-            // delayed to allow Stop hooks to continue. A late PostToolUse
-            // should reconcile the tool row but must not make the turn active.
-            session.phase = .idle
-            session.completionNotificationAt = nil
-        } else {
-            // Codex `PostToolUse` is not the end of the turn. The model may keep
-            // thinking, produce text, compact, or start another tool before `Stop`.
-            // Keep the visible state active until the explicit turn-scope Stop hook.
-            if session.phase.canTransition(to: .processing) {
-                session.phase = .processing
-            }
-            session.completionNotificationAt = nil
+
+        // Codex `PostToolUse` is not the end of the turn. The model may keep
+        // thinking, produce text, compact, or start another tool before `Stop`.
+        // Keep the visible state active until the explicit turn-scope Stop hook.
+        if session.phase.canTransition(to: .processing) {
+            session.phase = .processing
         }
+        session.completionNotificationAt = nil
 
         sessions[sessionId] = session
-        writeDebugLogAsync("[codex-lifecycle] toolFinished session=\(sessionId) tool=\(toolName) toolUseId=\(completedToolId ?? "nil") isError=\(isError) phase=\(String(describing: session.phase)) completionPending=\(completionPending)")
+        writeDebugLogAsync("[codex-lifecycle] toolFinished session=\(sessionId) tool=\(toolName) toolUseId=\(completedToolId ?? "nil") isError=\(isError) phase=\(String(describing: session.phase))")
         let updates = CodexChatItemAdapter.updates(
             from: .postTool(
                 sessionId: sessionId,
@@ -546,7 +551,6 @@ actor SessionStore {
         for update in updates {
             applyChatItemUpdate(update)
         }
-        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexPermissionRequested(
@@ -559,7 +563,7 @@ actor SessionStore {
     ) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "permissionRequest") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        cancelPendingCodexCompletionNotification(sessionId: sessionId)
+        clearCodexStoppedMarker(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         let now = Date()
         enrichCodexRuntimeMetadata(session: &session)
@@ -608,13 +612,12 @@ actor SessionStore {
         )
         sessions[sessionId] = session
         writeDebugLogAsync("[codex-lifecycle] permissionRequest session=\(sessionId) tool=\(displayToolName) toolUseId=\(resolvedToolUseId ?? "nil") phase=\(String(describing: session.phase))")
-        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexCompactingStarted(sessionId: String, cwd: String) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "preCompact") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        cancelPendingCodexCompletionNotification(sessionId: sessionId)
+        clearCodexStoppedMarker(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -623,34 +626,29 @@ actor SessionStore {
             session.phase = .compacting
         }
         sessions[sessionId] = session
-        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexCompactingFinished(sessionId: String, cwd: String) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "postCompact") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
-        enrichCodexRuntimeMetadata(session: &session)
-        session.lastActivity = Date()
-        if session.completionNotificationAt != nil || pendingCodexCompletionNotifications[sessionId] != nil {
-            session.phase = .idle
-            sessions[sessionId] = session
-            scheduleCodexTranscriptSync(sessionId: sessionId)
+        guard !shouldDropLateCodexEvent(sessionId: sessionId, eventName: "postCompact") else { return }
+        guard var session = sessions[sessionId] else {
+            writeDebugLogAsync("[codex-lifecycle] ignored postCompact missing-session session=\(sessionId)")
             return
         }
-
+        enrichCodexRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
         session.completionNotificationAt = nil
         if session.phase.canTransition(to: .processing) {
             session.phase = .processing
         }
         sessions[sessionId] = session
-        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexSubagentStarted(sessionId: String, cwd: String) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "subagentStart") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        cancelPendingCodexCompletionNotification(sessionId: sessionId)
+        clearCodexStoppedMarker(sessionId: sessionId)
         var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -659,45 +657,42 @@ actor SessionStore {
             session.phase = .processing
         }
         sessions[sessionId] = session
-        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexSubagentStopped(sessionId: String, cwd: String) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "subagentStop") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
-        enrichCodexRuntimeMetadata(session: &session)
-        session.lastActivity = Date()
-        if session.completionNotificationAt != nil || pendingCodexCompletionNotifications[sessionId] != nil {
-            session.phase = .idle
-            sessions[sessionId] = session
-            scheduleCodexTranscriptSync(sessionId: sessionId)
+        guard !shouldDropLateCodexEvent(sessionId: sessionId, eventName: "subagentStop") else { return }
+        guard var session = sessions[sessionId] else {
+            writeDebugLogAsync("[codex-lifecycle] ignored subagentStop missing-session session=\(sessionId)")
             return
         }
-
+        enrichCodexRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
         session.completionNotificationAt = nil
         if session.phase.canTransition(to: .processing) {
             session.phase = .processing
         }
         sessions[sessionId] = session
-        scheduleCodexTranscriptSync(sessionId: sessionId)
     }
 
     private func processCodexStop(sessionId: String, cwd: String) {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .codex, eventName: "stop") else { return }
         guard !shouldIgnoreCodexSession(sessionId) else { return }
-        cancelPendingCodexCompletionNotification(sessionId: sessionId)
-        var session = sessions[sessionId] ?? createCodexSession(sessionId: sessionId, cwd: cwd)
+        markCodexSessionStopped(sessionId: sessionId)
+        guard var session = sessions[sessionId] else {
+            writeDebugLogAsync("[codex-lifecycle] stop ignored missing-session session=\(sessionId)")
+            return
+        }
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = Date()
         session.phase = .idle
         session.completionNotificationAt = nil
         finishDanglingCodexTools(in: &session)
         session.toolTracker.inProgress.removeAll()
-        sessions[sessionId] = session
         writeDebugLogAsync("[codex-lifecycle] stop session=\(sessionId) phase=\(String(describing: session.phase)) chatItems=\(session.chatItems.count)")
-        scheduleCodexTranscriptSync(sessionId: sessionId)
-        scheduleCodexCompletionNotification(sessionId: sessionId)
+        sessions.removeValue(forKey: sessionId)
+        cancelPendingSync(sessionId: sessionId)
     }
 
     // MARK: - OpenCode Session Processing
@@ -898,11 +893,17 @@ actor SessionStore {
     /// path enrich cwd/pid/tty metadata when it arrives.
     private func applyChatItemUpdate(
         _ update: ChatItemUpdate,
-        appliesLifecycleEffects: Bool = false
+        appliesLifecycleEffects: Bool = false,
+        allowSessionCreation: Bool = true
     ) {
         if let existingSession = sessions[update.sessionId],
            existingSession.provider != update.provider {
             writeDebugLogAsync("[chat-item-update] ignored provider-mismatch session=\(update.sessionId) existingProvider=\(existingSession.provider.rawValue) updateProvider=\(update.provider.rawValue) id=\(update.id)")
+            return
+        }
+
+        if sessions[update.sessionId] == nil, !allowSessionCreation {
+            writeDebugLogAsync("[chat-item-update] ignored missing-session session=\(update.sessionId) updateProvider=\(update.provider.rawValue) id=\(update.id)")
             return
         }
 
@@ -1077,47 +1078,6 @@ actor SessionStore {
         )
         session.needsClearReconciliation = false
         session.completionNotificationAt = nil
-    }
-
-    private func scheduleCodexCompletionNotification(sessionId: String) {
-        cancelPendingCodexCompletionNotification(sessionId: sessionId)
-
-        writeDebugLogAsync("[codex-lifecycle] completionNotificationScheduled session=\(sessionId)")
-        pendingCodexCompletionNotifications[sessionId] = Task { [weak self, codexCompletionDebounceNs] in
-            try? await Task.sleep(nanoseconds: codexCompletionDebounceNs)
-            guard !Task.isCancelled else { return }
-            await self?.emitCodexCompletionNotification(sessionId: sessionId)
-        }
-    }
-
-    private func cancelPendingCodexCompletionNotification(sessionId: String) {
-        pendingCodexCompletionNotifications[sessionId]?.cancel()
-        pendingCodexCompletionNotifications.removeValue(forKey: sessionId)
-    }
-
-    private func emitCodexCompletionNotification(sessionId: String) {
-        pendingCodexCompletionNotifications.removeValue(forKey: sessionId)
-        guard var session = sessions[sessionId] else {
-            writeDebugLogAsync("[codex-lifecycle] completionNotificationSkipped session=\(sessionId) reason=missing-session")
-            return
-        }
-        guard session.provider == .codex else {
-            writeDebugLogAsync("[codex-lifecycle] completionNotificationSkipped session=\(sessionId) reason=provider-\(session.provider.rawValue)")
-            return
-        }
-        guard session.phase == .idle else {
-            writeDebugLogAsync("[codex-lifecycle] completionNotificationSkipped session=\(sessionId) reason=phase-\(String(describing: session.phase))")
-            return
-        }
-        guard session.completionNotificationAt == nil else {
-            writeDebugLogAsync("[codex-lifecycle] completionNotificationSkipped session=\(sessionId) reason=already-emitted")
-            return
-        }
-
-        session.completionNotificationAt = Date()
-        sessions[sessionId] = session
-        writeDebugLogAsync("[codex-lifecycle] completionNotificationEmitted session=\(sessionId)")
-        publishState()
     }
 
     private func latestRunningCodexToolId(in session: SessionState, toolName: String, toolUseId: String?) -> String? {
@@ -1903,8 +1863,8 @@ actor SessionStore {
     private func processSessionEnd(sessionId: String) async {
         sessions.removeValue(forKey: sessionId)
         cancelPendingSync(sessionId: sessionId)
-        cancelPendingCodexCompletionNotification(sessionId: sessionId)
         codexTranscriptLowerBounds.removeValue(forKey: sessionId)
+        recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
     }
 
     // MARK: - History Loading
@@ -1977,6 +1937,10 @@ actor SessionStore {
 
     private func syncCodexTranscript(sessionId: String) async {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
+        guard let session = sessions[sessionId], session.provider == .codex else {
+            writeDebugLogAsync("[codex-transcript-sync] skipped missing-session session=\(sessionId)")
+            return
+        }
 
         let updates = await CodexTranscriptParser.loadUpdates(
             sessionId: sessionId,
@@ -1986,19 +1950,9 @@ actor SessionStore {
 
         DebugLog.shared.write("[codex-transcript-sync] session=\(sessionId) updates=\(updates.count)")
         for update in updates {
-            applyChatItemUpdate(update)
+            applyChatItemUpdate(update, allowSessionCreation: false)
         }
         publishState()
-    }
-
-    private func scheduleCodexTranscriptSync(sessionId: String) {
-        cancelPendingSync(sessionId: sessionId)
-
-        pendingSyncs[sessionId] = Task { [weak self, syncDebounceNs] in
-            try? await Task.sleep(nanoseconds: syncDebounceNs)
-            guard !Task.isCancelled else { return }
-            await self?.syncCodexTranscript(sessionId: sessionId)
-        }
     }
 
     // MARK: - File Sync Scheduling
@@ -2074,12 +2028,18 @@ actor SessionStore {
         var stateChanged = false
         let now = Date()
 
+        for (sessionId, stoppedAt) in recentlyStoppedCodexSessions {
+            if now.timeIntervalSince(stoppedAt) > codexLateEventIgnoreSeconds {
+                recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
+            }
+        }
+
         for (sessionId, session) in Array(sessions) {
             if session.phase == .ended {
                 sessions.removeValue(forKey: sessionId)
                 cancelPendingSync(sessionId: sessionId)
-                cancelPendingCodexCompletionNotification(sessionId: sessionId)
                 codexTranscriptLowerBounds.removeValue(forKey: sessionId)
+                recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
                 stateChanged = true
                 continue
             }
@@ -2088,8 +2048,8 @@ actor SessionStore {
                session.phase == .idle,
                now.timeIntervalSince(session.lastActivity) > codexIdleExpirationSeconds {
                 sessions.removeValue(forKey: sessionId)
-                cancelPendingCodexCompletionNotification(sessionId: sessionId)
                 codexTranscriptLowerBounds.removeValue(forKey: sessionId)
+                recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
                 stateChanged = true
                 continue
             }
@@ -2120,8 +2080,8 @@ actor SessionStore {
                     Self.logger.info("Process \(pid) no longer running, ending session \(sessionId.prefix(8))")
                     sessions.removeValue(forKey: sessionId)
                     cancelPendingSync(sessionId: sessionId)
-                    cancelPendingCodexCompletionNotification(sessionId: sessionId)
                     codexTranscriptLowerBounds.removeValue(forKey: sessionId)
+                    recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
                     stateChanged = true
                     continue
                 }
