@@ -2133,6 +2133,20 @@ actor SessionStore {
         writeDebugLogAsync("[completion-notification] published provider=\(session.provider.rawValue) session=\(session.sessionId)")
     }
 
+    #if DEBUG
+    func resetForTesting() {
+        for task in pendingSyncs.values {
+            task.cancel()
+        }
+        sessions.removeAll()
+        pendingSyncs.removeAll()
+        codexTranscriptLowerBounds.removeAll()
+        recentlyStoppedCodexSessions.removeAll()
+        blockOrderings.removeAll()
+        publishState()
+    }
+    #endif
+
     // MARK: - Queries
 
     /// Get a specific session

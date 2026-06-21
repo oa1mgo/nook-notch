@@ -104,6 +104,15 @@ If that happens:
 xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Debug build
 ```
 
+### Test
+
+```bash
+xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug -derivedDataPath build/TestDerivedData -destination 'platform=macOS'
+```
+
+See [docs/testing.md](docs/testing.md) for the current unit-test coverage and
+guidelines for adding provider-specific tests.
+
 ### Run
 
 Launch `Nook.app` from Xcode or from DerivedData. On startup, Nook will:

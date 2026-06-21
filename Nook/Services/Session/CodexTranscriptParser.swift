@@ -77,7 +77,7 @@ enum CodexTranscriptParser {
         return nil
     }
 
-    private nonisolated static func parseTranscriptUpdates(
+    nonisolated static func parseTranscriptUpdates(
         at url: URL,
         sessionId: String,
         after lowerBound: Date?
