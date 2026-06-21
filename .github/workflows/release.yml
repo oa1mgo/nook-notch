@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'release/*'
+
+jobs:
+  release:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        run: |
+          set -euo pipefail
+
+          TAG_NAME="${GITHUB_REF_NAME}"
+          if [[ ! "${TAG_NAME}" =~ ^release/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags must use release/x.y.z format."
+            exit 1
+          fi
+
+          git fetch origin refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" refs/remotes/origin/main; then
+            echo "::error::Tag ${TAG_NAME} must point to a commit on main."
+            exit 1
+          fi
+
+          VERSION="${TAG_NAME#release/}"
+          APP_VERSION="$(
+            awk -F' = |;' '/MARKETING_VERSION = / { print $2 }' Nook.xcodeproj/project.pbxproj |
+              sed '/^$/d' |
+              sort -u
+          )"
+          APP_VERSION_COUNT="$(printf '%s\n' "${APP_VERSION}" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [[ "${APP_VERSION_COUNT}" != "1" ]]; then
+            echo "::error::Expected exactly one MARKETING_VERSION in Nook.xcodeproj/project.pbxproj, found ${APP_VERSION_COUNT}: ${APP_VERSION}"
+            exit 1
+          fi
+
+          if [[ "${APP_VERSION}" != "${VERSION}" ]]; then
+            echo "::error::Tag version ${VERSION} does not match app MARKETING_VERSION ${APP_VERSION}."
+            exit 1
+          fi
+
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "TAG_NAME=${TAG_NAME}" >> "${GITHUB_ENV}"
+
+      - name: Extract release notes
+        run: |
+          set -euo pipefail
+
+          awk -v version="${VERSION}" '
+            $0 == "## " version { found = 1; next }
+            found && /^## / { exit }
+            found { lines[++count] = $0 }
+            END {
+              start = 1
+              while (start <= count && lines[start] == "") {
+                start++
+              }
+              end = count
+              while (end >= start && lines[end] == "") {
+                end--
+              }
+              for (i = start; i <= end; i++) {
+                print lines[i]
+              }
+            }
+          ' RELEASE_NOTES.md > release-notes-body.md
+
+          if [[ ! -s release-notes-body.md ]]; then
+            echo "::error::No release notes found for ${VERSION} in RELEASE_NOTES.md."
+            exit 1
+          fi
+
+      - name: Build
+        run: |
+          set -euo pipefail
+
+          xcodebuild -scheme Nook -configuration Release \
+            MACOSX_DEPLOYMENT_TARGET=15.5 \
+            -derivedDataPath build \
+            build
+
+      - name: Package DMG
+        run: |
+          set -euo pipefail
+
+          APP_PATH="build/Build/Products/Release/Nook.app"
+          DMG_PATH="${GITHUB_WORKSPACE}/Nook-${VERSION}.dmg"
+
+          hdiutil create -volname "Nook" \
+            -srcfolder "${APP_PATH}" \
+            -ov -format UDZO \
+            "${DMG_PATH}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh release create "${TAG_NAME}" \
+            "${GITHUB_WORKSPACE}/Nook-${VERSION}.dmg" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Version-${VERSION}" \
+            --notes-file release-notes-body.md \
+            --verify-tag \
+            --target "${GITHUB_SHA}"
