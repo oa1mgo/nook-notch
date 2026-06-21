@@ -286,6 +286,10 @@ struct NotchView: View {
             handleProcessingChange()
             handleWaitingForInputChange(instances)
         }
+        .onChange(of: sessionMonitor.completionNotification) { _, notification in
+            guard let notification else { return }
+            handleCompletionNotification(notification)
+        }
         .onChange(of: musicManager.playbackState) { _, _ in
             syncInstancesPageLayoutState()
             handleProcessingChange()
@@ -803,29 +807,11 @@ struct NotchView: View {
 
         // Bounce the notch when a session newly enters waiting-for-input or emits a completion marker.
         if !newlyCompletedSessions.isEmpty {
-
-            // Play notification sound if the session is not actively focused
-            let notificationSound = AppSettings.notificationSound
-            if notificationSound.soundName != nil {
-                // Check if we should play sound (async check for tmux pane focus)
-                Task {
-                    let shouldPlaySound = await shouldPlayNotificationSound(for: newlyCompletedSessions)
-                    if shouldPlaySound {
-                        _ = await MainActor.run {
-                            NotificationSoundPlayer.play(notificationSound)
-                        }
-                    }
-                }
-            }
-
-            // Trigger bounce animation to get user's attention
-            DispatchQueue.main.async {
-                isBouncing = true
-                // Bounce back after a short delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    isBouncing = false
-                }
-            }
+            let debugContext = newlyCompletedSessions
+                .map { "provider=\($0.provider.rawValue) session=\($0.sessionId)" }
+                .joined(separator: ",")
+            playNotificationSoundIfNeeded(forPids: newlyCompletedSessions.map(\.pid), debugContext: debugContext)
+            triggerNotificationBounce()
 
             // Schedule hiding the checkmark after 30 seconds
             DispatchQueue.main.asyncAfter(deadline: .now() + displayDuration) { [self] in
@@ -838,11 +824,42 @@ struct NotchView: View {
         previousCompletionNotificationMarkers = currentCompletionMarkers
     }
 
-    /// Determine if notification sound should play for the given sessions
-    /// Returns true if ANY session is not actively focused
-    private func shouldPlayNotificationSound(for sessions: [SessionState]) async -> Bool {
-        for session in sessions {
-            guard let pid = session.pid else {
+    private func handleCompletionNotification(_ notification: SessionCompletionNotification) {
+        let debugContext = "provider=\(notification.provider.rawValue) session=\(notification.sessionId)"
+        DebugLog.shared.write("[notch-notification] completionReceived \(debugContext)")
+        playNotificationSoundIfNeeded(forPids: [notification.pid], debugContext: debugContext)
+        triggerNotificationBounce()
+    }
+
+    private func playNotificationSoundIfNeeded(forPids pids: [Int?], debugContext: String) {
+        guard AppSettings.notificationSound.soundName != nil else { return }
+
+        Task {
+            let shouldPlaySound = await shouldPlayNotificationSound(forPids: pids)
+            if shouldPlaySound {
+                await MainActor.run {
+                    NotificationSoundPlayer.play(AppSettings.notificationSound)
+                }
+                DebugLog.shared.write("[notch-notification] soundPlayed \(debugContext)")
+            } else {
+                DebugLog.shared.write("[notch-notification] soundSkippedFocused \(debugContext)")
+            }
+        }
+    }
+
+    private func triggerNotificationBounce() {
+        DispatchQueue.main.async {
+            isBouncing = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                isBouncing = false
+            }
+        }
+    }
+
+    /// Returns true if ANY notifying session is not actively focused.
+    private func shouldPlayNotificationSound(forPids pids: [Int?]) async -> Bool {
+        for pid in pids {
+            guard let pid else {
                 // No PID means we can't check focus, assume not focused
                 return true
             }

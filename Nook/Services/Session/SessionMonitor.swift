@@ -14,6 +14,7 @@ import Foundation
 class SessionMonitor: ObservableObject {
     @Published var instances: [SessionState] = []
     @Published var pendingInstances: [SessionState] = []
+    @Published var completionNotification: SessionCompletionNotification?
 
     private nonisolated static let codexHookEventQueue = AsyncHookEventQueue()
 
@@ -24,6 +25,13 @@ class SessionMonitor: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] sessions in
                 self?.updateFromSessions(sessions)
+            }
+            .store(in: &cancellables)
+
+        SessionStore.shared.completionNotificationsPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                self?.completionNotification = notification
             }
             .store(in: &cancellables)
 

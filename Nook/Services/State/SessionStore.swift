@@ -66,9 +66,18 @@ actor SessionStore {
     /// Publisher for session state changes (nonisolated for Combine subscription from any context)
     private nonisolated(unsafe) let sessionsSubject = CurrentValueSubject<[SessionState], Never>([])
 
+    /// One-shot completion notifications for providers that should disappear
+    /// from the active session list immediately after completing a turn.
+    private nonisolated(unsafe) let completionNotificationsSubject = PassthroughSubject<SessionCompletionNotification, Never>()
+
     /// Public publisher for UI subscription
     nonisolated var sessionsPublisher: AnyPublisher<[SessionState], Never> {
         sessionsSubject.eraseToAnyPublisher()
+    }
+
+    /// Public completion notification stream for UI-only affordances.
+    nonisolated var completionNotificationsPublisher: AnyPublisher<SessionCompletionNotification, Never> {
+        completionNotificationsSubject.eraseToAnyPublisher()
     }
 
     private nonisolated var mixpanel: MixpanelInstance? {
@@ -691,6 +700,7 @@ actor SessionStore {
         finishDanglingCodexTools(in: &session)
         session.toolTracker.inProgress.removeAll()
         writeDebugLogAsync("[codex-lifecycle] stop session=\(sessionId) phase=\(String(describing: session.phase)) chatItems=\(session.chatItems.count)")
+        publishCompletionNotification(for: session)
         sessions.removeValue(forKey: sessionId)
         cancelPendingSync(sessionId: sessionId)
     }
@@ -2114,6 +2124,13 @@ actor SessionStore {
     private func publishState() {
         let sortedSessions = Array(sessions.values).sorted { $0.projectName < $1.projectName }
         sessionsSubject.send(sortedSessions)
+    }
+
+    private func publishCompletionNotification(for session: SessionState) {
+        completionNotificationsSubject.send(
+            SessionCompletionNotification(session: session)
+        )
+        writeDebugLogAsync("[completion-notification] published provider=\(session.provider.rawValue) session=\(session.sessionId)")
     }
 
     // MARK: - Queries

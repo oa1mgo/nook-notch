@@ -198,6 +198,23 @@ struct SessionState: Equatable, Identifiable, Sendable {
     }
 }
 
+/// One-shot provider completion signal for UI affordances like sound/bounce.
+/// This is intentionally separate from the active session list so providers can
+/// end a turn without keeping synthetic sessions visible.
+struct SessionCompletionNotification: Equatable, Identifiable, Sendable {
+    let id: UUID
+    let sessionId: String
+    let provider: SessionProvider
+    let pid: Int?
+
+    nonisolated init(session: SessionState) {
+        self.id = UUID()
+        self.sessionId = session.sessionId
+        self.provider = session.provider
+        self.pid = session.pid
+    }
+}
+
 // MARK: - Tool Tracker
 
 /// Unified tool tracking - replaces multiple dictionaries in ChatHistoryManager
