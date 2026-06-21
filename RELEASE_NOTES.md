@@ -6,7 +6,7 @@ What's New
 
   - Cursor Sessions — adds Cursor session monitoring, hook ingestion, and chat history support alongside Claude Code, Codex, and opencode.
   - Agent Transcript Reliability — improves Codex lifecycle routing, transcript synchronization, terminal approval state, and provider-specific chat item updates.
-  - Codex Completion Feedback — restores completion sounds after Codex Stop while keeping completed Codex turns out of the active session list.
+  - Codex Completion Feedback — restores completion sounds after Codex Stop and keeps completed Codex turns visible as idle history instead of flashing out of the session list.
   - Unit Test Coverage — adds a macOS `NookTests` target covering provider adapters, transcript parsing, session lifecycle reducers, and Codex completion cleanup to protect future refactors.
   - Agent UI Polish — refreshes provider icons and badges, keeps Vibe Glow focused on the glow effect, and hides header activity controls while Vibe Glow is enabled.
   - Opencode and Chat Rendering — improves AskUserQuestion handling, subagent output cleanup, image attachments, GFM table rendering, and tool result presentation.

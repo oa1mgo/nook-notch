@@ -475,7 +475,7 @@ class HookSocketServer {
 
         case .codex(let event):
             close(clientSocket)
-            socketLog("Received Codex event: \(String(describing: event))")
+            socketLog("Received Codex event: \(event.socketLogSummary)")
             codexEventHandler?(event)
 
         case .unsupportedCodex(let eventName):
@@ -719,6 +719,37 @@ class HookSocketServer {
         if !writeSuccess {
             permissionFailureHandler?(sessionId, pending.toolUseId)
         }
+    }
+}
+
+private extension CodexSessionEvent {
+    var socketLogSummary: String {
+        switch self {
+        case .sessionStart(let sessionId, let cwd, let source):
+            return "sessionStart session=\(short(sessionId)) source=\(source ?? "nil") cwd=\(cwd)"
+        case .userPromptSubmit(let sessionId, let cwd, let prompt):
+            return "userPromptSubmit session=\(short(sessionId)) promptChars=\(prompt?.count ?? 0) cwd=\(cwd)"
+        case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+            return "preTool session=\(short(sessionId)) tool=\(toolName) toolUseId=\(toolUseId ?? "nil") inputKeys=\(input.keys.sorted().joined(separator: ",")) inputSummaryChars=\(inputSummary?.count ?? 0) cwd=\(cwd)"
+        case .postTool(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let isError):
+            return "postTool session=\(short(sessionId)) tool=\(toolName) toolUseId=\(toolUseId ?? "nil") inputSummaryChars=\(inputSummary?.count ?? 0) outputChars=\(output?.count ?? 0) isError=\(isError) cwd=\(cwd)"
+        case .permissionRequest(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
+            return "permissionRequest session=\(short(sessionId)) tool=\(toolName ?? "nil") toolUseId=\(toolUseId ?? "nil") inputKeys=\(input.keys.sorted().joined(separator: ",")) inputSummaryChars=\(inputSummary?.count ?? 0) cwd=\(cwd)"
+        case .compactingStarted(let sessionId, let cwd):
+            return "compactingStarted session=\(short(sessionId)) cwd=\(cwd)"
+        case .compactingFinished(let sessionId, let cwd):
+            return "compactingFinished session=\(short(sessionId)) cwd=\(cwd)"
+        case .subagentStarted(let sessionId, let cwd):
+            return "subagentStarted session=\(short(sessionId)) cwd=\(cwd)"
+        case .subagentStopped(let sessionId, let cwd):
+            return "subagentStopped session=\(short(sessionId)) cwd=\(cwd)"
+        case .stop(let sessionId, let cwd):
+            return "stop session=\(short(sessionId)) cwd=\(cwd)"
+        }
+    }
+
+    private func short(_ sessionId: String) -> String {
+        String(sessionId.prefix(8))
     }
 }
 

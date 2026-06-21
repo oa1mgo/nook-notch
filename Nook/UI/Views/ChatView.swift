@@ -168,12 +168,6 @@ struct ChatView: View {
                 // Always update - the @Published ensures we only get notified on real changes
                 // This allows tool status updates (waitingForApproval -> running) to reflect
                 if countChanged || lastItemChanged || newHistory != history {
-                    // DIAGNOSTIC (#70): dump incoming history to find where second thinking is lost
-                    let newThinkingCount = newHistory.filter { if case .thinking = $0.type { return true } else { return false } }.count
-                    let newThinkingIds = newHistory.compactMap { item -> String? in
-                        if case .thinking = item.type { return item.id } else { return nil }
-                    }
-                    DebugLog.shared.write("[chat-view] history update session=\(sessionId) total=\(newHistory.count) thinkingCount=\(newThinkingCount) thinkingIds=\(newThinkingIds.joined(separator: ","))")
                     // Track new messages when autoscroll is paused
                     if isAutoscrollPaused && newHistory.count > previousHistoryCount {
                         let addedCount = newHistory.count - previousHistoryCount

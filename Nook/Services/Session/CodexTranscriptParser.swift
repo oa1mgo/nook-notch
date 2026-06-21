@@ -7,11 +7,31 @@
 
 import Foundation
 
+struct CodexTranscriptParseResult: Sendable {
+    let updates: [ChatItemUpdate]
+    let endOffset: UInt64
+}
+
 enum CodexTranscriptParser {
     nonisolated static func loadUpdates(sessionId: String, after lowerBound: Date? = nil) async -> [ChatItemUpdate] {
+        await loadUpdateResult(sessionId: sessionId, after: lowerBound).updates
+    }
+
+    nonisolated static func loadUpdateResult(
+        sessionId: String,
+        after lowerBound: Date? = nil,
+        fromOffset: UInt64 = 0
+    ) async -> CodexTranscriptParseResult {
         await Task.detached(priority: .userInitiated) {
-            guard let url = transcriptURL(for: sessionId) else { return [] }
-            return parseTranscriptUpdates(at: url, sessionId: sessionId, after: lowerBound)
+            guard let url = transcriptURL(for: sessionId) else {
+                return CodexTranscriptParseResult(updates: [], endOffset: fromOffset)
+            }
+            return parseTranscriptUpdates(
+                at: url,
+                sessionId: sessionId,
+                after: lowerBound,
+                fromOffset: fromOffset
+            )
         }.value
     }
 
@@ -82,88 +102,165 @@ enum CodexTranscriptParser {
         sessionId: String,
         after lowerBound: Date?
     ) -> [ChatItemUpdate] {
-        guard let data = try? Data(contentsOf: url),
-              let contents = String(data: data, encoding: .utf8) else {
-            return []
-        }
+        parseTranscriptUpdates(
+            at: url,
+            sessionId: sessionId,
+            after: lowerBound,
+            fromOffset: 0
+        ).updates
+    }
 
-        let lines = contents.split(whereSeparator: \.isNewline)
+    nonisolated static func parseTranscriptUpdates(
+        at url: URL,
+        sessionId: String,
+        after lowerBound: Date?,
+        fromOffset: UInt64
+    ) -> CodexTranscriptParseResult {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return CodexTranscriptParseResult(updates: [], endOffset: fromOffset)
+        }
+        defer { try? handle.close() }
+
+        let fileSize = (try? handle.seekToEnd()) ?? 0
+        let startOffset = fromOffset <= fileSize ? fromOffset : 0
+        try? handle.seek(toOffset: startOffset)
+
+        let data = handle.readDataToEndOfFile()
         var updates: [ChatItemUpdate] = []
+        var committedOffset = startOffset
+        var lineStartIndex = data.startIndex
+        var lineIndex = 0
 
-        for (lineIndex, line) in lines.enumerated() {
-            guard let jsonData = line.data(using: .utf8),
-                  let raw = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                  let envelopeType = raw["type"] as? String,
-                  let payload = raw["payload"] as? [String: Any] else {
-                continue
+        while lineStartIndex < data.endIndex,
+              let newlineIndex = data[lineStartIndex..<data.endIndex].firstIndex(of: 10) {
+            var lineData = Data(data[lineStartIndex..<newlineIndex])
+            if lineData.last == 13 {
+                lineData = Data(lineData.dropLast())
             }
+            let lineOffset = startOffset + UInt64(data.distance(from: data.startIndex, to: lineStartIndex))
+            let stableLineIndex = startOffset == 0
+                ? lineIndex
+                : Int(min(lineOffset, UInt64(Int.max)))
 
-            let timestamp: Date
-            if let parsedTimestamp = parseTimestamp(raw["timestamp"] as? String) {
-                timestamp = parsedTimestamp
-            } else if lowerBound != nil {
-                continue
-            } else {
-                timestamp = Date()
+            parseTranscriptLine(
+                lineData,
+                sessionId: sessionId,
+                stableLineIndex: stableLineIndex,
+                lowerBound: lowerBound,
+                updates: &updates
+            )
+
+            let nextLineIndex = data.index(after: newlineIndex)
+            committedOffset = startOffset + UInt64(data.distance(from: data.startIndex, to: nextLineIndex))
+            lineStartIndex = nextLineIndex
+            lineIndex += 1
+        }
+
+        if lineStartIndex < data.endIndex {
+            var lineData = Data(data[lineStartIndex..<data.endIndex])
+            if lineData.last == 13 {
+                lineData = Data(lineData.dropLast())
             }
-            if let lowerBound, timestamp <= lowerBound {
-                continue
-            }
-
-            guard envelopeType == "response_item",
-                  let payloadType = payload["type"] as? String else {
-                continue
-            }
-
-            switch payloadType {
-            case "message":
-                guard let role = payload["role"] as? String,
-                      role == "user" || role == "assistant" else {
-                    continue
-                }
-
-                let text = extractMessageText(from: payload["content"])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if let update = CodexChatItemAdapter.messageUpdate(
-                    sessionId: sessionId,
-                    lineIndex: lineIndex,
-                    role: role,
-                    text: text,
-                    timestamp: timestamp
-                ) {
-                    updates.append(update)
-                }
-
-            case "function_call", "custom_tool_call":
-                let callId = payload["call_id"] as? String
-                let name = (payload["name"] as? String) ?? "Tool"
-                let input = parseToolInput(payload: payload)
-                updates.append(CodexChatItemAdapter.toolCallUpdate(
-                    sessionId: sessionId,
-                    lineIndex: lineIndex,
-                    callId: callId,
-                    name: name,
-                    input: input,
-                    timestamp: timestamp
-                ))
-
-            case "function_call_output", "custom_tool_call_output":
-                guard let callId = payload["call_id"] as? String else {
-                    continue
-                }
-                updates.append(CodexChatItemAdapter.toolOutputUpdate(
-                    sessionId: sessionId,
-                    callId: callId,
-                    result: normalizeToolOutput(payload["output"] as? String),
-                    timestamp: timestamp
-                ))
-
-            default:
-                continue
+            let lineOffset = startOffset + UInt64(data.distance(from: data.startIndex, to: lineStartIndex))
+            let stableLineIndex = startOffset == 0
+                ? lineIndex
+                : Int(min(lineOffset, UInt64(Int.max)))
+            if parseTranscriptLine(
+                lineData,
+                sessionId: sessionId,
+                stableLineIndex: stableLineIndex,
+                lowerBound: lowerBound,
+                updates: &updates
+            ) {
+                committedOffset = fileSize
             }
         }
 
-        return updates
+        return CodexTranscriptParseResult(updates: updates, endOffset: committedOffset)
+    }
+
+    @discardableResult
+    private nonisolated static func parseTranscriptLine(
+        _ lineData: Data,
+        sessionId: String,
+        stableLineIndex: Int,
+        lowerBound: Date?,
+        updates: inout [ChatItemUpdate]
+    ) -> Bool {
+        guard !lineData.isEmpty else { return true }
+        guard let raw = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+            return false
+        }
+        guard let envelopeType = raw["type"] as? String,
+              let payload = raw["payload"] as? [String: Any] else {
+            return true
+        }
+
+        let timestamp: Date
+        if let parsedTimestamp = parseTimestamp(raw["timestamp"] as? String) {
+            timestamp = parsedTimestamp
+        } else if lowerBound != nil {
+            return true
+        } else {
+            timestamp = Date()
+        }
+        if let lowerBound, timestamp <= lowerBound {
+            return true
+        }
+
+        guard envelopeType == "response_item",
+              let payloadType = payload["type"] as? String else {
+            return true
+        }
+
+        switch payloadType {
+        case "message":
+            guard let role = payload["role"] as? String,
+                  role == "user" || role == "assistant" else {
+                return true
+            }
+
+            let text = extractMessageText(from: payload["content"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let update = CodexChatItemAdapter.messageUpdate(
+                sessionId: sessionId,
+                lineIndex: stableLineIndex,
+                role: role,
+                text: text,
+                timestamp: timestamp
+            ) {
+                updates.append(update)
+            }
+
+        case "function_call", "custom_tool_call":
+            let callId = payload["call_id"] as? String
+            let name = (payload["name"] as? String) ?? "Tool"
+            let input = parseToolInput(payload: payload)
+            updates.append(CodexChatItemAdapter.toolCallUpdate(
+                sessionId: sessionId,
+                lineIndex: stableLineIndex,
+                callId: callId,
+                name: name,
+                input: input,
+                timestamp: timestamp
+            ))
+
+        case "function_call_output", "custom_tool_call_output":
+            guard let callId = payload["call_id"] as? String else {
+                return true
+            }
+            updates.append(CodexChatItemAdapter.toolOutputUpdate(
+                sessionId: sessionId,
+                callId: callId,
+                result: normalizeToolOutput(payload["output"] as? String),
+                timestamp: timestamp
+            ))
+
+        default:
+            break
+        }
+
+        return true
     }
 
     private nonisolated static func history(from updates: [ChatItemUpdate]) -> [ChatHistoryItem] {

@@ -74,16 +74,10 @@ class ChatHistoryManager: ObservableObject {
     // MARK: - State Updates
 
     private func updateFromSessions(_ sessions: [SessionState]) {
-        var newHistories: [String: [ChatHistoryItem]] = [:]
-        var newAgentDescriptions: [String: [String: String]] = [:]
+        var newHistories = histories
+        var newAgentDescriptions = agentDescriptions
         for session in sessions {
             let filteredItems = filterOutSubagentTools(session.chatItems)
-            // DIAGNOSTIC (#70): dump post-filter state to find where second thinking is lost
-            let thinkingCount = filteredItems.filter { if case .thinking = $0.type { return true } else { return false } }.count
-            let thinkingIds = filteredItems.compactMap { item -> String? in
-                if case .thinking = item.type { return item.id } else { return nil }
-            }
-            DebugLog.shared.write("[chat-history] session=\(session.sessionId) totalAfterFilter=\(filteredItems.count) thinkingCount=\(thinkingCount) thinkingIds=\(thinkingIds.joined(separator: ","))")
             newHistories[session.sessionId] = filteredItems
             newAgentDescriptions[session.sessionId] = session.subagentState.agentDescriptions
             loadedSessions.insert(session.sessionId)

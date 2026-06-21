@@ -65,4 +65,83 @@ final class CodexTranscriptParserTests: XCTestCase {
         XCTAssertEqual(text, "hello")
         XCTAssertNotNil(updates[0].messageTimestamp)
     }
+
+    func testOffsetParsingOnlyReadsAppendedRows() throws {
+        let url = try writeTemporaryJSONL(
+            """
+            {"timestamp":"2026-06-21T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]}}
+            """
+        )
+
+        let first = CodexTranscriptParser.parseTranscriptUpdates(
+            at: url,
+            sessionId: "codex-session",
+            after: nil,
+            fromOffset: 0
+        )
+        XCTAssertEqual(first.updates.count, 1)
+        XCTAssertGreaterThan(first.endOffset, 0)
+
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        handle.write(Data(
+            """
+
+            {"timestamp":"2026-06-21T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}]}}
+            """.utf8
+        ))
+
+        let second = CodexTranscriptParser.parseTranscriptUpdates(
+            at: url,
+            sessionId: "codex-session",
+            after: nil,
+            fromOffset: first.endOffset
+        )
+
+        XCTAssertEqual(second.updates.count, 1)
+        XCTAssertGreaterThan(second.endOffset, first.endOffset)
+        guard case .assistantText(let text) = second.updates[0].block else {
+            return XCTFail("Expected assistant text update")
+        }
+        XCTAssertEqual(text, "second")
+    }
+
+    func testOffsetParsingDoesNotAdvancePastPartialTrailingRow() throws {
+        let completeLine = #"{"timestamp":"2026-06-21T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]}}"#
+        let partialLine = #"{"timestamp":"2026-06-21T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sec"#
+        let url = try writeTemporaryJSONL(completeLine + "\n" + partialLine)
+
+        let first = CodexTranscriptParser.parseTranscriptUpdates(
+            at: url,
+            sessionId: "codex-session",
+            after: nil,
+            fromOffset: 0
+        )
+        XCTAssertEqual(first.updates.count, 1)
+
+        let fileSize = try XCTUnwrap(
+            (FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
+        )
+        XCTAssertLessThan(first.endOffset, fileSize)
+
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        handle.write(Data(#"ond"}]}}"#.utf8))
+        handle.write(Data("\n".utf8))
+
+        let second = CodexTranscriptParser.parseTranscriptUpdates(
+            at: url,
+            sessionId: "codex-session",
+            after: nil,
+            fromOffset: first.endOffset
+        )
+
+        XCTAssertEqual(second.updates.count, 1)
+        guard case .assistantText(let text) = second.updates[0].block else {
+            return XCTFail("Expected assistant text update")
+        }
+        XCTAssertEqual(text, "second")
+    }
 }
