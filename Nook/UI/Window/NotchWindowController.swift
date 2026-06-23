@@ -87,6 +87,12 @@ class NotchWindowController: NSWindowController {
         // Start with ignoring mouse events (closed state)
         notchWindow.ignoresMouseEvents = true
 
+        // Let ShortcutManager know the current content type so chat-specific
+        // hardcoded scroll keys (↑/↓/⌃F/⌃B) dispatch correctly.
+        ShortcutManager.shared.contentTypeProvider = { [weak viewModel] in
+            viewModel?.contentType ?? .instances
+        }
+
         // Start local keyboard monitor (stays active regardless of notch state)
         ShortcutManager.shared.startLocalMonitor()
 

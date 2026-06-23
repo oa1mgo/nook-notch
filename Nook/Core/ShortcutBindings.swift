@@ -114,12 +114,14 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .selectPrevious:
             return [
                 KeyCombination(keyCode: 35, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue)), // ⌃P
-                KeyCombination(keyCode: 126, flags: ModifierFlagsWrapper(rawValue: 0)) // ↑
+                KeyCombination(keyCode: 126, flags: ModifierFlagsWrapper(rawValue: 0)), // ↑
+                KeyCombination(keyCode: 40, flags: ModifierFlagsWrapper(rawValue: 0)) // K (vim up)
             ]
         case .selectNext:
             return [
                 KeyCombination(keyCode: 45, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue)), // ⌃N
-                KeyCombination(keyCode: 125, flags: ModifierFlagsWrapper(rawValue: 0)) // ↓
+                KeyCombination(keyCode: 125, flags: ModifierFlagsWrapper(rawValue: 0)), // ↓
+                KeyCombination(keyCode: 38, flags: ModifierFlagsWrapper(rawValue: 0)) // J (vim down)
             ]
         case .enterSession:
             return [KeyCombination(keyCode: 36, flags: ModifierFlagsWrapper(rawValue: 0))] // Enter
@@ -140,8 +142,10 @@ struct ShortcutBindings: Codable {
 
 // MARK: - Key Code Helpers
 
-/// Convert a key code to a printable character string (for alphanumeric keys)
-private func keyCodeToCharacter(_ keyCode: UInt16) -> String? {
+/// Convert a key code to a printable character string (for alphanumeric keys).
+/// Internal so `ShortcutManager` can detect "typing keys" to pass through
+/// when an editable text field is focused.
+func keyCodeToCharacter(_ keyCode: UInt16) -> String? {
     switch keyCode {
     case 0:   return "A"
     case 1:   return "S"

@@ -80,6 +80,10 @@ enum NotchContentType: Equatable {
 enum ChatScrollDirection {
     case up
     case down
+    /// Vim-style page up (⌃B). Scrolls by viewport height with a small overlap.
+    case pageUp
+    /// Vim-style page down (⌃F). Scrolls by viewport height with a small overlap.
+    case pageDown
     case bottom
 }
 
@@ -546,7 +550,11 @@ class NotchViewModel: ObservableObject {
                 settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
             }
         case .chat:
-            NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.up)
+            // Chat scroll is handled by hardcoded keys in `ShortcutManager`
+            // (↑/↓/⌃F/⌃B/⌃G), independent of the settings-page shortcuts.
+            // ⌃N/P are "previous/next session" — semantically navigation,
+            // not scrolling — so they don't scroll chat here.
+            break
         }
     }
 
@@ -595,7 +603,8 @@ class NotchViewModel: ObservableObject {
                 settingsFocusedIndex = min(performanceSettingsItemCount - 1, settingsFocusedIndex + 1)
             }
         case .chat:
-            NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.down)
+            // See `selectPreviousItem` — chat scroll is hardcoded in ShortcutManager.
+            break
         }
     }
 

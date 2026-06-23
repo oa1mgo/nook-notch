@@ -286,7 +286,7 @@ struct ChatView: View {
     private var chatInputPlaceholder: String {
         let name = session.provider.displayName
         if canSendMessages {
-            return "Message to \(name)... (⏎ send · ⌃P/⌃N scroll · ⌃G bottom)"
+            return "Message to \(name)... (⏎ send · ⌃F/⌃B scroll · ⌃G bottom)"
         } else {
             return "Open \(name) in tmux to enable messaging"
         }
@@ -635,7 +635,17 @@ struct ChatView: View {
 
     private func performKeyboardScroll(_ direction: ChatScrollDirection) {
         guard let sv = findScrollView(in: NSApp.keyWindow?.contentView) else {
-            let lines: Int32 = direction == .up ? 3 : -3
+            // Fallback: synthesize a scroll-wheel event when the scroll view
+            // isn't available. Page up/down fall back to a larger line count.
+            let lines: Int32 = {
+                switch direction {
+                case .up:       return 3
+                case .down:     return -3
+                case .pageUp:   return 30
+                case .pageDown: return -30
+                case .bottom:   return Int32.max / 2
+                }
+            }()
             if let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0) {
                 event.post(tap: .cghidEventTap)
             }
@@ -653,6 +663,17 @@ struct ChatView: View {
             let newY = direction == .up
                 ? sv.contentView.bounds.origin.y + lineHeight
                 : sv.contentView.bounds.origin.y - lineHeight
+            let maxY = max(0, (sv.documentView?.bounds.height ?? 0) - sv.contentView.bounds.height)
+            sv.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: min(max(0, newY), maxY)))
+        case .pageUp, .pageDown:
+            // Vim-style page scroll: full viewport height with ~10% overlap
+            // so the user keeps some context across pages.
+            let viewportHeight = sv.contentView.bounds.height
+            let overlap: CGFloat = viewportHeight * 0.1
+            let pageSize = max(viewportHeight - overlap, 60)
+            let newY = direction == .pageUp
+                ? sv.contentView.bounds.origin.y + pageSize
+                : sv.contentView.bounds.origin.y - pageSize
             let maxY = max(0, (sv.documentView?.bounds.height ?? 0) - sv.contentView.bounds.height)
             sv.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: min(max(0, newY), maxY)))
         }
