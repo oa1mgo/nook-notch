@@ -74,6 +74,9 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case enterSession
     case navigateBack
     case openSettings
+    /// Kept in the enum so `NotchViewModel.handleShortcutAction` can
+    /// dispatch a "scroll to bottom" notification to the chat view.
+    /// Hidden from the Settings UI (see `ShortcutSettingsView.visibleActions`).
     case scrollToBottom
 
     var displayName: String {
