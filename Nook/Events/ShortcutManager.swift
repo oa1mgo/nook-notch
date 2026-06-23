@@ -133,6 +133,20 @@ class ShortcutManager {
                 return nil
             }
 
+            // On chat pages, plain j/k are ignored (not navigation, not scroll).
+            // But they still pass through when in an editable text field so the
+            // user can type j/k characters.
+            if case .chat = contentTypeProvider?() {
+                let hasNoModifiers = (combo.flags.rawValue & KeyCombination.relevantModifierMask) == 0
+                if hasNoModifiers && (combo.keyCode == 38 || combo.keyCode == 40) { // J or K
+                    if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+                       textView.isEditable {
+                        return event // pass through for typing
+                    }
+                    return nil // ignore on chat page
+                }
+            }
+
             // Check all action bindings.
             // toggleNotch's Carbon-registered combo is skipped to avoid double-fire;
             // non-Carbon combos are handled here.
