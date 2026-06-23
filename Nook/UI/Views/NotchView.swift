@@ -231,7 +231,21 @@ struct NotchView: View {
                         maxHeight: viewModel.status == .opened ? notchSize.height : nil,
                         alignment: .top
                     )
-                    .animation(openAnimation, value: notchSize) // Animate container size changes between content types
+                    // Match the panel's height animation to the picker's
+                    // 0.2s easeInOut curve (same as `ExpandableContent`'s
+                    // own frame animation). They MUST use the same curve,
+                    // otherwise the panel leads/lags the VStack's ideal
+                    // height during expand, briefly clipping the ScrollView
+                    // and flashing the scrollbar.
+                    //
+                    // Note: `openAnimation` (spring 0.42/0.8) was tried
+                    // here previously and caused agents-page flicker
+                    // because spring's curve doesn't track the 0.2s
+                    // easeInOut picker curve — VStack actual < VStack ideal
+                    // during the mismatch window. `.settingsExpand`
+                    // matches the picker curve exactly, so VStack actual
+                    // stays = VStack ideal throughout the animation.
+                    .animation(.settingsExpand, value: notchSize)
                     .animation(viewModel.status == .opened ? openAnimation : closeAnimation, value: viewModel.status)
                     .animation(.smooth, value: activityCoordinator.expandingActivity)
                     .animation(.smooth, value: hasPendingPermission)

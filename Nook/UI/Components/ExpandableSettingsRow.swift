@@ -11,6 +11,10 @@ import SwiftUI
 
 struct ExpandableSettingsRow<Content: View>: View {
     let icon: String
+    /// Optional override for the leading icon (brand logo etc.). When
+    /// provided, replaces the SF Symbol `icon`. Same API shape as
+    /// `MenuRow.customIcon`.
+    var customIcon: AnyView? = nil
     let label: String
     var trailingText: String? = nil
     var primaryTextColor: Color = .white
@@ -24,6 +28,7 @@ struct ExpandableSettingsRow<Content: View>: View {
 
     init(
         icon: String,
+        customIcon: AnyView? = nil,
         label: String,
         trailingText: String? = nil,
         primaryTextColor: Color = .white,
@@ -33,6 +38,7 @@ struct ExpandableSettingsRow<Content: View>: View {
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.icon = icon
+        self.customIcon = customIcon
         self.label = label
         self.trailingText = trailingText
         self.primaryTextColor = primaryTextColor
@@ -46,6 +52,18 @@ struct ExpandableSettingsRow<Content: View>: View {
         primaryTextColor.opacity(isHovered ? 1.0 : 0.82)
     }
 
+    @ViewBuilder
+    private var iconView: some View {
+        if let customIcon {
+            customIcon.frame(width: 16)
+        } else {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundColor(textColor)
+                .frame(width: 16)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Button {
@@ -54,10 +72,7 @@ struct ExpandableSettingsRow<Content: View>: View {
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: icon)
-                        .font(.system(size: 12))
-                        .foregroundColor(textColor)
-                        .frame(width: 16)
+                    iconView
 
                     Text(label)
                         .font(.system(size: 13, weight: .medium))
@@ -90,7 +105,13 @@ struct ExpandableSettingsRow<Content: View>: View {
             .buttonStyle(.plain)
             .onHover { isHovered = $0 }
 
-            if isExpanded {
+            // Render the same content tree always so the natural height is
+            // measured even while collapsed. ExpandableContent clamps the
+            // visible height to 0 (via .frame + .clipped) when isExpanded is
+            // false, but the background GeometryReader still sees the full
+            // natural size — needed so the first expand animates smoothly
+            // instead of snapping to a measured value.
+            ExpandableContent(isExpanded: isExpanded) {
                 VStack(spacing: 2) {
                     content()
                 }
@@ -112,6 +133,7 @@ struct SettingsSubPickerRow: View {
     let isSelected: Bool
     var primaryTextColor: Color = .white
     var secondaryTextColor: Color = .white.opacity(0.4)
+    var isFocused: Bool = false
     let action: () -> Void
 
     @State private var isHovered = false
@@ -145,7 +167,11 @@ struct SettingsSubPickerRow: View {
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
+                    .fill(isFocused ? Color.white.opacity(0.10) : (isHovered ? Color.white.opacity(0.06) : Color.clear))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isFocused ? Color.white.opacity(0.22) : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

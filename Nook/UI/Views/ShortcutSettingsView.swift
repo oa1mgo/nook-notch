@@ -17,6 +17,11 @@ struct ShortcutSettingsView: View {
     @State private var recordingAction: ShortcutAction?
     @State private var showResetConfirm = false
     @State private var conflictFlash: ShortcutAction?
+
+    /// Actions the user can rebind in Settings.
+    private var visibleActions: [ShortcutAction] {
+        ShortcutAction.allCases
+    }
     @State private var isResetHovered = false
     @State private var didAppear = false
 
@@ -38,7 +43,7 @@ struct ShortcutSettingsView: View {
                     .padding(.vertical, 4)
 
                 // Action rows
-                ForEach(Array(ShortcutAction.allCases.enumerated()), id: \.element) { offset, action in
+                ForEach(Array(visibleActions.enumerated()), id: \.element) { offset, action in
                     ShortcutRow(
                         action: action,
                         primaryTextColor: primaryTextColor,
@@ -70,7 +75,7 @@ struct ShortcutSettingsView: View {
                 // Reset row
                 Group {
                     if showResetConfirm {
-                        let isFocus = viewModel.settingsFocusedIndex == 9
+                        let isFocus = viewModel.settingsFocusedIndex == 8
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle")
                                 .font(.system(size: 12))
@@ -126,7 +131,7 @@ struct ShortcutSettingsView: View {
                         )
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                     } else {
-                        let isFocus = viewModel.settingsFocusedIndex == 9
+                        let isFocus = viewModel.settingsFocusedIndex == 8
                         Button {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showResetConfirm = true
@@ -182,7 +187,7 @@ struct ShortcutSettingsView: View {
             if i == 0 {
                 viewModel.navigateBack()
             } else if i >= 1 && i <= 7 {
-                let actions = ShortcutAction.allCases
+                let actions = visibleActions
                 let idx = i - 1
                 guard idx < actions.count else { return }
                 if recordingAction == nil {

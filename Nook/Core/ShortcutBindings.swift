@@ -74,18 +74,16 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case enterSession
     case navigateBack
     case openSettings
-    case scrollToBottom
 
     var displayName: String {
         switch self {
         case .toggleNotch:     return "Toggle Main Page"
         case .closeNotch:      return "Close Notch"
-        case .selectPrevious:  return "Previous Session"
-        case .selectNext:      return "Next Session"
-        case .enterSession:    return "Open Session"
+        case .selectPrevious:  return "Navigate Up"
+        case .selectNext:      return "Navigate Down"
+        case .enterSession:    return "Open"
         case .navigateBack:    return "Go Back"
         case .openSettings:    return "Open Settings"
-        case .scrollToBottom:  return "Scroll to Bottom"
         }
     }
 
@@ -98,7 +96,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .enterSession:    return "arrow.forward"
         case .navigateBack:    return "arrow.uturn.left"
         case .openSettings:    return "gearshape"
-        case .scrollToBottom:  return "arrow.down.to.line"
         }
     }
 
@@ -111,12 +108,14 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .selectPrevious:
             return [
                 KeyCombination(keyCode: 35, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue)), // ⌃P
-                KeyCombination(keyCode: 126, flags: ModifierFlagsWrapper(rawValue: 0)) // ↑
+                KeyCombination(keyCode: 126, flags: ModifierFlagsWrapper(rawValue: 0)), // ↑
+                KeyCombination(keyCode: 40, flags: ModifierFlagsWrapper(rawValue: 0)) // K (vim up)
             ]
         case .selectNext:
             return [
                 KeyCombination(keyCode: 45, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue)), // ⌃N
-                KeyCombination(keyCode: 125, flags: ModifierFlagsWrapper(rawValue: 0)) // ↓
+                KeyCombination(keyCode: 125, flags: ModifierFlagsWrapper(rawValue: 0)), // ↓
+                KeyCombination(keyCode: 38, flags: ModifierFlagsWrapper(rawValue: 0)) // J (vim down)
             ]
         case .enterSession:
             return [KeyCombination(keyCode: 36, flags: ModifierFlagsWrapper(rawValue: 0))] // Enter
@@ -124,8 +123,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
             return [KeyCombination(keyCode: 4, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃H (keyCode 4 = H)
         case .openSettings:
             return [KeyCombination(keyCode: 43, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.command.rawValue))] // ⌘, (keyCode 43 = ,)
-        case .scrollToBottom:
-            return [KeyCombination(keyCode: 5, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃G (keyCode 5 = G)
         }
     }
 }
@@ -137,8 +134,10 @@ struct ShortcutBindings: Codable {
 
 // MARK: - Key Code Helpers
 
-/// Convert a key code to a printable character string (for alphanumeric keys)
-private func keyCodeToCharacter(_ keyCode: UInt16) -> String? {
+/// Convert a key code to a printable character string (for alphanumeric keys).
+/// Internal so `ShortcutManager` can detect "typing keys" to pass through
+/// when an editable text field is focused.
+func keyCodeToCharacter(_ keyCode: UInt16) -> String? {
     switch keyCode {
     case 0:   return "A"
     case 1:   return "S"

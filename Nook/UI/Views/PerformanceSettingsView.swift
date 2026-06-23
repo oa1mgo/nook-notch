@@ -126,6 +126,12 @@ struct PerformanceSettingsView: View {
         }
         .onAppear {
             didAppear = true
+            // Match the convention used by SoundPickerRow / ScreenPickerRow /
+            // ChatView section toggles / Claude dir picker: every picker
+            // defaults to closed and resets when the page is re-entered.
+            // The collapsed state still shows useful info ("2/4") so users
+            // can scan visibility without expanding.
+            viewModel.performanceSettingsMetricsExpanded = false
         }
         .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
             guard trigger != nil, didAppear else { return }

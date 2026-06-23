@@ -80,6 +80,10 @@ enum NotchContentType: Equatable {
 enum ChatScrollDirection {
     case up
     case down
+    /// Vim-style page up (⌃B). Scrolls by viewport height with a small overlap.
+    case pageUp
+    /// Vim-style page down (⌃F). Scrolls by viewport height with a small overlap.
+    case pageDown
     case bottom
 }
 
@@ -113,9 +117,13 @@ class NotchViewModel: ObservableObject {
     /// Live-measured content height of the menu VStack (via GeometryReader).
     @Published var menuContentHeight: CGFloat = 552
     /// Live-measured content height of the agents page VStack (via GeometryReader).
-    @Published var agentsContentHeight: CGFloat = 260
+    /// Default is sized for the typical "all 3 providers installed, no picker" state so
+    /// the panel doesn't have to grow on first appearance (which would briefly show a
+    /// scrollbar while content overflows the still-shrinking frame).
+    @Published var agentsContentHeight: CGFloat = 380
     /// Live-measured content height of the performance settings page VStack.
-    @Published var performanceSettingsContentHeight: CGFloat = 260
+    /// Default covers the "Visible Metrics" row collapsed state.
+    @Published var performanceSettingsContentHeight: CGFloat = 230
     /// Live-measured content heights of performance pages, keyed by section.
     @Published var performanceContentHeights: [PerformanceSection: CGFloat] = [:]
 
@@ -542,7 +550,11 @@ class NotchViewModel: ObservableObject {
                 settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
             }
         case .chat:
-            NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.up)
+            // Chat scroll is handled by hardcoded keys in `ShortcutManager`
+            // (↑/↓/⌃F/⌃B/⌃G), independent of the settings-page shortcuts.
+            // ⌃N/P are "previous/next session" — semantically navigation,
+            // not scrolling — so they don't scroll chat here.
+            break
         }
     }
 
@@ -591,7 +603,8 @@ class NotchViewModel: ObservableObject {
                 settingsFocusedIndex = min(performanceSettingsItemCount - 1, settingsFocusedIndex + 1)
             }
         case .chat:
-            NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.down)
+            // See `selectPreviousItem` — chat scroll is hardcoded in ShortcutManager.
+            break
         }
     }
 
@@ -604,8 +617,26 @@ class NotchViewModel: ObservableObject {
     let menuItemCount: Int = 13
     /// Total focusable items in the shortcuts page (Back + action rows + Restore)
     var shortcutsItemCount: Int { 1 + ShortcutAction.allCases.count + 1 }
-    /// Total focusable items in the agents page (just Back for now)
-    let agentsItemCount: Int = 1
+    /// Whether the Claude dir picker inside the Agents page is expanded.
+    /// Drives keyboard nav index range (2 picker options are inserted when
+    /// expanded, shifting hooks-toggle indices).
+    @Published var agentsClaudeDirPickerExpanded: Bool = false
+    /// Total focusable items on the Agents page.
+    ///
+    /// Layout: Back (0), Claude main (1), [Claude picker × 2 if expanded],
+    /// [Claude hooks if installed], Codex main, [Codex hooks if installed],
+    /// OpenCode main, [OpenCode hooks if installed], Cursor main,
+    /// [Cursor hooks if installed], Debug log.
+    /// Order follows the visual order of the page.
+    var agentsItemCount: Int {
+        var count = 1 + 1 + 1 + 1 + 1 + 1 // Back + Claude/Codex/OpenCode/Cursor main + Debug log
+        if agentsClaudeDirPickerExpanded { count += 2 }
+        if AgentPathsResolver.isInstalled(.claude)  { count += 1 }
+        if AgentPathsResolver.isInstalled(.codex)   { count += 1 }
+        if AgentPathsResolver.isInstalled(.opencode) { count += 1 }
+        if AgentPathsResolver.isInstalled(.cursor)  { count += 1 }
+        return count
+    }
     /// Whether the "Visible Metrics" section is expanded in performance settings.
     @Published var performanceSettingsMetricsExpanded: Bool = false
     /// Total focusable items in the performance settings page.
@@ -643,10 +674,6 @@ class NotchViewModel: ObservableObject {
         case .openSettings:
             if contentType != .menu {
                 toggleMenu()
-            }
-        case .scrollToBottom:
-            if case .chat = contentType {
-                NotificationCenter.default.post(name: .chatScrollAction, object: ChatScrollDirection.bottom)
             }
         }
     }

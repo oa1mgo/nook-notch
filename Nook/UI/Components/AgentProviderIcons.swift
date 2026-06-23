@@ -255,3 +255,53 @@ struct CodexLogoIcon: View {
         }
     }
 }
+
+/// OpenCode brand mark: a square ring (16×20 outer minus 8×12 inner
+/// hole, drawn with even-odd fill). Sourced directly from the
+/// project's official SVG asset; the 24×24 viewBox is preserved but
+/// the icon is fit-to-box scaled so it sits in a `size` × `size`
+/// frame without overflowing.
+struct OpenCodeLogoIcon: View {
+    let size: CGFloat
+    let color: Color
+
+    init(size: CGFloat = 16, color: Color = .white) {
+        self.size = size
+        self.color = color
+    }
+
+    var body: some View {
+        Canvas { context, canvasSize in
+            // Source SVG coordinates (24×24 viewBox):
+            //   outer: (4, 2) → (20, 22)   = 16 × 20
+            //   inner: (8, 6) → (16, 18)   =  8 × 12 (the hole)
+            // Translate to origin: outer (0,0)→(16,20), inner (4,4)→(12,16).
+            //
+            // Fit-to-box: keep the 16:20 aspect ratio; the shorter
+            // dimension dictates the scale. For a 16×16 frame that
+            // means scale = 16/20 = 0.8 → final icon 12.8×16, ring
+            // thickness 4×0.8 = 3.2 units.
+            let pathW: CGFloat = 16
+            let pathH: CGFloat = 20
+            let scale = min(canvasSize.width / pathW, canvasSize.height / pathH)
+            let drawW = pathW * scale
+            let drawH = pathH * scale
+            let xOffset = (canvasSize.width - drawW) / 2
+            let yOffset = (canvasSize.height - drawH) / 2
+
+            let outer = CGRect(x: xOffset, y: yOffset, width: drawW, height: drawH)
+            let inner = CGRect(
+                x: xOffset + 4 * scale,
+                y: yOffset + 4 * scale,
+                width: 8 * scale,
+                height: 12 * scale
+            )
+
+            var path = Path()
+            path.addRect(outer)
+            path.addRect(inner)
+            context.fill(path, with: .color(color), style: FillStyle(eoFill: true))
+        }
+        .frame(width: size, height: size)
+    }
+}

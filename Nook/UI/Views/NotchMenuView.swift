@@ -592,8 +592,22 @@ struct AccessibilityRow: View {
 
 struct MenuRow: View {
     let icon: String
+    /// Optional override for the leading icon. When provided, replaces the
+    /// SF Symbol `icon`. Use this when a row needs a brand logo (e.g. Codex /
+    /// Cursor) instead of an SF Symbol. Wrapped in `AnyView` so MenuRow
+    /// stays non-generic — callers pay the erasure cost (one static view)
+    /// rather than infecting every call site with a generic parameter.
+    var customIcon: AnyView? = nil
     let label: String
     var trailingLabel: String? = nil
+    /// Design for the trailing label. Defaults to `.default`; pass
+    /// `.monospaced` for things like file paths where fixed-width
+    /// alignment matters.
+    var trailingLabelDesign: Font.Design = .default
+    /// When true, trailing label is rendered dimmer than the default
+    /// (0.35 vs 0.55 of the text color). Use for secondary status text
+    /// like "Not installed" that should recede visually.
+    var trailingLabelDimmed: Bool = false
     var trailingIcon: String? = nil
     var isDestructive: Bool = false
     var primaryTextColor: Color = .white
@@ -605,10 +619,7 @@ struct MenuRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 12))
-                    .foregroundColor(textColor)
-                    .frame(width: 16)
+                iconView
 
                 Text(label)
                     .font(.system(size: 13, weight: .medium))
@@ -618,8 +629,10 @@ struct MenuRow: View {
 
                 if let trailingLabel {
                     Text(trailingLabel)
-                        .font(.system(size: 11))
-                        .foregroundColor(textColor.opacity(0.55))
+                        .font(.system(size: 11, design: trailingLabelDesign))
+                        .foregroundColor(textColor.opacity(trailingLabelDimmed ? 0.35 : 0.55))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
 
                 if let trailingIcon {
@@ -642,6 +655,18 @@ struct MenuRow: View {
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
+    }
+
+    @ViewBuilder
+    private var iconView: some View {
+        if let customIcon {
+            customIcon.frame(width: 16)
+        } else {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundColor(textColor)
+                .frame(width: 16)
+        }
     }
 
     private var textColor: Color {
