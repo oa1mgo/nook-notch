@@ -23,7 +23,8 @@ struct AgentSettingsView: View {
     //
     // Visual order: Back, Claude main, [Claude picker × 2 if expanded],
     // [Claude hooks if installed], Codex main, [Codex hooks if installed],
-    // OpenCode main, [OpenCode hooks if installed], Debug log.
+    // OpenCode main, [OpenCode hooks if installed], Cursor main,
+    // [Cursor hooks if installed], Debug log.
     private let backIndex = 0
     private let claudeMainIndex = 1
     private let claudeAutoDetectIndex = 2
@@ -55,9 +56,18 @@ struct AgentSettingsView: View {
         guard opencodeInstalled else { return nil }
         return opencodeMainIndex + 1
     }
-    private var debugLogIndex: Int {
+    private var cursorMainIndex: Int {
         var idx = opencodeMainIndex + 1
         if opencodeInstalled { idx += 1 }
+        return idx
+    }
+    private var cursorHooksIndex: Int? {
+        guard cursorInstalled else { return nil }
+        return cursorMainIndex + 1
+    }
+    private var debugLogIndex: Int {
+        var idx = cursorMainIndex + 1
+        if cursorInstalled { idx += 1 }
         return idx
     }
 
@@ -133,7 +143,7 @@ struct AgentSettingsView: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 viewModel.agentsClaudeDirPickerExpanded.toggle()
             }
-        case codexMainIndex, opencodeMainIndex:
+        case codexMainIndex, opencodeMainIndex, cursorMainIndex:
             break // Static rows — no action on activate.
         case debugLogIndex:
             toggleDebugLog()
@@ -149,6 +159,8 @@ struct AgentSettingsView: View {
                 toggleHooks(provider: .codex, currentlyOn: hooksInstalled(.codex))
             } else if i == opencodeHooksIndex {
                 toggleHooks(provider: .opencode, currentlyOn: hooksInstalled(.opencode))
+            } else if i == cursorHooksIndex {
+                toggleHooks(provider: .cursor, currentlyOn: hooksInstalled(.cursor))
             }
         }
     }
@@ -208,8 +220,16 @@ struct AgentSettingsView: View {
                     claudeDirPickerOptions
                 }
             } else {
-                // Codex / OpenCode: static row (no picker to expand).
-                agentMainRow(provider: provider, installed: installed, focusedIndex: provider == .codex ? codexMainIndex : opencodeMainIndex)
+                // Codex / OpenCode / Cursor: static row (no picker to expand).
+                let mainIndex: Int = {
+                    switch provider {
+                    case .codex:    return codexMainIndex
+                    case .opencode: return opencodeMainIndex
+                    case .cursor:   return cursorMainIndex
+                    default:        return 0 // unreachable for static rows
+                    }
+                }()
+                agentMainRow(provider: provider, installed: installed, focusedIndex: mainIndex)
             }
 
             if installed {
@@ -356,6 +376,7 @@ struct AgentSettingsView: View {
             case .claude:   return claudeHooksIndex
             case .codex:    return codexHooksIndex
             case .opencode: return opencodeHooksIndex
+            case .cursor:   return cursorHooksIndex
             }
         }()
         return SettingsSubToggleRow(
