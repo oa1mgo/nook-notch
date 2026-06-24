@@ -8,8 +8,10 @@
 //  Event model (reverse‑engineered from opencode v1.15.13 bus):
 //    session.created        → sessionStart (legacy; current versions use session.updated)
 //    session.updated        → sessionStart on first sighting; refreshes cwd afterwards
-//    session.status         → stop on status.type == "idle"
-//    session.idle           → stop (legacy)
+//    session.status         → processingStarted on busy;
+//                            on idle, only flush pending text buffers
+//                            (do NOT emit .stop — see handleSessionStatus)
+//    session.idle           → stop (canonical session-end signal)
 //    question.asked         → waitingForUserInput (verified 2026-06-17 to
 //                              fire in v1.17.x; handleQuestionAsked is the
 //                              primary path, handleToolPart has a
@@ -428,11 +430,19 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             Self.logNotice("→ processingStarted (session.status=busy) session=\(sessionId) cwd=\(cwd)")
             return [.processingStarted(sessionId: sessionId, cwd: cwd)]
         case "idle":
-            // Safety net: flush any assistant text buffers that didn't get a finish=stop
-            var events: [OpencodeSessionEvent] = flushPendingText(forSession: sessionId, cwd: cwd)
-            events.append(.stop(sessionId: sessionId, cwd: cwd))
-            cleanupState(forSession: sessionId)
-            Self.logNotice("→ stop session=\(sessionId) flushed=\(events.count - 1)")
+            // ⚠️ session.status=idle fires between tool calls (think → think → tool
+            // → think) AND at the actual session end. We must NOT treat it as
+            // session-end here — that would make the agent icon flash off
+            // after every tool call (between operations the session is still
+            // alive; the user can issue a new prompt).
+            //
+            // What we DO need to do: flush any assistant text buffers that
+            // didn't get a finish=stop, otherwise accumulated text between
+            // tool calls would be lost. The actual session end is handled
+            // by `handleSessionIdle` (the legacy `session.idle` event fires
+            // once when the session truly terminates).
+            let events: [OpencodeSessionEvent] = flushPendingText(forSession: sessionId, cwd: cwd)
+            Self.logNotice("→ idle (between ops) session=\(sessionId) flushed=\(events.count)")
             return events
         default:
             return []
