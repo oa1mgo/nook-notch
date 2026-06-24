@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Combine
 import CoreGraphics
 import SwiftUI
 
@@ -38,6 +39,17 @@ struct NotchView: View {
     @State private var isVisible: Bool = false
     @State private var isHovering: Bool = false
     @State private var isBouncing: Bool = false
+    // Provider currently at the FRONT of the multi-agent icon stack.
+    // Other working agents are stacked behind in priority order. A
+    // 2s timer rotates this cursor so each agent gets a turn at the
+    // front (with the spinner color tracking along).
+    @State private var carouselFront: SessionProvider?
+    // IMPORTANT: Timer.publish must be a stable instance — recreating
+    // it on every body evaluation (which fires often via @ObservedObject
+    // updates) resets the 2-second countdown, so the timer NEVER fires.
+    // deepseek-v4-flash review caught this: body re-runs ~every state
+    // change, each one starts a fresh publisher → no rotation.
+    private let carouselTimer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
     @AppStorage(AppSettings.artworkAdaptiveBackgroundEnabledKey) private var artworkAdaptiveBackgroundEnabled = true
     @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
     @AppStorage(AppSettings.vibeGlowEnabledKey) private var vibeGlowEnabled = false
@@ -51,21 +63,50 @@ struct NotchView: View {
     }
 
     private var activeProcessingActivityType: NotchActivityType? {
-        if sessionMonitor.instances.contains(where: { $0.provider == .claude && ($0.phase == .processing || $0.phase == .compacting) }) {
-            return .claude
+        activeProcessingProviders.first.map { provider in
+            switch provider {
+            case .claude: return .claude
+            case .codex: return .codex
+            case .opencode: return .opencode
+            case .cursor: return .cursor
+            }
         }
-        if sessionMonitor.instances.contains(where: { $0.provider == .codex && ($0.phase == .processing || $0.phase == .compacting) }) {
-            return .codex
-        }
-        if sessionMonitor.instances.contains(where: { $0.provider == .opencode && ($0.phase == .processing || $0.phase == .compacting) }) {
-            return .opencode
-        }
-        if sessionMonitor.instances.contains(where: { $0.provider == .cursor && ($0.phase == .processing || $0.phase == .compacting) }) {
-            return .cursor
-        }
-        return nil
     }
 
+    /// All currently processing providers, in priority order
+    /// (claude > codex > opencode > cursor). Empty if no agent is
+    /// processing. Used by the closed-state header to render a
+    /// stacked "peek" of icons — see `headerRow` below.
+    private var activeProcessingProviders: [SessionProvider] {
+        var providers: [SessionProvider] = []
+        if sessionMonitor.instances.contains(where: { $0.provider == .claude && ($0.phase == .processing || $0.phase == .compacting) }) {
+            providers.append(.claude)
+        }
+        if sessionMonitor.instances.contains(where: { $0.provider == .codex && ($0.phase == .processing || $0.phase == .compacting) }) {
+            providers.append(.codex)
+        }
+        if sessionMonitor.instances.contains(where: { $0.provider == .opencode && ($0.phase == .processing || $0.phase == .compacting) }) {
+            providers.append(.opencode)
+        }
+        if sessionMonitor.instances.contains(where: { $0.provider == .cursor && ($0.phase == .processing || $0.phase == .compacting) }) {
+            providers.append(.cursor)
+        }
+        return providers
+    }
+
+    /// Display order for the icon stack: starts at `carouselFront`
+    /// and wraps around. When there's only one working agent this
+    /// collapses to that single provider (no carousel rotation).
+    /// When the providers list changes, the current front (if still
+    /// active) is preserved so the carousel doesn't jump.
+    private var displayOrder: [SessionProvider] {
+        let active = activeProcessingProviders
+        guard !active.isEmpty else { return [] }
+        if let front = carouselFront, let frontIndex = active.firstIndex(of: front) {
+            return (0..<active.count).map { active[(frontIndex + $0) % active.count] }
+        }
+        return active
+    }
     private var activePendingPermissionActivityType: NotchActivityType? {
         if sessionMonitor.instances.contains(where: { $0.provider == .claude && ($0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval) }) {
             return .claude
@@ -529,9 +570,75 @@ struct NotchView: View {
             HStack(spacing: 0) {
                 if showHeaderAgentActivity {
                     HStack(spacing: 4) {
-                        AgentIcon(provider: closedActivityProvider, size: 14, color: closedActivityTint, animate: isProcessing)
-                            .padding(1)
-                            .matchedGeometryEffect(id: "agent-icon", in: activityNamespace, isSource: showHeaderAgentActivity)
+                        // Stacked "peek" of working-agent icons. When
+                        // multiple agents are processing simultaneously,
+                        // the `displayOrder` starts at `carouselFront`
+                        // and rotates every 2s. The leftmost icon (front)
+                        // is fully visible; the others peek out 8pt to
+                        // the right, sorted by priority from the front.
+                        // Each icon's own pulse/movement animation is
+                        // independent (Claude legs, Codex glow,
+                        // OpenCode squish, Cursor highlight pulse), so
+                        // the stack reads as alive on its own.
+                        if !activeProcessingProviders.isEmpty {
+                            ZStack(alignment: .leading) {
+                                ForEach(Array(displayOrder.enumerated()), id: \.element) { index, provider in
+                                    let isFront = index == 0
+                                    AgentIcon(
+                                        provider: provider,
+                                        size: 14,
+                                        color: SessionLoadingStyle.tint(for: provider),
+                                        animate: true
+                                    )
+                                    .padding(1)
+                                    .scaleEffect(isFront ? 1.0 : 0.85, anchor: .center)
+                                    .opacity(isFront ? 1.0 : 0.55)
+                                    .offset(x: CGFloat(index) * 11)
+                                    .zIndex(Double(displayOrder.count - index))
+                                    .animation(.smooth(duration: 0.5), value: isFront)
+                                }
+                            }
+                            .matchedGeometryEffect(id: "agent-icons", in: activityNamespace, isSource: showHeaderAgentActivity)
+                            .animation(.smooth(duration: 0.5), value: displayOrder)
+                            // Rotate the carousel front every 2s so each
+                            // working agent gets a turn. No-op when ≤1
+                            // provider (the stack is just one icon).
+                            .onReceive(carouselTimer) { _ in
+                                // TODO(progress): carousel front/back
+                                // animation tuning still in progress.
+                                // Debug logs kept until rotation is
+                                // confirmed working as intended across
+                                // all multi-agent scenarios. See PROGRESS.md.
+                                let active = activeProcessingProviders
+                                let activeDesc = active.map { $0.rawValue }.joined(separator: ",")
+                                DebugLog.shared.write("[carousel] tick active=[\(activeDesc)] count=\(active.count) currentFront=\(carouselFront?.rawValue ?? "nil")")
+                                guard active.count > 1 else { return }
+                                // If the cached front is no longer in the
+                                // active set (provider stopped since last
+                                // tick), reset to the current first active
+                                // provider. Without this, the carousel
+                                // gets stuck because firstIndex(of:) returns
+                                // nil forever and we never advance.
+                                let resolvedFront: SessionProvider = {
+                                    if let f = carouselFront, active.contains(f) {
+                                        return f
+                                    }
+                                    let reset = active.first!
+                                    DebugLog.shared.write("[carousel] stale front reset → \(reset.rawValue)")
+                                    carouselFront = reset
+                                    return reset
+                                }()
+                                guard let i = active.firstIndex(of: resolvedFront) else {
+                                    DebugLog.shared.write("[carousel] resolvedFront missing post-reset, skip")
+                                    return
+                                }
+                                let next = active[(i + 1) % active.count]
+                                DebugLog.shared.write("[carousel] rotating front \(resolvedFront.rawValue) → \(next.rawValue)")
+                                withAnimation(.easeInOut(duration: 0.5)) {
+                                    carouselFront = next
+                                }
+                            }
+                        }
 
                         if hasPendingPermission {
                             PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
@@ -552,7 +659,24 @@ struct NotchView: View {
 
                 if showHeaderAgentActivity {
                     if isProcessing || hasPendingPermission {
-                        ProcessingSpinner(provider: closedActivityProvider)
+                        // Spinner follows the carousel front. When the
+                        // front rotates, the spinner color animates to
+                        // the next provider's tint (via .animation(value:)
+                        // on the color binding).
+                        //
+                        // Ignore carouselFront if it points to a provider
+                        // that's no longer processing (e.g. OpenCode
+                        // stopped but carouselFront still cached .opencode) —
+                        // fall through to activeProcessingProviders.first
+                        // so the spinner switches to Claude immediately.
+                        let active = activeProcessingProviders
+                        let spinnerProvider: SessionProvider = {
+                            if let f = carouselFront, active.contains(f) { return f }
+                            return active.first ?? closedActivityProvider
+                        }()
+                        let spinnerColor = SessionLoadingStyle.tint(for: spinnerProvider)
+                        ProcessingSpinner(color: spinnerColor)
+                            .animation(.easeInOut(duration: 0.5), value: spinnerProvider)
                             .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showHeaderAgentActivity)
                     } else if hasWaitingForInput {
                         ReadyForInputIndicatorIcon(size: 14, color: TerminalColors.green)
