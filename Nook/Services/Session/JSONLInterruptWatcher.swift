@@ -181,23 +181,37 @@ class InterruptWatcherManager {
     static let shared = InterruptWatcherManager()
 
     private var watchers: [String: JSONLInterruptWatcher] = [:]
+    private var statusWatchers: [String: ClaudeStatusFileWatcher] = [:]
     weak var delegate: JSONLInterruptWatcherDelegate?
 
     private init() {}
 
-    func startWatching(sessionId: String, cwd: String) {
-        guard watchers[sessionId] == nil else { return }
+    func startWatching(sessionId: String, cwd: String, pid: Int? = nil) {
+        if watchers[sessionId] == nil {
+            let watcher = JSONLInterruptWatcher(sessionId: sessionId, cwd: cwd)
+            watcher.delegate = delegate
+            watcher.start()
+            watchers[sessionId] = watcher
+        }
 
-        let watcher = JSONLInterruptWatcher(sessionId: sessionId, cwd: cwd)
-        watcher.delegate = delegate
-        watcher.start()
-        watchers[sessionId] = watcher
+        // Also start the status-file watcher when we have a pid. This
+        // catches the ESC-before-output case (no JSONL content, no Stop
+        // hook event) by detecting Claude CLI's `status: busy → idle`
+        // transition in `~/.claude/sessions/{pid}.json` directly.
+        if let pid, statusWatchers[sessionId] == nil {
+            let statusWatcher = ClaudeStatusFileWatcher(sessionId: sessionId, pid: pid)
+            statusWatcher.delegate = delegate as? ClaudeStatusFileWatcherDelegate
+            statusWatcher.start()
+            statusWatchers[sessionId] = statusWatcher
+        }
     }
 
     /// Stop watching a specific session
     func stopWatching(sessionId: String) {
         watchers[sessionId]?.stop()
         watchers.removeValue(forKey: sessionId)
+        statusWatchers[sessionId]?.stop()
+        statusWatchers.removeValue(forKey: sessionId)
     }
 
     /// Stop all watchers
@@ -205,7 +219,11 @@ class InterruptWatcherManager {
         for (_, watcher) in watchers {
             watcher.stop()
         }
+        for (_, watcher) in statusWatchers {
+            watcher.stop()
+        }
         watchers.removeAll()
+        statusWatchers.removeAll()
     }
 
     /// Check if we're watching a session

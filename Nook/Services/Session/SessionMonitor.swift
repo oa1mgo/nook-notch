@@ -56,7 +56,8 @@ class SessionMonitor: ObservableObject {
                     Task { @MainActor in
                         InterruptWatcherManager.shared.startWatching(
                             sessionId: event.sessionId,
-                            cwd: event.cwd
+                            cwd: event.cwd,
+                            pid: event.pid
                         )
                     }
                 }
@@ -267,7 +268,7 @@ private nonisolated final class AsyncHookEventQueue: @unchecked Sendable {
 
 // MARK: - Interrupt Watcher Delegate
 
-extension SessionMonitor: JSONLInterruptWatcherDelegate {
+extension SessionMonitor: JSONLInterruptWatcherDelegate, ClaudeStatusFileWatcherDelegate {
     nonisolated func didDetectInterrupt(sessionId: String) {
         Task {
             await SessionStore.shared.process(.interruptDetected(sessionId: sessionId))

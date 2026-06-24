@@ -636,6 +636,7 @@ class HookSocketServer {
             close(clientSocket)
         }
 
+        DebugLog.shared.write("[claude-hook] event=\(event.event) status=\(event.status ?? "-") tool=\(event.tool ?? "-") session=\(event.sessionId.prefix(8))")
         eventHandler?(event)
     }
 
