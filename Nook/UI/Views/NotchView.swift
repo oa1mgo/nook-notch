@@ -580,7 +580,7 @@ struct NotchView: View {
                         // multiple agents are processing simultaneously,
                         // the `displayOrder` starts at `carouselFront`
                         // and rotates every 2s. The leftmost icon (front)
-                        // is fully visible; the others peek out 8pt to
+                        // is fully visible; the others peek out ~8.3pt to
                         // the right, sorted by priority from the front.
                         // Each icon's own pulse/movement animation is
                         // independent (Claude legs, Codex glow,
@@ -592,7 +592,7 @@ struct NotchView: View {
                                     let isFront = index == 0
                                     AgentIcon(
                                         provider: provider,
-                                        size: 14,
+                                        size: 16,
                                         color: SessionLoadingStyle.tint(for: provider),
                                         animate: true
                                     )
@@ -647,7 +647,7 @@ struct NotchView: View {
                         }
 
                         if hasPendingPermission {
-                            PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
+                            PermissionIndicatorIcon(size: 16, color: Color(red: 0.85, green: 0.47, blue: 0.34))
                                 .padding(1)
                                 .matchedGeometryEffect(id: "status-indicator", in: activityNamespace, isSource: showHeaderAgentActivity)
                         }

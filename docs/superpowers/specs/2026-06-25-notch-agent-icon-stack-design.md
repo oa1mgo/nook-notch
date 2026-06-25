@@ -61,10 +61,10 @@ that as the new front (existing stale-front logic is preserved).
 
 | Constant | Value | Notes |
 |---|---|---|
-| `iconSize` | 14 | unchanged |
+| `iconSize` | **16** | bumped from 14 to match the Agents settings page (16pt). Crabs in the settings use 12.6 content in 16×16; bumping notch to 16 keeps the proportions consistent across contexts. |
 | `iconPadding` | 1 | unchanged |
-| `slot` | 16 (= size + 2 × padding) | unchanged |
-| `peekOffset` | 11 | unchanged — gives ≈ 8.6pt visible peek |
+| `slot` | 18 (= size + 2 × padding) | derived from `iconSize` |
+| `peekOffset` | **13** | bumped from 11 to keep the relative offset-to-slot ratio (~0.72). Gives ≈ 10.3pt visible peek. |
 | `peekScale` | 0.85 | unchanged |
 | `peekOpacity` | 0.55 | unchanged |
 | `rotationInterval` | 2.0s | unchanged |
@@ -73,6 +73,10 @@ that as the new front (existing stale-front logic is preserved).
 These constants are extracted as `private let` at the top of `NotchView` (or
 kept inline with a clarifying comment) so the relationship between `slot`,
 `peekOffset`, and the resulting visible peek is obvious from the code.
+
+Vertical headroom in the closed-state header row: `max(24, closedNotchSize.height)`.
+Modern MacBook notch height is ~32-38pt; 16pt icon + 2pt padding = 18pt total,
+fits with 3pt+ of margin top/bottom. Safe at any notch size.
 
 ### Crab frame squaring
 

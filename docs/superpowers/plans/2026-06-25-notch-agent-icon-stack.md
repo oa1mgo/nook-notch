@@ -270,7 +270,98 @@ git commit -m "feat(agents): square ClaudeCrabIcon frame for consistent carousel
 
 ---
 
-## Task 3: Manual visual verification
+## Task 3: Bump notch icon size 14pt → 16pt
+
+**Files:**
+- Modify: `Nook/UI/Views/NotchView.swift:595` (`AgentIcon(size: 14, ...)`)
+- Modify: `Nook/UI/Views/NotchView.swift:602` (`offset(x: CGFloat(index) * 11)`)
+- Modify: `Nook/UI/Views/NotchView.swift:650` (`PermissionIndicatorIcon(size: 14, ...)`)
+- Modify: `Nook/UI/Views/NotchView.swift:583-588` (doc comment numeric updates)
+
+Rationale (per spec §"Layout parameters"): align the notch header icons with
+the Agents settings page, which already uses 16pt icons. The crab content in
+the notch goes from 11pt to 12.6pt, matching the settings page proportions
+exactly. The peek offset scales with the slot to keep the relative ratio
+constant.
+
+### New layout numbers
+
+- `iconSize`: 14 → **16**
+- `iconPadding`: 1 (unchanged)
+- `slot`: 16 → **18** (size + 2 × padding)
+- `peekOffset`: 11 → **13** (offset/slot ratio stays ~0.72)
+- visible peek: 8.6pt → **10.3pt** (= 18 × 0.85 − (18 − 13))
+- `peekScale`: 0.85 (unchanged)
+- `peekOpacity`: 0.55 (unchanged)
+
+Vertical headroom check: closed-state header is `max(24, closedNotchSize.height)`.
+16pt icon + 2pt padding = 18pt total — fits with ≥3pt margin top/bottom on
+any notch size. Safe.
+
+### Step 1: Update AgentIcon size
+
+In `Nook/UI/Views/NotchView.swift:595`, change `size: 14` to `size: 16`:
+
+```swift
+AgentIcon(
+    provider: provider,
+    size: 16,                              // was 14
+    color: SessionLoadingStyle.tint(for: provider),
+    animate: true
+)
+```
+
+### Step 2: Update peek offset
+
+In `Nook/UI/Views/NotchView.swift:602`, change `* 11` to `* 13`:
+
+```swift
+.offset(x: CGFloat(index) * 13)            // was * 11
+```
+
+### Step 3: Update permission indicator size
+
+In `Nook/UI/Views/NotchView.swift:650`, change `size: 14` to `size: 16` so the
+permission indicator scales with the agent icons:
+
+```swift
+PermissionIndicatorIcon(size: 16, color: Color(red: 0.85, green: 0.47, blue: 0.34))
+```
+
+### Step 4: Update doc comment
+
+In `Nook/UI/Views/NotchView.swift:583-588`, update the numeric references in
+the comment to match the new layout:
+
+```swift
+// Stacked "peek" of working-agent icons. When
+// multiple agents are processing simultaneously,
+// the `displayOrder` starts at `carouselFront`
+// and rotates every 2s. The leftmost icon (front)
+// is fully visible; the others peek out ~10.3pt to
+// the right, sorted by priority from the front.
+// Each icon's own pulse/movement animation is
+// independent (Claude legs, Codex glow,
+// OpenCode squish, Cursor highlight pulse), so
+// the stack reads as alive on its own.
+```
+
+(Change "8pt" → "~10.3pt" if present. Some of the other text remains the same.)
+
+### Step 5: Build + commit
+
+```bash
+xcodebuild -scheme Nook -configuration Debug -derivedDataPath build build
+git add Nook/UI/Views/NotchView.swift
+git commit -m "feat(notch): bump icon size 14pt to 16pt to match agents settings"
+```
+
+Expected: build succeeds. No new warnings. (Skip the test runner — same
+pre-existing bootstrap issue as Task 1/2; not a regression.)
+
+---
+
+## Task 4: Manual visual verification
 
 **Files:** none — read-only verification step.
 

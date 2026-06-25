@@ -283,10 +283,11 @@ struct AgentSettingsView: View {
     private func brandIcon(for provider: SessionProvider) -> some View {
         switch provider {
         case .claude:
-            // size: 12.6 → natural 16 wide × 12.6 tall; frame centers it.
-            // Crab is wider than tall; squeezing it into 16×16 would
-            // crop the leg tips and antennae.
-            ClaudeCrabIcon(size: 12.6)
+            // size: 16 → 16×16 internal frame, content 16 wide × 12.6 tall
+            // (66:52 body fits the frame's width; 1.7pt top/bottom margin
+            // from the 16×16 caller's frame). Matches the notch's 16pt
+            // crab and the pre-refactor visual exactly.
+            ClaudeCrabIcon(size: 16)
                 .frame(width: 16, height: 16)
         case .codex:
             CodexLogoIcon(size: 16, color: SessionLoadingStyle.tint(for: .codex))
