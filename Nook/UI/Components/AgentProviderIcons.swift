@@ -135,23 +135,26 @@ struct ClaudeCrabIcon: View {
 
     var body: some View {
         Canvas { context, canvasSize in
-            // Crab is naturally 66×52 (landscape) — keep that aspect
-            // ratio so the crab fills its frame. The wider frame makes
-            // it peek more from behind other icons in the carousel; the
-            // carousel offset is tuned so this looks intentional rather
-            // than broken (the front icon's right edge defines the
-            // visible peek).
-            let scale = size / 52.0
+            // Crab content is natively 66×52 (landscape). The icon's
+            // frame is square (size × size) so the carousel peek width
+            // matches the other square providers — the crab content is
+            // scaled to fit the frame's WIDTH (scale = size/66) and
+            // centered vertically. This keeps the crab's aspect ratio
+            // (no horizontal stretching) and the empty top/bottom
+            // sliver lets the notch background show through.
+            let scale = size / 66.0
+            let scaledContentHeight = 52 * scale
             let xOffset = (canvasSize.width - 66 * scale) / 2
+            let yOffset = (canvasSize.height - scaledContentHeight) / 2
 
             let leftAntenna = Path { path in
                 path.addRect(CGRect(x: 0, y: 13, width: 6, height: 13))
-            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: 0))
+            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: yOffset / scale))
             context.fill(leftAntenna, with: .color(color))
 
             let rightAntenna = Path { path in
                 path.addRect(CGRect(x: 60, y: 13, width: 6, height: 13))
-            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: 0))
+            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: yOffset / scale))
             context.fill(rightAntenna, with: .color(color))
 
             let baseLegPositions: [CGFloat] = [6, 18, 42, 54]
@@ -169,26 +172,26 @@ struct ClaudeCrabIcon: View {
                 let legHeight = baseLegHeight + heightOffset
                 let leg = Path { path in
                     path.addRect(CGRect(x: xPos, y: 39, width: 6, height: legHeight))
-                }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: 0))
+                }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: yOffset / scale))
                 context.fill(leg, with: .color(color))
             }
 
             let body = Path { path in
                 path.addRect(CGRect(x: 6, y: 0, width: 54, height: 39))
-            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: 0))
+            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: yOffset / scale))
             context.fill(body, with: .color(color))
 
             let leftEye = Path { path in
                 path.addRect(CGRect(x: 12, y: 13, width: 6, height: 6.5))
-            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: 0))
+            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: yOffset / scale))
             context.fill(leftEye, with: .color(.black))
 
             let rightEye = Path { path in
                 path.addRect(CGRect(x: 48, y: 13, width: 6, height: 6.5))
-            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: 0))
+            }.applying(CGAffineTransform(scaleX: scale, y: scale).translatedBy(x: xOffset / scale, y: yOffset / scale))
             context.fill(rightEye, with: .color(.black))
         }
-        .frame(width: size * (66.0 / 52.0), height: size)
+        .frame(width: size, height: size)
         .onReceive(legTimer) { _ in
             if animateLegs {
                 legPhase = (legPhase + 1) % 4

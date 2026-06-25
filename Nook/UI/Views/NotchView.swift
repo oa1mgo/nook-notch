@@ -94,18 +94,24 @@ struct NotchView: View {
         return providers
     }
 
-    /// Display order for the icon stack: starts at `carouselFront`
-    /// and wraps around. When there's only one working agent this
-    /// collapses to that single provider (no carousel rotation).
-    /// When the providers list changes, the current front (if still
-    /// active) is preserved so the carousel doesn't jump.
+    /// Display order for the icon stack. Always at most 2 elements:
+    /// the current `carouselFront` and the front's "next" provider in
+    /// the priority-ordered active list. When the providers list
+    /// changes, the current front (if still active) is preserved so
+    /// the carousel doesn't jump. With 0 active providers the stack
+    /// is empty; with 1 active the stack is just that one icon (no
+    /// peek). With 2+ active the second icon is the front's successor
+    /// in the rotation, so it changes as the front cycles.
     private var displayOrder: [SessionProvider] {
         let active = activeProcessingProviders
         guard !active.isEmpty else { return [] }
         if let front = carouselFront, let frontIndex = active.firstIndex(of: front) {
-            return (0..<active.count).map { active[(frontIndex + $0) % active.count] }
+            // N=1: no peek — avoid rendering a faded ghost of the same icon.
+            guard active.count > 1 else { return [front] }
+            let nextIndex = (frontIndex + 1) % active.count
+            return [front, active[nextIndex]]
         }
-        return active
+        return Array(active.prefix(2))
     }
     private var activePendingPermissionActivityType: NotchActivityType? {
         if sessionMonitor.instances.contains(where: { $0.provider == .claude && ($0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval) }) {
