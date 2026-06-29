@@ -4,146 +4,108 @@
   <img src="./readme/ic_launcher.png" alt="Nook app icon" width="128" />
 </p>
 
-[简体中文](./readme/README.zh-CN.md)
+<p align="center">
+  <strong>A live notch surface for AI coding sessions, music, and Mac status.</strong>
+</p>
 
-Nook turns your MacBook notch into a live ambient surface for coding sessions and music playback.
-
-It watches Claude Code and Codex in the background, surfaces the moments that matter, and gives your machine a sense of presence while you work. When your agents are busy, the notch shows motion and status. When a session becomes active again, it brings that change forward. When music is playing, Nook brings the track, artwork, and atmosphere into the same space instead of treating it like a separate app.
-
-## At A Glance
+<p align="center">
+  <a href="./readme/README.zh-CN.md">Simplified Chinese</a> ·
+  <a href="https://github.com/oa1mgo/nook-notch/releases/latest">Download latest release</a>
+</p>
 
 <p align="center">
   <img src="./readme/img_nook_collapse.png" alt="Nook collapsed notch view" width="720" />
 </p>
 
-The collapsed notch stays quiet most of the time, then lights up with live AI activity or music presence when something meaningful is happening.
-
 <p align="center">
-  <img src="./readme/img_nook_expand.png" alt="Nook expanded session list and music controls" width="720" />
+  <img src="./readme/img_nook_expand.png" alt="Nook expanded sessions and music view" width="720" />
 </p>
 
-The expanded view gives you a session list, rich status context, and music controls without forcing you back into a terminal tab or another app window.
-
-## Why Nook
-
-Most AI coding tools still live inside terminal tabs. Most music controls still live somewhere else entirely.
-
-Nook pulls both into one lightweight layer:
-
-- AI session status stays visible without keeping a terminal in focus
-- important session changes surface where your eyes already are
-- music playback becomes part of the same ambient workspace
-- album art can tint the expanded notch background for a more alive desktop feel
-
-The result is less context switching and a notch that feels useful instead of ornamental.
+Nook turns the MacBook notch into a compact, always-available workspace layer. It keeps AI agent activity, session details, music playback, and system health close to where you already glance while working.
 
 ## Highlights
 
-- Follows both Claude Code and Codex sessions through local hooks
-- Shows compact live processing states directly in the notch
-- Expands into a session list and chat detail view
-- Makes active sessions and status changes easy to spot
-- Blends music playback, artwork, and progress into the same UI layer
-- Uses artwork-derived color to make the notch feel more alive
+| Area | What Nook Adds |
+| --- | --- |
+| AI agents | Live monitoring for Claude Code, Codex, OpenCode, and Cursor sessions. |
+| Session detail | Prompt, thinking, tool calls, tool results, approvals, questions, and completion state in one notch panel. |
+| Music | Now playing card with artwork, source app icon, progress, seek, play/pause, previous/next, and open-source-app control. |
+| Performance | CPU, memory, battery, and network snapshots with configurable visible metrics and detail pages. |
+| Appearance | Music-driven dynamic color, macOS 26+ Glass, and pure Black styles selectable from Settings. |
+| Controls | Screen picker, notification sound picker, keyboard shortcuts, launch at login, accessibility entry, and per-agent hook toggles. |
 
-## Core Experience
+## Agent Support
 
-### AI Sessions
+Nook receives local hook events and turns them into a provider-neutral session timeline.
 
-- Tracks Claude Code sessions through installed hooks
-- Tracks Codex sessions through installed hooks
-- Shows compact live activity while agents are processing
-- Expands into session list and chat detail views
-- Plays completion feedback when work is ready for your input
+- Claude Code: hook install, status tracking, transcript parsing, interrupt detection, and tmux-aware focus helpers.
+- Codex: hook install, transcript parsing, terminal approval state, compacting/subagent events, and stable completed-session history.
+- OpenCode: event-stream integration with live tool placeholders and idle/completion transitions.
+- Cursor: event integration for processing, compacting, completion, and session-end cleanup.
 
-### Music Presence
+The expanded view shows active and completed sessions, provider identity, current status, working directory, and a chat-style detail view when you drill into a session.
 
-- Displays now playing track, artist, artwork, and playback progress
-- Supports transport controls from the expanded notch
-- Shows a compact music activity when no higher-priority AI state is active
-- Extracts artwork-driven colors for a richer adaptive background
+## Music And Performance
 
-## How It Feels
+Nook can sit quietly when agents are idle, then switch to music or performance context without opening another app.
 
-Nook is not trying to become another chat app, another terminal, or a full media player.
+- Music card: artwork, title, artist, album, progress, keyboard controls, and transport buttons.
+- Adaptive color: the Music appearance uses album artwork colors for the expanded notch background.
+- Edge glow: a subtle music progress glow can be toggled independently.
+- Performance row: quick CPU, memory, battery, and network status on the home page.
+- Performance detail: deeper CPU, memory, battery, network, process, and interface views.
 
-It is closer to a status instrument:
+## Appearance
 
-- quiet when nothing important is happening
-- animated when work is in flight
-- direct when a decision is needed
-- atmospheric when music is playing
+Settings exposes three notch styles:
 
-## Quick Start
+- Glass: real Liquid Glass on macOS 26+ builds and systems.
+- Music: dynamic artwork colors when music is available, black fallback when it is not.
+- Black: a clean solid black notch surface.
 
-### Requirements
+The collapsed notch stays visually quiet. Glass is only applied to the expanded panel, so the small closed notch keeps the native black look.
 
-- macOS
-- Xcode
-- Claude Code installed for Claude session monitoring
-- Codex installed for Codex session monitoring
+## Install
 
-### Install
-
-1. Open the released `Nook.dmg`.
+1. Download the latest `Nook.dmg` from [Releases](https://github.com/oa1mgo/nook-notch/releases/latest).
 2. Drag `Nook.app` into `Applications`.
 3. Open `Nook` from `Applications`.
 
-Because the current build is not signed with a Developer ID certificate, macOS may block the first launch.
+If macOS blocks the first launch, open `System Settings` -> `Privacy & Security`, allow Nook to run, then open it again.
 
-If that happens:
+## Requirements
 
-1. Try opening `Nook` once, then dismiss the warning.
-2. Go to `System Settings` -> `Privacy & Security`.
-3. In the Security section, allow `Nook` to run anyway.
-4. Open the app again.
+- macOS 15.6 or later.
+- macOS 26 or later for the Glass appearance option.
+- Claude Code, Codex, OpenCode, or Cursor installed for the matching agent integration.
+- Accessibility permission is recommended for global shortcuts and focus behavior.
 
-### Build
+## Build From Source
 
 ```bash
 xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Debug build
 ```
 
-### Test
-
 ```bash
 xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug -derivedDataPath build/TestDerivedData -destination 'platform=macOS'
 ```
 
-See [docs/testing.md](docs/testing.md) for the current unit-test coverage and
-guidelines for adding provider-specific tests.
+See [docs/testing.md](./docs/testing.md) for the current unit-test coverage and provider-specific testing notes.
 
-### Run
+## Project Map
 
-Launch `Nook.app` from Xcode or from DerivedData. On startup, Nook will:
-
-- ensure only one app instance is running
-- install or refresh Claude hook integration
-- install or refresh Codex hook integration
-- start the local Unix socket server
-- create the notch window UI
-
-## Project Layout
-
-- `Nook/App`: app lifecycle, window setup, screen handling
-- `Nook/Services/Hooks`: Claude/Codex hook installation and socket ingress
-- `Nook/Services/State`: central session state store
-- `Nook/Services/Session`: transcript parsing and monitoring
-- `Nook/Services/Music`: now playing integration, playback control, artwork color extraction
-- `Nook/UI`: notch window, views, and shared UI components
-- `Nook/Models`: session, playback, and tool result models
-
-## Local Integration Notes
-
-- Claude hook traffic is bridged through `~/.claude/hooks/nook-state.py`
-- Codex hook traffic is bridged through `~/.codex/hooks/nook-codex-hook.py`
-- The local socket path is `/tmp/nook.sock`
+- `Nook/App`: app lifecycle, menu bar/window setup, screen observation, single-instance handling.
+- `Nook/Core`: settings, geometry, shortcuts, activity coordination, and view model state.
+- `Nook/Services/Hooks`: local hook installers and Unix socket ingress for agent events.
+- `Nook/Services/Session`: transcript parsing, status watching, and session monitoring.
+- `Nook/Services/State`: central session store and tool-event processing.
+- `Nook/Services/Music`: now playing integration, media controls, artwork color extraction.
+- `Nook/Services/System`: performance sampling.
+- `Nook/UI`: notch chrome, session list, chat detail, music, performance, and settings views.
 
 ## Acknowledgements
 
-Nook was shaped in conversation with ideas from these projects:
+Nook was shaped by ideas from:
 
 - [farouqaldori/claude-island](https://github.com/farouqaldori/claude-island)
 - [TheBoredTeam/boring.notch](https://github.com/TheBoredTeam/boring.notch)
-
-Thank you to both projects for helping establish the creative direction around notch-native tooling and ambient desktop interactions.
