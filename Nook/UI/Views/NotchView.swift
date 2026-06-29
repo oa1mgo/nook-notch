@@ -520,6 +520,7 @@ struct NotchView: View {
     @ViewBuilder
     private func liquidGlassBackground(in shape: NotchShape) -> some View {
         if #available(macOS 26.0, *) {
+#if compiler(>=6.2)
             shape
                 .fill(Color.white.opacity(0.03))
                 .glassEffect(.regular, in: shape)
@@ -535,9 +536,29 @@ struct NotchView: View {
                     .clipShape(shape)
                 )
                 .overlay(shape.stroke(Color.white.opacity(0.22), lineWidth: 1))
+#else
+            legacyGlassBackground(in: shape)
+#endif
         } else {
             pureBlackBackground(in: shape)
         }
+    }
+
+    private func legacyGlassBackground(in shape: NotchShape) -> some View {
+        shape
+            .fill(.regularMaterial)
+            .overlay(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.12),
+                        Color.white.opacity(0.03)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .clipShape(shape)
+            )
+            .overlay(shape.stroke(Color.white.opacity(0.18), lineWidth: 1))
     }
 
     private func pureBlackBackground(in shape: NotchShape) -> some View {
