@@ -1121,7 +1121,7 @@ private struct VibeSurroundGlow: View {
     ]
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 3.5)) { timeline in
             let phase = timeline.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: cycleDuration) / cycleDuration
             let startAngle = Angle.degrees(-phase * 360)
