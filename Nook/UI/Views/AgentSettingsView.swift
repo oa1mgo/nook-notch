@@ -21,15 +21,31 @@ struct AgentSettingsView: View {
     /// flicker.
     @State private var baseHeightRecorded = false
 
-    /// Compile-time layout for the Claude dir picker: two subRows
-    /// ("Auto-detect", "Choose folder…") with `verticalSublabel: true`.
-    /// `rowHeight` is 46.91pt (font-metric-derived: 12pt label + 1pt
-    /// spacing + 10pt sublabel + 20pt vertical padding).
-    static var claudeDirPickerLayout: PickerLayout {
-        PickerLayout(
-            rowCount: 2,
-            rowHeight: settingsSubPickerRowVerticalSublabelHeight
-        )
+    /// Compile-time layout for the Claude dir picker. Per-row heights
+    /// because each row's sublabel presence varies at runtime:
+    ///
+    /// - "Auto-detect" — sublabel is `resolvedAutoDetectPath`
+    ///   (`ClaudePaths.claudeDir.path`), always non-nil → renders at
+    ///   `settingsSubPickerRowVerticalSublabelHeight`.
+    /// - "Choose folder…" — sublabel is `isCustomClaudeDir ? path : nil`
+    ///   → renders at `settingsSubPickerRowVerticalSublabelHeight` when
+    ///   a custom path is set, else at `settingsSubPickerRowHeight`
+    ///   with the title centered (SettingsSubPickerRow auto-falls-back
+    ///   to the small inline layout when its sublabel is nil, even if
+    ///   the caller asked for `verticalSublabel: true`).
+    ///
+    /// Converting from `static` to instance lets the layout track
+    /// `currentClaudeDir` reactively, which is required when the user
+    /// picks "Auto-detect" while the picker is open — the layout
+    /// shrinks and `agentsContentHeight` must follow it to keep the
+    /// panel ScrollView contentSize and `openedSize.height` in lock-
+    /// step (no scrollbar flicker).
+    private var claudeDirPickerLayout: PickerLayout {
+        let autoHeight = settingsSubPickerRowVerticalSublabelHeight
+        let chooseHeight = isCustomClaudeDir
+            ? settingsSubPickerRowVerticalSublabelHeight
+            : settingsSubPickerRowHeight
+        return PickerLayout(rowHeights: [autoHeight, chooseHeight])
     }
     // Hover state for the debug log row. Agent main rows now reuse
     // MenuRow (which owns its own hover state), so only the debug log
@@ -190,6 +206,19 @@ struct AgentSettingsView: View {
                 }
             }
         }
+        // Reconcile the panel height when `currentClaudeDir` changes
+        // while the picker is still open. The "Choose folder…" row's
+        // sublabel-presence drives the picker's per-row height (see
+        // `claudeDirPickerLayout`); without this handler, switching
+        // between "Auto-detect" and a custom path with the picker
+        // open would leave the panel either under-sized or with a
+        // blank band at the bottom — the same drift bug that full-
+        // recompute aims to avoid everywhere else.
+        .onChange(of: currentClaudeDir) { _, _ in
+            if viewModel.agentsClaudeDirPickerExpanded {
+                viewModel.agentsContentHeight = agentsContentHeight
+            }
+        }
         .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
             guard trigger != nil, didAppear else { return }
             performFocusedAction()
@@ -197,6 +226,18 @@ struct AgentSettingsView: View {
     }
 
     // MARK: - Keyboard activation
+
+    /// Full-recompute target for `agentsContentHeight`. Replaces the
+    /// previous incremental `+=`/`-=` pattern — `currentClaudeDir` can
+    /// change while the picker is open (e.g. the user picks a folder
+    /// via the panel and we land back on the picker), which would
+    /// otherwise drift from the picker layout's actual size.
+    private var agentsContentHeight: CGFloat {
+        viewModel.agentsBaseHeight
+            + (viewModel.agentsClaudeDirPickerExpanded
+               ? claudeDirPickerLayout.expandedHeight
+               : 0)
+    }
 
     private func performFocusedAction() {
         let i = viewModel.settingsFocusedIndex
@@ -211,9 +252,7 @@ struct AgentSettingsView: View {
             let newExpanded = !viewModel.agentsClaudeDirPickerExpanded
             withAnimation(.easeInOut(duration: 0.2)) {
                 viewModel.agentsClaudeDirPickerExpanded = newExpanded
-                viewModel.agentsContentHeight += newExpanded
-                    ? Self.claudeDirPickerLayout.expandedHeight
-                    : -Self.claudeDirPickerLayout.expandedHeight
+                viewModel.agentsContentHeight = agentsContentHeight
             }
         case codexMainIndex, opencodeMainIndex, cursorMainIndex:
             break // Static rows — no action on activate.
@@ -289,9 +328,17 @@ struct AgentSettingsView: View {
                     secondaryTextColor: secondaryTextColor,
                     isFocused: viewModel.settingsFocusedIndex == claudeMainIndex,
                     isExpanded: $viewModel.agentsClaudeDirPickerExpanded,
-                    targetHeight: Self.claudeDirPickerLayout.expandedHeight,
-                    onToggle: { isExpanded, contentHeight in
-                        viewModel.agentsContentHeight += isExpanded ? contentHeight : -contentHeight
+                    targetHeight: claudeDirPickerLayout.expandedHeight,
+                    onToggle: { _, _ in
+                        // `agentsClaudeDirPickerExpanded` is already
+                        // mutated by the binding setter inside the same
+                        // `withAnimation` block — re-derive the full
+                        // content height from `baseHeight + (expanded ?
+                        // layout : 0)` so any drift between
+                        // `currentClaudeDir` changes and the layout
+                        // (e.g. user picks "Auto-detect" while the
+                        // picker is open) is reconciled here.
+                        viewModel.agentsContentHeight = agentsContentHeight
                     }
                 ) {
                     claudeDirPickerOptions
@@ -384,10 +431,10 @@ struct AgentSettingsView: View {
                 label: "Auto-detect",
                 sublabel: resolvedAutoDetectPath,
                 sublabelDesign: .monospaced,
-                // MUST match `claudeDirPickerLayout.rowHeight` — without
-                // `verticalSublabel: true`, each row renders inline
-                // (~27pt) instead of stacked (~41pt), overshooting the
-                // panel by ~28pt and leaving a blank band at the bottom.
+                // `verticalSublabel: true` so the resolved path sits
+                // under the title (stacked layout, ~41pt row). The
+                // sublabel is always non-nil, so the per-row height in
+                // `claudeDirPickerLayout` is the large constant.
                 verticalSublabel: true,
                 isSelected: !isCustomClaudeDir,
                 primaryTextColor: primaryTextColor,
@@ -401,6 +448,12 @@ struct AgentSettingsView: View {
                 label: "Choose folder…",
                 sublabel: isCustomClaudeDir ? shortenedPath(currentClaudeDir) : nil,
                 sublabelDesign: .monospaced,
+                // We pass `verticalSublabel: true` for symmetry with
+                // the Auto-detect row above, but when the sublabel is
+                // nil `SettingsSubPickerRow` auto-falls-back to the
+                // small inline layout (~27pt) and the title centers.
+                // `claudeDirPickerLayout` picks the matching height per
+                // row so the panel stays in lock-step.
                 verticalSublabel: true,
                 isSelected: isCustomClaudeDir,
                 primaryTextColor: primaryTextColor,

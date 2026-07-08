@@ -145,53 +145,77 @@ let settingsSubPickerRowVerticalSublabelHeight: CGFloat =
 
 /// Compile-time layout for a single picker's expanded content.
 ///
-/// The picker renders `N` `SettingsSubPickerRow`s (each of height
-/// `rowHeight`) inside a VStack with `rowSpacing`, prefixed by a 4pt
-/// top padding (set by `ExpandableSettingsRow`). The total visible
-/// height when expanded is therefore:
+/// The picker renders `N` `SettingsSubPickerRow`s inside a VStack with
+/// `rowSpacing`, prefixed by a 4pt top padding (set by
+/// `ExpandableSettingsRow`). Each row has its own height; the total
+/// visible height when expanded is therefore:
 ///
-///     N * rowHeight + (N - 1) * rowSpacing + 4
+///     sum(rowHeights) + (N - 1) * rowSpacing + 4
 ///
-/// All four numbers are known at init time, so the picker reports its
+/// All numbers are known at init time, so the picker reports its
 /// expanded height synchronously without measuring.
 ///
-/// `rowHeight` should be one of the font-metric-derived constants above
+/// Row heights should be one of the font-metric-derived constants above
 /// (`settingsSubToggleRowHeight` / `settingsSubPickerRowHeight` /
 /// `settingsSubPickerRowVerticalSublabelHeight`) so the reported
 /// height matches SwiftUI's actual layout to within subpixel.
+///
+/// Rows can be MIXED heights — `SettingsSubPickerRow` falls back to the
+/// small inline layout (`settingsSubPickerRowHeight`) when its
+/// caller's sublabel is nil at runtime, even though the caller passed
+/// `verticalSublabel: true`. ScreenPickerRow and AgentSettingsView
+/// exercise this path; pickers with always-non-nil sublabels can use
+/// the homogeneous `init(rowCount:rowHeight:)` overload.
 struct PickerLayout: Equatable {
-    let rowCount: Int
-    /// Height of one `SettingsSubPickerRow` (font + padding). Defaults
-    /// to `settingsSubPickerRowHeight` (sublabel-less); pass
-    /// `settingsSubToggleRowHeight` for toggle rows, or
-    /// `settingsSubPickerRowVerticalSublabelHeight` for stacked-label rows.
-    let rowHeight: CGFloat
+    /// Per-row height. One entry per `SettingsSubPickerRow` in the
+    /// picker's VStack, in render order.
+    let rowHeights: [CGFloat]
     /// VStack spacing inside the picker content. Matches the
     /// `VStack(spacing: 2)` in `ExpandableSettingsRow`.
     let rowSpacing: CGFloat
     /// Outer `.padding(.top, 4)` set by `ExpandableSettingsRow`.
     let topPadding: CGFloat
 
+    /// Per-row layout — use when rows can have different heights (a
+    /// row's sublabel presence is data-dependent).
+    init(
+        rowHeights: [CGFloat],
+        rowSpacing: CGFloat = 2,
+        topPadding: CGFloat = 4
+    ) {
+        self.rowHeights = rowHeights
+        self.rowSpacing = rowSpacing
+        self.topPadding = topPadding
+    }
+
+    /// Homogeneous-row convenience init. Use this when every row in the
+    /// picker has the same height — e.g. `SettingsSubToggleRow` rows
+    /// (PerformanceSettingsView), `SettingsSubPickerRow` rows without
+    /// sublabels (SoundPickerRow), or rows whose caller always passes a
+    /// non-nil sublabel (AppearanceStylePickerRow).
     init(
         rowCount: Int,
         rowHeight: CGFloat = settingsSubPickerRowHeight,
         rowSpacing: CGFloat = 2,
         topPadding: CGFloat = 4
     ) {
-        self.rowCount = rowCount
-        self.rowHeight = rowHeight
+        self.rowHeights = Array(repeating: rowHeight, count: max(rowCount, 0))
         self.rowSpacing = rowSpacing
         self.topPadding = topPadding
     }
+
+    /// Number of rows in the picker. Derived from `rowHeights` so both
+    /// inits agree on the count.
+    var rowCount: Int { rowHeights.count }
 
     /// Height the picker should occupy when expanded. Returns 0 when
     /// collapsed — the picker's frame collapses to 0 instantly in the
     /// legacy animation path, or holds the previous value through the
     /// opacity-fade window in the instant-frame path.
     var expandedHeight: CGFloat {
-        guard rowCount > 0 else { return 0 }
-        return CGFloat(rowCount) * rowHeight
-            + CGFloat(max(0, rowCount - 1)) * rowSpacing
+        guard !rowHeights.isEmpty else { return 0 }
+        return rowHeights.reduce(0, +)
+            + CGFloat(max(0, rowHeights.count - 1)) * rowSpacing
             + topPadding
     }
 }

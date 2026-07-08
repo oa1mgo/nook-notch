@@ -174,6 +174,19 @@ struct SettingsSubPickerRow: View {
 
     @State private var isHovered = false
 
+    /// Effective stacked-sublabel layout. When the caller asks for a
+    /// vertical sublabel but `sublabel` is nil, we fall back to the
+    /// small inline layout — otherwise the row would render the title
+    /// at the top of an otherwise-empty stacked slot, leaving 13pt of
+    /// dead space below the title (visible "title floats up" effect).
+    ///
+    /// The picker's `PickerLayout` must pick the matching row height
+    /// (see SettingsPageLayout.swift / each picker integration) so the
+    /// picker's contentSize and the panel height stay in lock-step.
+    private var showsVerticalSublabel: Bool {
+        verticalSublabel && sublabel != nil
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
@@ -181,24 +194,18 @@ struct SettingsSubPickerRow: View {
                     .fill(isSelected ? TerminalColors.green : Color.white.opacity(0.2))
                     .frame(width: 6, height: 6)
 
-                if verticalSublabel {
+                if showsVerticalSublabel {
+                    // VStack(alignment: .leading, spacing: 1) so the
+                    // sublabel sits flush under the label. Title fits on
+                    // top, sublabel below — same composition as
+                    // MenuRow.trailingLabel stacked above its parent
+                    // row.
                     VStack(alignment: .leading, spacing: 1) {
                         labelView
-                        if sublabel != nil {
-                            sublabelView
-                        } else {
-                            // Reserve the sublabel slot's height so the row
-                            // stays at `settingsSubPickerRowVerticalSublabelHeight`
-                            // whether or not sublabel is present. Uses
-                            // `textRenderHeight` (round(lineHeight) + 1) so the
-                            // placeholder matches the height SwiftUI allocates
-                            // for a real Text view — see SettingsPageLayout.swift.
-                            Color.clear.frame(height: textRenderHeight(size: 10, weight: .regular))
-                        }
+                        sublabelView
                     }
                 } else {
                     labelView
-                    if sublabel != nil { sublabelView }
                 }
 
                 Spacer()

@@ -1,22 +1,19 @@
 # Progress
 
-> Last updated: 2026-07-08 (focus fix + ⌃O close notch, v1.3.2)
+> Last updated: 2026-07-08 (picker sub-row per-row heights)
 
 ## 🎯 Current Focus
-<!-- 2026-07-07 **picker 末尾 hover 圆角矩形被裁底半部** 修复落地。前置:
-  - **header 1pt 不匹配**（2026-07-06 commit `9f4cd61` 之前）：`deviceNotchRect.height=25` 时 `settingsPageHeaderHeight=24` 公式少 1pt → 永久 1pt scrollbar
-  - **公式 padding 不匹配**（2026-07-07 之前）：`settingsSubPickerRowHeight = fontLineHeight(12,.medium) + 12` 假设 `.padding(.vertical, 10)` 实际是 `.padding(.vertical, 6)`，每行少 8pt → picker 底部出现"空行"
-  - **本次新增：SwiftUI Text 渲染高度 ≠ fontLineHeight**：`SettingsSubPickerRow` 实际高度（GeometryReader 实测）vs 公式预期：
-    - 无 sublabel：27.0 vs 26.13 → **+0.87pt**
-    - 有 sublabel：41.0 vs 38.91 → **+2.09pt**
-    - 占位符（sublabel=nil 时 Color.clear）：39.78 vs 38.91 → **+0.87pt**
-  - **根因**：SwiftUI 的 Text 自然渲染高度 = `round(fontLineHeight) + 1`（lineHeight 圆整到最近整数 + 1pt descender safety）。**fontLineHeight 直接来自 NSFont metrics（asc - desc + leading），但 SwiftUI 不直接用 lineHeight——它先 round 到整数再 +1**。
-  - **修复**：`SettingsPageLayout.swift` 新增 `textRenderHeight(size, weight) = round(fontLineHeight) + 1`，所有 picker 行高常量改用它。`ExpandableSettingsRow.swift` 占位符也用 `textRenderHeight`，保证 verticalSublabel=true 行无论有没有 sublabel 都精确等于 41pt。
-  - **结果**：6 行 SoundPicker 每行 27pt + 5×2 spacing = 172pt ScrollView（172 = pickerLayout.expandedHeight - 4 = 176 - 4），scrollbar doc height = panel height，无 1pt 溢出。
-  - **额外清理**：删除 `ScrollViewOverlayStyle` NSViewRepresentable（不可靠，`.background()` 时 SwiftUI 跳过了实例化）→ 只保留 `ScrollViewOverlayHelper`（直接遍历 window tree），所有诊断 log 全部删除（`[OverlayStyle]` / `[OverlayHelper]` / `[openedSize.menu]` / `[PageLayout]` / `[RowHeight]` / `[SubPickerRow]` / `[Measure]` / `[handleMeasuredContent]`），`handleMeasuredContentHeight` 收敛逻辑保留作为 defense-in-depth（公式现在精确等于 SwiftUI 实际分配，永远不会真正 fire）。
-  - **header 高度单点真相抽取**：把 `let settingsPageHeaderHeight: CGFloat = 24`（硬编码）升级为 `func settingsPageHeaderHeight(for geometry: NotchGeometry) -> CGFloat { max(24, geometry.deviceNotchRect.height) }`。`NotchViewModel.openedSize` 4 处（menu / agents / performanceSettings / performanceHeight / fallbackPerformanceContentHeight）和 `AgentSettingsView.onPreferenceChange` 1 处共 5 处重复的 `max(24, ...)` 全部用 helper，公式现在和 `NotchView.headerRow.frame(height: max(24, closedNotchSize.height))` 100% 对齐。注释明确说"future developers adding a new panel contentType: call this, do NOT inline `max(24, geometry.deviceNotchRect.height)` again"。
-  - **panelContentBuffer=16pt 暂未触碰**：本修复只对齐 picker 行高。panel 层面 16pt 缓冲保留。如果用户测试后觉得 14pt 视觉距离仍然不能接受，可以尝试把 buffer 调小（因为 panel = 静态行 + picker 行；picker 行现在精确，整个 panel 应该精确）。
-  - spec 决策存档：`docs/specs/2026-07-01-picker-panel-height-redesign.md` "决策 0"。-->
+<!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复**：
+  - **症状**：Screen picker 展开时非 built-in / 非 main 的屏幕行 + Claude dir picker 中 "Choose folder…" 行（未选自定义路径时），`sublabel == nil` 但 `verticalSublabel: true` 强制 `SettingsSubPickerRow` 渲染 41pt 高 + 13pt `Color.clear` 占位 → 标题"上浮"，底部留空白。
+  - **根因**：编译期 `pickerLayout.rowHeight` 是单一常量 `settingsSubPickerRowVerticalSublabelHeight`，但运行时不同行的 sublabel 实际有/无是数据驱动的，无法对齐。
+  - **修复**（4 文件，纯逻辑改动）：
+    1. `SettingsSubPickerRow` 引入 `showsVerticalSublabel = verticalSublabel && sublabel != nil`，无 sublabel 时自动回落小尺寸 (~27pt) + 标题垂直居中（删除原 Color.clear 占位）。
+    2. `PickerLayout` 支持每行独立高度 `init(rowHeights: [CGFloat])`，保留原 `init(rowCount:rowHeight:)` 作为同构 picker 的便捷 init。`rowCount` 派生自 `rowHeights.count`，`expandedHeight` = `reduce(+) + (n-1)*spacing + topPadding`。
+    3. `ScreenPickerRow.pickerLayout` 把 `screenSublabel(for:)` 提升为 `static` 调用，按屏 sublabel 是否非 nil 决定该行高度（`[auto, screen1, screen2, ...]`）；automatic 行永远 sublabel 非 nil → 高列。
+    4. `AgentSettingsView.claudeDirPickerLayout` 从 `static` 转 `private var`，读 `isCustomClaudeDir` 决定 "Choose folder…" 行高度；`agentsContentHeight` 从增量 `+=`/`-=` 改成派生 `viewModel.agentsBaseHeight + (expanded ? layout : 0)` 全量重算，同步新增 `.onChange(of: currentClaudeDir)` 兜底用户在 picker 打开状态下切换路径的高度漂移。
+  - **panel 高度不变**(行高之和相同或更小,不会 overshoot);scrollbar flicker 保护不变(`baseHeightRecorded` 仍只接受首次 GeometryReader 报告)。
+  - **未来 picker 集成**：当调用方传的 sublabel 表达式含条件/可选数据时,直接用 `PickerLayout(rowHeights:)` 而不是同构 init。详见 spec `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md` 的 "rowHeight 必须匹配"`+ 新增的内部 `showsVerticalSublabel` 注释。
+  - **build 验证**：`xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Debug build` 通过。-->
 
 ## 📥 Next Phases
 <!-- 下一步候选，按优先级 -->
