@@ -17,27 +17,37 @@ final class OpencodeCommandSocket: @unchecked Sendable {
     static let shared = OpencodeCommandSocket()
     private init() {}
 
-    static let socketPath = "/tmp/nook-command.sock"
+    /// Legacy socket path (no pid) — used only as fallback for old plugins.
+    static let legacySocketPath = "/tmp/nook-command.sock"
+
+    /// Resolve the command socket path for a given opencode instance pid.
+    /// pid-scoped so multiple opencode instances each have their own socket
+    /// (the plugin's startCommandServer names it /tmp/nook-command-<pid>.sock).
+    /// Falls back to the legacy path when the pid is unknown (old plugin).
+    static func socketPath(forPid pid: Int?) -> String {
+        guard let pid, pid > 0 else { return legacySocketPath }
+        return "/tmp/nook-command-\(pid).sock"
+    }
 
     /// Send a JSON command to the opencode plugin. The write is fire-and-
     /// forget: if the plugin isn't connected or the socket is missing, the
     /// command is silently dropped. Commands are serialized on a background
     /// queue so the caller (always the MainActor SessionMonitor) never blocks.
-    func sendCommand(_ payload: [String: Any]) {
+    func sendCommand(_ payload: [String: Any], pid: Int? = nil) {
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        let path = Self.socketPath(forPid: pid)
         DispatchQueue.global(qos: .userInitiated).async {
-            self.connectAndWrite(data)
+            self.connectAndWrite(data, to: path)
         }
     }
 
-    private func connectAndWrite(_ data: Data) {
+    private func connectAndWrite(_ data: Data, to path: String) {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return }
         defer { close(fd) }
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        let path = Self.socketPath
         withUnsafeMutableBytes(of: &addr.sun_path) { buf in
             // Copy the path bytes (excluding null terminator) into sun_path.
             // sockaddr_un already zero-pads sun_path.
