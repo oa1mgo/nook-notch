@@ -1,7 +1,7 @@
 # OpenCode 多实例 pid 隔离 — 设计
 
 > 日期: 2026-08-13
-> 状态: 📋 Spec
+> 状态: ✅ 实现中（Task 1-6 完成并端到端验证，Task 7 未做，Task 8 部分验证）
 > 适用: opencode provider（多实例共存时）
 > 关联: [2026-08-09-opencode-server-api-input.md](2026-08-09-opencode-server-api-input.md) · [2026-06-17-opencode-v1.17-compatibility-matrix.md](2026-06-17-opencode-v1.17-compatibility-matrix.md)
 > 实现: [docs/superpowers/plans/2026-08-13-opencode-multi-instance-pid-isolation.md](../superpowers/plans/2026-08-13-opencode-multi-instance-pid-isolation.md)
@@ -177,3 +177,10 @@ Nook
 3. server API 发送消息 → 用户 prompt 在正确位置流动，不沉底
 4. 单实例场景行为完全不变
 5. 所有测试通过 + xcodebuild 编译通过
+
+## 实测记录（2026-08-14）
+
+1. **serverPort 各归其位** ✅：92784（`--port`）→ `serverPort=4096` 正常映射；92710（galaxy，无 port）与 51926（motelet，无 port）→ `port=0` 被 Nook 过滤，无串台。
+2. **permission reply 落到正确实例** ✅：motelet（pid=51926）触发 permission.asked → 在 Nook 点 once → plugin 日志 `pid=51926 reply OK res={"data":true}`，不再 `PermissionNotFoundError`。旧版（08-12）日志中的 PermissionNotFoundError 为 Task 5/6 实施前的遗留。
+3. **用户消息沉底（问题 C）** 🔲：Task 7 未实施，待验证。
+4. 期间发现并解决的临时问题：motelet 会话在 Nook 重启后短暂缺失，根因是重启后 adapter `sessionCwd` 内存清空需重新 first-sighting，已自愈（`sessionStart (first sighting)` → 注册 → 显示），非持久 bug。
