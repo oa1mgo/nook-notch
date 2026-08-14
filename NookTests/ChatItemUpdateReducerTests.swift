@@ -126,16 +126,16 @@ final class ChatItemUpdateReducerTests: XCTestCase {
         var items: [ChatHistoryItem] = []
         var orderings: [String: BlockOrdering] = [:]
 
-        // Simulate local creation (SessionStore path)
+        // Simulate local creation (SessionStore path) — local prompt uses appendOrder
         apply(
             id: "opencode-prompt-session-1234567890",
             block: .userPrompt("Hello world"),
-            ordering: .messageRelative(messageId: "opencode-prompt-session-1234567890", typePriority: .reasoning, blockIndex: 0),
+            ordering: .appendOrder,
             items: &items,
             orderings: &orderings
         )
 
-        // Simulate hook echo (OpencodeChatItemAdapter path) — different ID, same text
+        // Simulate hook echo (OpencodeChatItemAdapter path) — real id keeps messageRelative
         apply(
             id: "opencode-msg-abc-prompt-0",
             block: .userPrompt("Hello world"),
@@ -152,6 +152,56 @@ final class ChatItemUpdateReducerTests: XCTestCase {
         XCTAssertEqual(prompt, "Hello world")
         // Original ID should be preserved
         XCTAssertEqual(items[0].id, "opencode-prompt-session-1234567890")
+    }
+
+    func testHookEchoUpgradesLocalPromptOrderingFromAppendToMessageRelative() {
+        var items: [ChatHistoryItem] = []
+        var orderings: [String: BlockOrdering] = [:]
+
+        // 1. Hook echo arrives first (adapter path) with real messageId
+        apply(
+            id: "opencode-msg-abc-prompt-0",
+            block: .userPrompt("Hello world"),
+            ordering: .messageRelative(messageId: "msg-abc", typePriority: .reasoning, blockIndex: 0),
+            items: &items, orderings: &orderings
+        )
+        // 2. Local fallback arrives later (SessionStore path) — must not override
+        apply(
+            id: "opencode-prompt-session-1234567890",
+            block: .userPrompt("Hello world"),
+            ordering: .appendOrder,
+            items: &items, orderings: &orderings
+        )
+
+        XCTAssertEqual(items.count, 1)
+        guard case .messageRelative(let messageId, _, _) = orderings[items[0].id] else {
+            return XCTFail("Expected messageRelative ordering to be preserved")
+        }
+        XCTAssertEqual(messageId, "msg-abc")
+    }
+
+    func testLocalPromptFirstThenHookEchoUsesRealMessageId() {
+        var items: [ChatHistoryItem] = []
+        var orderings: [String: BlockOrdering] = [:]
+
+        apply(
+            id: "opencode-prompt-session-1234567890",
+            block: .userPrompt("Hello world"),
+            ordering: .appendOrder,
+            items: &items, orderings: &orderings
+        )
+        apply(
+            id: "opencode-msg-abc-prompt-0",
+            block: .userPrompt("Hello world"),
+            ordering: .messageRelative(messageId: "msg-abc", typePriority: .reasoning, blockIndex: 0),
+            items: &items, orderings: &orderings
+        )
+
+        XCTAssertEqual(items.count, 1)
+        guard case .messageRelative(let messageId, _, _) = orderings[items[0].id] else {
+            return XCTFail("Expected messageRelative ordering")
+        }
+        XCTAssertEqual(messageId, "msg-abc")
     }
 
     private func apply(

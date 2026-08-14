@@ -58,7 +58,16 @@ enum ChatItemUpdateReducer {
            }) {
             // Reuse the existing item's ID to keep ordering consistent.
             let existingId = items[existingIdx].id
-            orderings[existingId] = update.ordering
+            // Preserve the strongest ordering: messageRelative (real msg_ id) must
+            // never be downgraded to appendOrder by the local fallback. AppendOrder
+            // is the local-fallback sentinel that does not participate in
+            // lexicographic messageId comparison.
+            if case .messageRelative = update.ordering {
+                orderings[existingId] = update.ordering
+            } else if orderings[existingId] == nil {
+                orderings[existingId] = update.ordering
+            }
+            // Otherwise keep the existing ordering (never downgrade).
             return
         }
 

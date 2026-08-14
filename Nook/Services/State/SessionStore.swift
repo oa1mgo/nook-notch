@@ -1082,7 +1082,7 @@ actor SessionStore {
         let update = ChatItemUpdate(
             id: id, sessionId: sessionId,
             block: .userPrompt(trimmedPrompt),
-            ordering: .messageRelative(messageId: id, typePriority: BlockTypePriority.forBlock(.userPrompt(trimmedPrompt)), blockIndex: 0),
+            ordering: .appendOrder,
             mutation: .insert, provider: .opencode
         )
         applyChatItemUpdate(update, appliesLifecycleEffects: true)
