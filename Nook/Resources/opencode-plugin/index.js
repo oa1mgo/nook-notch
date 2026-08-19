@@ -124,7 +124,7 @@ async function handleCommand(rawLine, input) {
 /// opencode calls `server(input, options)` directly with the plugin input
 /// (including `client`). We capture `input` in the closure so the command
 /// socket handler can use it later for permission replies.
-const PLUGIN_VERSION = "1.3.0";
+  const PLUGIN_VERSION = "1.4.1";
 export default function server(input) {
   logDebug(`nook plugin v${PLUGIN_VERSION} loaded serverUrl=${input?.serverUrl?.toString() ?? "undefined"} argv=${JSON.stringify(process.argv ?? [])}`);
   // Start listening for commands from Nook as soon as the plugin loads.
@@ -192,16 +192,88 @@ export default function server(input) {
   // Initial attempt + retries every 2s
   sendServerPort();
 
+  // Self-heal: when opencode resumes a pre-existing session it never emits
+  // session.created/updated on the bus, so Nook would never register the
+  // session and would drop all its events. Proactively report the current
+  // session (via the in-process client) so Nook can self-heal.
+  const extractSessionId = (status) => {
+    if (!status || typeof status !== "object") return null;
+    // Direct field: { sessionID: "ses_xxx" }
+    if (typeof status.sessionID === "string" && status.sessionID.startsWith("ses_")) {
+      return status.sessionID;
+    }
+    let obj = status;
+    if (status.data && typeof status.data === "object") obj = status.data;
+    if (typeof obj.sessionID === "string" && obj.sessionID.startsWith("ses_")) {
+      return obj.sessionID;
+    }
+    const keys = Object.keys(obj).filter((k) => typeof k === "string" && k.startsWith("ses_"));
+    return keys.length > 0 ? keys[0] : null;
+  };
+  const reportCurrentSession = async () => {
+    try {
+      const client = input?.client;
+      if (!client || typeof client.session?.status !== "function") {
+        logDebug("reportCurrentSession: no session.status available");
+        return false;
+      }
+      const status = await client.session.status();
+      logDebug(`reportCurrentSession status=${JSON.stringify(status)}`);
+      const sessionId = extractSessionId(status);
+      if (!sessionId) {
+        logDebug("reportCurrentSession: no current session yet");
+        return false;
+      }
+      const cwd = input?.directory || process.cwd();
+      await send({
+        origin: "opencode",
+        type: "session.started",
+        properties: { sessionID: sessionId, cwd, pid: INSTANCE_PID },
+      });
+      logDebug(`reportCurrentSession sent session.started sessionID=${sessionId} cwd=${cwd}`);
+      return true;
+    } catch (err) {
+      logDebug(`reportCurrentSession FAILED: ${err.message}\n${err.stack || ""}`);
+      return false;
+    }
+  };
+  let reportAttempts = 0;
+  const maxReportAttempts = 30;
+  const tryReportCurrentSession = async () => {
+    if (reportAttempts >= maxReportAttempts) return;
+    reportAttempts++;
+    try {
+      const ok = await reportCurrentSession();
+      if (ok) {
+        logDebug("reportCurrentSession succeeded, stopping retries");
+        return;
+      }
+    } catch (err) {
+      logDebug(`tryReportCurrentSession error: ${err.message}`);
+    }
+    if (reportAttempts < maxReportAttempts) {
+      setTimeout(tryReportCurrentSession, 2000);
+    }
+  };
+  tryReportCurrentSession();
+
+  // opencode's working directory for this plugin instance. Injected into every
+  // forwarded event so Nook can self-heal session registration immediately
+  // (see ensureSessionRegistered), without waiting for session.created/
+  // session.updated or the plugin's delayed session.started probe.
+  const instanceCwd = input?.directory || process.cwd();
+
   return {
     event: async ({ event }) => {
       if (event.type === "permission.asked") {
         logDebug(`permission.asked pid=${INSTANCE_PID} props=${JSON.stringify(event.properties)}`);
       }
-      // Merge pid into forwarded properties so Nook can route per-instance
-      // (permission replies, serverPort association).
+      // Merge pid + cwd into forwarded properties so Nook can route per-instance
+      // (permission replies, serverPort association) and register the session
+      // on first sighting even before opencode emits session.created/updated.
       const props = (typeof event.properties === "object" && event.properties !== null)
-        ? { ...event.properties, pid: INSTANCE_PID }
-        : { pid: INSTANCE_PID };
+        ? { ...event.properties, pid: INSTANCE_PID, cwd: instanceCwd }
+        : { pid: INSTANCE_PID, cwd: instanceCwd };
       await send({
         origin: "opencode",
         type: event.type,

@@ -267,28 +267,71 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.unlock()
         }
 
+        // Self-heal (option B): a business event can arrive for a session Nook
+        // hasn't registered yet — a resume instance whose session.created/
+        // session.updated never fire, or whose plugin `session.started` is
+        // delayed while opencode loads history (observed: ~36s for a heavy
+        // resume). The plugin injects `cwd` on every forwarded event, so we
+        // can register the session on first sighting and never drop the event
+        // as "pre-registration" (which previously hid permission popups right
+        // after a Nook/opencode restart).
+        let healEvents: [OpencodeSessionEvent]
+        if ["permission.asked", "question.asked", "session.status",
+            "message.updated", "message.part.updated", "message.part.delta"].contains(envelope.type) {
+            let fallbackCwd = (props["cwd"]?.value as? String) ?? ""
+            healEvents = ensureSessionRegistered(sessionId, fallbackCwd: fallbackCwd)
+        } else {
+            healEvents = []
+        }
+
+        let handled: [OpencodeSessionEvent]
         switch envelope.type {
         case "session.created", "session.updated":
-            return handleSessionCreatedOrUpdated(props)
+            handled = handleSessionCreatedOrUpdated(props)
+        case "session.started":
+            handled = handleSessionStarted(props)
         case "session.status":
-            return handleSessionStatus(props)
+            handled = handleSessionStatus(props)
         case "session.idle":
-            return handleSessionIdle(props)
+            handled = handleSessionIdle(props)
         case "question.asked":
-            return handleQuestionAsked(props)
+            handled = handleQuestionAsked(props)
         case "permission.asked":
-            return handlePermissionAsked(props)
+            handled = handlePermissionAsked(props)
         case "serverPort":
-            return handleServerPort(props, sessionId: sessionId)
+            handled = handleServerPort(props, sessionId: sessionId)
         case "message.updated":
-            return handleMessageUpdated(props)
+            handled = handleMessageUpdated(props)
         case "message.part.updated":
-            return handlePartUpdated(props)
+            handled = handlePartUpdated(props)
         case "message.part.delta":
-            return handlePartDelta(props)
+            handled = handlePartDelta(props)
         default:
-            return []
+            handled = []
         }
+        return healEvents + handled
+    }
+
+    /// Self-heal registration for a session Nook hasn't seen yet. Business
+    /// events carry an injected `cwd` (plugin side), so on first sighting we
+    /// register the session and emit `.sessionStart`. Mirrors `handleSessionStarted`:
+    /// it bypasses the `recentlyStopped` guard so a genuinely re-activated
+    /// session always self-heals instead of being suppressed by a prior idle.
+    private static func ensureSessionRegistered(_ sessionId: String, fallbackCwd: String) -> [OpencodeSessionEvent] {
+        guard sessionId != "?", !sessionId.isEmpty else { return [] }
+        guard !fallbackCwd.isEmpty else { return [] }
+        lock.lock()
+        let isNew = sessionCwd[sessionId] == nil
+        if isNew {
+            sessionCwd[sessionId] = fallbackCwd
+            recentlyStoppedSessions.removeValue(forKey: sessionId)
+        }
+        lock.unlock()
+        if isNew {
+            Self.logNotice("→ sessionStart (event-driven self-heal) session=\(sessionId) cwd=\(fallbackCwd)")
+            return [.sessionStart(sessionId: sessionId, cwd: fallbackCwd)]
+        }
+        return []
     }
 
     /// Read-only lookup that does NOT insert. We need to distinguish "this
@@ -519,6 +562,34 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             return [.sessionStart(sessionId: sessionId, cwd: cwd)]
         }
         Self.logNotice("→ session.updated (known) session=\(sessionId) cwd=\(cwd) recentlyStopped=\(recentlyStopped)")
+        return []
+    }
+
+    /// Handle a `session.started` event emitted by the plugin when an opencode
+    /// instance resumes a pre-existing session without opencode itself ever
+    /// sending `session.created`/`session.updated` (the resume path stays
+    /// silent on the bus). Without this, Nook would never register the session
+    /// and would drop every subsequent event as "pre-registration".
+    ///
+    /// This is an explicit "session is live now" signal, so it bypasses the
+    /// `recentlyStopped` guard that suppresses late `session.updated` events
+    /// racing with `session.idle` — a prior idle must not prevent a real
+    /// re-activation from self-healing.
+    private static func handleSessionStarted(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
+        guard let sessionId = props["sessionID"]?.value as? String, !sessionId.isEmpty else { return [] }
+        let cwd = props["cwd"]?.value as? String ?? ""
+
+        lock.lock()
+        let isNew = sessionCwd[sessionId] == nil
+        if !cwd.isEmpty { sessionCwd[sessionId] = cwd }
+        recentlyStoppedSessions.removeValue(forKey: sessionId)
+        lock.unlock()
+
+        if isNew {
+            Self.logNotice("→ session.started (first sighting) session=\(sessionId) cwd=\(cwd)")
+            return [.sessionStart(sessionId: sessionId, cwd: cwd)]
+        }
+        Self.logNotice("→ session.started (known) session=\(sessionId) cwd=\(cwd)")
         return []
     }
 
