@@ -34,7 +34,27 @@ enum OpencodeSessionEvent: Sendable {
     case processingStarted(sessionId: String, cwd: String)
     case waitingForUserInput(sessionId: String, cwd: String)
     case assistantThinking(sessionId: String, cwd: String, text: String, messageId: String? = nil)
+    /// Streaming assistant reasoning (thinking) — emitted on every
+    /// `message.part.delta` when the delta is routed into the reasoning buffer.
+    /// `text` is the FULL accumulated reasoning text so far, so the consumer
+    /// can upsert a single chat item per messageID instead of appending chunks.
+    /// The messageID is pre-marked in `emittedReasoningMessages`, which makes
+    /// the final `message.part.updated(type=reasoning)` event and the safety
+    /// net flushes skip this messageID (no duplicate emit).
+    case assistantThinkingStreaming(sessionId: String, cwd: String, text: String, messageId: String)
     case assistantText(sessionId: String, cwd: String, text: String, messageId: String? = nil)
+    /// Streaming assistant text — emitted on every `message.part.delta` after
+    /// the delta is accumulated into the buffer. `text` is the FULL accumulated
+    /// text so far (not just the delta), so the consumer can upsert a single
+    /// chat item per messageID instead of appending chunks. The messageID is
+    /// pre-marked in `emittedTextMessages`, which makes the finish=stop flush
+    /// and the session-idle safety net skip it (no duplicate emit).
+    case assistantTextStreaming(sessionId: String, cwd: String, text: String, messageId: String)
+    /// Retract a previously streamed assistant text for this messageID.
+    /// Used when `question.asked` tags the parent message as suppressed AFTER
+    /// its text has already been streamed into the chat view — the streaming
+    /// item must be removed or the question prompt would linger visibly.
+    case assistantStreamingCancelled(sessionId: String, messageId: String)
     case preTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, input: [String: String] = [:], messageId: String? = nil)
     case postTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil, messageId: String? = nil)
     case image(sessionId: String, cwd: String, mediaType: String, base64Data: String, messageId: String? = nil)

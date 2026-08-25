@@ -108,7 +108,8 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
 
     private func isChatItemEvent(_ event: OpencodeSessionEvent) -> Bool {
         switch event {
-        case .userPromptSubmitted, .assistantThinking, .assistantText,
+        case .userPromptSubmitted, .assistantThinking, .assistantThinkingStreaming,
+             .assistantText, .assistantTextStreaming, .assistantStreamingCancelled,
              .preTool, .postTool, .image:
             return true
         case .sessionStart, .processingStarted, .waitingForUserInput, .stop,
@@ -147,6 +148,22 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                 mutation: .insert, provider: .opencode
             )]
 
+        case .assistantThinkingStreaming(_, _, let text, let messageId):
+            // Streaming upsert on a FIXED slot (blockIndex 0): the reducer's
+            // insert is an upsert for a known ID, so every delta replaces the
+            // same item instead of appending new ones. The final
+            // message.part.updated(type=reasoning) event never emits again
+            // because the adapter pre-marks it in emittedReasoningMessages.
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return [] }
+            let id = ChatItemIdFactory.opencodeBlockId(messageId: messageId, typePrefix: "thinking", blockIndex: 0)
+            return [ChatItemUpdate(
+                id: id, sessionId: sessionId,
+                block: .thinking(trimmed),
+                ordering: .messageRelative(messageId: messageId, typePriority: BlockTypePriority.forBlock(.thinking(trimmed)), blockIndex: 0),
+                mutation: .insert, provider: .opencode
+            )]
+
         case .assistantText(let sid, _, let text, let messageId):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return [] }
@@ -158,6 +175,33 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                 block: .assistantText(trimmed),
                 ordering: .messageRelative(messageId: msgId, typePriority: BlockTypePriority.forBlock(.assistantText(trimmed)), blockIndex: idx),
                 mutation: .insert, provider: .opencode
+            )]
+
+        case .assistantTextStreaming(_, _, let text, let messageId):
+            // Streaming upsert on a FIXED slot (blockIndex 0): the reducer's
+            // insert is an upsert for a known ID, so every delta replaces the
+            // same item instead of appending new ones. The finish=stop flush
+            // never emits a second text block for this messageID because the
+            // adapter pre-marks it in emittedTextMessages.
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return [] }
+            let id = ChatItemIdFactory.opencodeBlockId(messageId: messageId, typePrefix: "text", blockIndex: 0)
+            return [ChatItemUpdate(
+                id: id, sessionId: sessionId,
+                block: .assistantText(trimmed),
+                ordering: .messageRelative(messageId: messageId, typePriority: .response, blockIndex: 0),
+                mutation: .insert, provider: .opencode
+            )]
+
+        case .assistantStreamingCancelled(let sid, let messageId):
+            // Retract a streamed item (question-tool parent). The reducer's
+            // remove only consults update.id; the block payload is ignored.
+            let id = ChatItemIdFactory.opencodeBlockId(messageId: messageId, typePrefix: "text", blockIndex: 0)
+            return [ChatItemUpdate(
+                id: id, sessionId: sid,
+                block: .assistantText(""),
+                ordering: .messageRelative(messageId: messageId, typePriority: .response, blockIndex: 0),
+                mutation: .remove, provider: .opencode
             )]
 
         case .preTool(let sid, _, let toolName, let toolUseId, let inputSummary, let fullInput, let messageId):

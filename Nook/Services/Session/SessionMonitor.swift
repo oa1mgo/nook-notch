@@ -127,7 +127,8 @@ class SessionMonitor: ObservableObject {
                         await SessionStore.shared.process(.subagentToolCompleted(sessionId: sessionId, toolId: toolId, status: status))
                     case .subagentStopped(let sessionId, let taskToolId):
                         await SessionStore.shared.process(.subagentStopped(sessionId: sessionId, taskToolId: taskToolId))
-                    case .userPromptSubmitted, .assistantThinking, .assistantText,
+                    case .userPromptSubmitted, .assistantThinking, .assistantThinkingStreaming,
+                         .assistantText, .assistantTextStreaming, .assistantStreamingCancelled,
                          .preTool, .postTool, .image:
                         // These are now routed through OpencodeChatItemAdapter
                         // → onOpencodeChatItems → realtimeChatItemBatch.

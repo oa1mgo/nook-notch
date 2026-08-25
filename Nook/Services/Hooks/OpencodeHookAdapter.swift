@@ -728,8 +728,18 @@ final class OpencodeHookAdapter: @unchecked Sendable {
            let messageId = tool["messageID"] as? String,
            !messageId.isEmpty {
             lock.lock()
+            // If this message's text already streamed into the chat view (the
+            // model streams its text BEFORE invoking the question tool), the
+            // suppression alone can't undo what's on screen — emit a cancel
+            // so the streaming item is removed.
+            let wasStreamed = emittedTextMessages.contains(messageId)
             suppressedTextMessages.insert(messageId)
             lock.unlock()
+            if wasStreamed {
+                Self.logNotice("→ retract streamed question parent text session=\(sessionId) messageID=\(messageId)")
+                return [.assistantStreamingCancelled(sessionId: sessionId, messageId: messageId),
+                        .waitingForUserInput(sessionId: sessionId, cwd: cwd)]
+            }
             Self.logNotice("→ suppressed question parent text session=\(sessionId) messageID=\(messageId)")
         }
         Self.logNotice("→ waitingForUserInput (question.asked) session=\(sessionId) cwd=\(cwd)")
@@ -955,9 +965,15 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         guard let messageId = props["messageID"]?.value as? String else { return [] }
         guard !messageId.isEmpty else { return [] }
         guard let sessionId = props["sessionID"]?.value as? String else { return [] }
-        guard let field = props["field"]?.value as? String else { return [] }
-        guard field == "text" || field == "reasoning" else { return [] }
-        guard let delta = props["delta"]?.value as? String else { return [] }
+        guard let field = props["field"]?.value as? String else {
+            Self.logNotice("→ delta dropped (no field) session=\(sessionId) messageID=\(messageId)")
+            return [] }
+        guard field == "text" || field == "reasoning" else {
+            Self.logNotice("→ delta dropped (field=\(field)) session=\(sessionId) messageID=\(messageId)")
+            return [] }
+        guard let delta = props["delta"]?.value as? String else {
+            Self.logNotice("→ delta dropped (no delta) session=\(sessionId) messageID=\(messageId) availableKeys=\(Array(props.keys).joined(separator: ","))")
+            return [] }
         guard !delta.isEmpty else { return [] }
 
         lock.lock()
@@ -982,10 +998,20 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         let isReasoningFinalized = reasoningFinalizedMessageIds.contains(messageId)
         let isKnownReasoning = knownReasoningMessageIds.contains(messageId)
         if !isReasoningFinalized && (isKnownReasoning || field == "reasoning") {
+            // NOTE: lock is already held from line 979 — do NOT re-acquire
+            // (NSLock is not reentrant → deadlock).
             pendingReasoningByMessage[messageId, default: ""] += delta
             messageSession[messageId] = sessionId
+            let accumulated = pendingReasoningByMessage[messageId] ?? ""
+            let cwd = sessionCwd[sessionId] ?? ""
+            if !accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                emittedReasoningMessages.insert(messageId)
+            }
             lock.unlock()
-            return []
+            Self.logNotice("→ reasoningDelta session=\(sessionId) messageID=\(messageId) deltaChars=\(delta.count) accumChars=\(accumulated.count)")
+            guard !accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+            Self.logNotice("→ reasoningStreaming session=\(sessionId) messageID=\(messageId) chars=\(accumulated.count)")
+            return [.assistantThinkingStreaming(sessionId: sessionId, cwd: cwd, text: accumulated, messageId: messageId)]
         }
 
         // Trailing-echo detection on the delta path (Bug H extension).
@@ -1025,8 +1051,24 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         lock.lock()
         pendingTextByMessage[messageId, default: ""] += delta
         messageSession[messageId] = sessionId
+        // Stream the accumulated text to the chat view on every delta. The
+        // question-parent suppression check happens here too: a messageID
+        // tagged by handleQuestionAsked must keep accumulating (the stop-time
+        // flush still consults suppressedTextMessages) but never stream.
+        let isSuppressed = suppressedTextMessages.contains(messageId)
+        if !isSuppressed {
+            // Pre-mark as emitted so the finish=stop flush and the session-idle
+            // safety net skip this messageID — the streaming path has already
+            // delivered the full text. Also lets handleQuestionAsked detect
+            // "already streamed" when it needs to retract the item.
+            emittedTextMessages.insert(messageId)
+        }
+        let accumulated = pendingTextByMessage[messageId] ?? ""
+        let cwd = sessionCwd[sessionId] ?? ""
         lock.unlock()
-        return []
+        guard !isSuppressed else { return [] }
+        Self.logNotice("→ textStreaming session=\(sessionId) messageID=\(messageId) chars=\(accumulated.count)")
+        return [.assistantTextStreaming(sessionId: sessionId, cwd: cwd, text: accumulated, messageId: messageId)]
     }
 
     // MARK: - Text / Tool Part Handlers
