@@ -17,6 +17,13 @@ enum CodexHookAdapter {
                 source: envelope.source
             )
 
+        case "sessionend":
+            return .sessionEnd(
+                sessionId: envelope.sessionId,
+                cwd: envelope.cwd,
+                reason: envelope.reason
+            )
+
         case "userpromptsubmit":
             return .userPromptSubmit(
                 sessionId: envelope.sessionId,

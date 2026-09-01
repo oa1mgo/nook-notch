@@ -6,10 +6,10 @@ final class CodexTranscriptParserTests: XCTestCase {
         let lowerBound = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-06-21T00:00:00Z"))
         let url = try writeTemporaryJSONL(
             """
-            {"timestamp":"2026-06-20T23:59:59Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"old prompt"}]}}
+            {"timestamp":"2026-06-20T23:59:59Z","type":"event_msg","payload":{"type":"user_message","message":"old prompt"}}
             {"timestamp":"not-a-date","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"bad timestamp"}]}}
             {"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"missing timestamp"}]}}
-            {"timestamp":"2026-06-21T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"new prompt"}]}}
+            {"timestamp":"2026-06-21T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"new prompt"}}
             {"timestamp":"2026-06-21T00:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"Bash","arguments":"{\\"command\\":\\"echo hi\\",\\"count\\":2}"}}
             {"timestamp":"2026-06-21T00:00:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"  done  "}}
             """
@@ -66,10 +66,62 @@ final class CodexTranscriptParserTests: XCTestCase {
         XCTAssertNotNil(updates[0].messageTimestamp)
     }
 
+    func testOnlyDirectUserInteractionIsAddedToHistory() throws {
+        let url = try writeTemporaryJSONL(
+            """
+            {"timestamp":"2026-06-21T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"direct prompt"}}
+            {"timestamp":"2026-06-21T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"direct prompt"},{"type":"input_text","text":"<codex_internal_context>memory</codex_internal_context>"},{"type":"input_text","text":"<environment_context>workspace</environment_context>"}]}}
+            {"timestamp":"2026-06-21T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}],"phase":"final_answer"}}
+            """
+        )
+
+        let updates = CodexTranscriptParser.parseTranscriptUpdates(
+            at: url,
+            sessionId: "codex-session",
+            after: nil
+        )
+
+        XCTAssertEqual(updates.count, 2)
+        guard case .userPrompt(let prompt) = updates[0].block else {
+            return XCTFail("Expected direct user prompt")
+        }
+        XCTAssertEqual(prompt, "direct prompt")
+        guard case .assistantText(let answer) = updates[1].block else {
+            return XCTFail("Expected assistant answer")
+        }
+        XCTAssertEqual(answer, "answer")
+    }
+
+    func testStringToolInputAndArrayToolOutputArePreserved() throws {
+        let url = try writeTemporaryJSONL(
+            """
+            {"timestamp":"2026-06-21T00:00:01Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call-1","name":"exec","input":"await tools.exec_command({cmd: \\"pwd\\"})"}}
+            {"timestamp":"2026-06-21T00:00:02Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-1","output":[{"type":"input_text","text":"first"},{"type":"input_image","image_url":"data:image/png;base64,abc"},{"type":"input_text","text":"second"}]}}
+            """
+        )
+
+        let updates = CodexTranscriptParser.parseTranscriptUpdates(
+            at: url,
+            sessionId: "codex-session",
+            after: nil
+        )
+
+        XCTAssertEqual(updates.count, 2)
+        guard case .toolCall(let toolCall) = updates[0].block else {
+            return XCTFail("Expected tool call")
+        }
+        XCTAssertEqual(toolCall.input["input"], #"await tools.exec_command({cmd: "pwd"})"#)
+
+        guard case .toolCall(let toolOutput) = updates[1].block else {
+            return XCTFail("Expected tool output")
+        }
+        XCTAssertEqual(toolOutput.result, "first\n\nsecond")
+    }
+
     func testOffsetParsingOnlyReadsAppendedRows() throws {
         let url = try writeTemporaryJSONL(
             """
-            {"timestamp":"2026-06-21T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]}}
+            {"timestamp":"2026-06-21T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"first"}}
             """
         )
 
@@ -108,7 +160,7 @@ final class CodexTranscriptParserTests: XCTestCase {
     }
 
     func testOffsetParsingDoesNotAdvancePastPartialTrailingRow() throws {
-        let completeLine = #"{"timestamp":"2026-06-21T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]}}"#
+        let completeLine = #"{"timestamp":"2026-06-21T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"first"}}"#
         let partialLine = #"{"timestamp":"2026-06-21T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sec"#
         let url = try writeTemporaryJSONL(completeLine + "\n" + partialLine)
 

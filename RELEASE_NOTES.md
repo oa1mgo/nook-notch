@@ -1,5 +1,16 @@
 # Release Notes
 
+## 1.3.3
+
+What's New
+
+  - Current Codex Hook Lifecycle — adds `SessionEnd` handling alongside the existing start, prompt, tool, compaction, subagent, and stop hooks so sessions are removed promptly when the main thread ends.
+  - Direct User Conversation History — records user history from Codex's dedicated direct-interaction event and no longer treats injected memories, environment context, or plugin recommendations as user messages.
+  - Updated Tool Payload Support — preserves current Codex string tool inputs and text results carried in array-based tool outputs.
+  - Safer Hook Configuration — writes hook configuration atomically, preserves unrelated user and plugin hooks during uninstall, and uses Codex's three-second maximum specifically for `SessionEnd`.
+  - Regression Coverage — adds tests for `SessionEnd`, direct-user filtering, and current tool input/output payload shapes.
+  - Release Version — bumps Nook to version 1.3.3.
+
 ## 1.3.2
 
 What's New

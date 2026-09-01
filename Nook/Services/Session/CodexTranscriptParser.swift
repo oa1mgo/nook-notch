@@ -208,15 +208,35 @@ enum CodexTranscriptParser {
             return true
         }
 
-        guard envelopeType == "response_item",
-              let payloadType = payload["type"] as? String else {
+        guard let payloadType = payload["type"] as? String else {
             return true
         }
+
+        // `response_item/message` rows with role=user are model input, not a
+        // user-interface boundary. Current Codex can fold memories, environment
+        // context, plugin recommendations, and the actual prompt into those rows.
+        // `event_msg/user_message` is the dedicated direct-interaction record.
+        if envelopeType == "event_msg", payloadType == "user_message" {
+            let text = (payload["message"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if let update = CodexChatItemAdapter.messageUpdate(
+                sessionId: sessionId,
+                lineIndex: stableLineIndex,
+                role: "user",
+                text: text,
+                timestamp: timestamp
+            ) {
+                updates.append(update)
+            }
+            return true
+        }
+
+        guard envelopeType == "response_item" else { return true }
 
         switch payloadType {
         case "message":
             guard let role = payload["role"] as? String,
-                  role == "user" || role == "assistant" else {
+                  role == "assistant" else {
                 return true
             }
 
@@ -252,7 +272,7 @@ enum CodexTranscriptParser {
             updates.append(CodexChatItemAdapter.toolOutputUpdate(
                 sessionId: sessionId,
                 callId: callId,
-                result: normalizeToolOutput(payload["output"] as? String),
+                result: normalizeToolOutput(payload["output"]),
                 timestamp: timestamp
             ))
 
@@ -307,6 +327,18 @@ enum CodexTranscriptParser {
             return flattenTopLevelDictionary(input)
         }
 
+        if let input = payload["input"] as? String {
+            if let data = input.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                return flattenTopLevelDictionary(json)
+            }
+
+            let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return ["input": trimmed]
+            }
+        }
+
         return [:]
     }
 
@@ -331,10 +363,26 @@ enum CodexTranscriptParser {
         return flattened
     }
 
-    private nonisolated static func normalizeToolOutput(_ output: String?) -> String? {
-        guard let output else { return nil }
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+    private nonisolated static func normalizeToolOutput(_ output: Any?) -> String? {
+        switch output {
+        case let string as String:
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+
+        case let content as [[String: Any]]:
+            let text = content.compactMap { item -> String? in
+                guard let rawText = item["text"] as? String else { return nil }
+                let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }.joined(separator: "\n\n")
+            return text.isEmpty ? nil : text
+
+        case let number as NSNumber:
+            return number.stringValue
+
+        default:
+            return nil
+        }
     }
 
     private nonisolated static func parseTimestamp(_ raw: String?) -> Date? {

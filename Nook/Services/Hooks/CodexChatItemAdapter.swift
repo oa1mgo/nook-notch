@@ -130,7 +130,7 @@ enum CodexChatItemAdapter {
                 messageTimestamp: timestamp
             )]
 
-        case .sessionStart, .userPromptSubmit, .permissionRequest,
+        case .sessionStart, .sessionEnd, .userPromptSubmit, .permissionRequest,
              .compactingStarted, .compactingFinished, .subagentStarted,
              .subagentStopped, .stop:
             return []
