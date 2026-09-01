@@ -728,6 +728,8 @@ private extension CodexSessionEvent {
         switch self {
         case .sessionStart(let sessionId, let cwd, let source):
             return "sessionStart session=\(short(sessionId)) source=\(source ?? "nil") cwd=\(cwd)"
+        case .sessionEnd(let sessionId, let cwd, let reason):
+            return "sessionEnd session=\(short(sessionId)) reason=\(reason ?? "nil") cwd=\(cwd)"
         case .userPromptSubmit(let sessionId, let cwd, let prompt):
             return "userPromptSubmit session=\(short(sessionId)) promptChars=\(prompt?.count ?? 0) cwd=\(cwd)"
         case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):

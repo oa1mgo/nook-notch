@@ -14,6 +14,7 @@ struct CodexHookEnvelope: Decodable, Sendable {
     let cwd: String
     let origin: String?
     let source: String?
+    let reason: String?
     let status: String?
     let toolName: String?
     let toolUseId: String?
@@ -31,6 +32,7 @@ struct CodexHookEnvelope: Decodable, Sendable {
         case cwd
         case origin
         case source
+        case reason
         case status
         case toolName = "tool_name"
         case toolNameCamel = "toolName"
@@ -63,6 +65,7 @@ struct CodexHookEnvelope: Decodable, Sendable {
         cwd = Self.decodeOptionalString(container, keys: [.cwd]) ?? FileManager.default.currentDirectoryPath
         origin = Self.decodeOptionalString(container, keys: [.origin])
         source = Self.decodeOptionalString(container, keys: [.source])
+        reason = Self.decodeOptionalString(container, keys: [.reason])
         status = Self.decodeOptionalString(container, keys: [.status])
         toolName = Self.decodeOptionalString(container, keys: [.toolName, .toolNameCamel, .tool, .name])
         toolUseId = Self.decodeOptionalString(container, keys: [.toolUseId, .toolUseIdCamel, .callId, .callIdCamel])
@@ -285,6 +288,7 @@ struct CodexHookEnvelope: Decodable, Sendable {
 /// Narrow Codex event surface used by the V1 integration.
 enum CodexSessionEvent: Sendable {
     case sessionStart(sessionId: String, cwd: String, source: String?)
+    case sessionEnd(sessionId: String, cwd: String, reason: String?)
     case userPromptSubmit(sessionId: String, cwd: String, prompt: String?)
     case preTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, input: [String: String], inputSummary: String?)
     case postTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String?, isError: Bool)

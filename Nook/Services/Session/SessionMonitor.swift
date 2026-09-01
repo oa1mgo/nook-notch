@@ -157,6 +157,8 @@ class SessionMonitor: ObservableObject {
         switch event {
         case .sessionStart(let sessionId, let cwd, let source):
             await SessionStore.shared.process(.codexSessionStarted(sessionId: sessionId, cwd: cwd, source: source))
+        case .sessionEnd(let sessionId, _, _):
+            await SessionStore.shared.process(.sessionEnded(sessionId: sessionId))
         case .userPromptSubmit(let sessionId, let cwd, let prompt):
             await SessionStore.shared.process(.codexPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt))
         case .preTool(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
