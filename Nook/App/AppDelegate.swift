@@ -48,6 +48,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         AppSettings.registerDefaults()
 
+        // Register AskUserQuestion reply providers on the MainActor.
+        // applicationDidFinishLaunching always runs on the main thread, so
+        // assumeIsolated is safe here (QuestionReplyProviderRegistry.shared
+        // is @MainActor-isolated).
+        MainActor.assumeIsolated {
+            let reg = QuestionReplyProviderRegistry.shared
+            reg.register(OpencodeQuestionReplyProvider())
+            reg.register(TerminalFallbackProvider(provider: .claude))
+            reg.register(TerminalFallbackProvider(provider: .codex))
+            reg.register(TerminalFallbackProvider(provider: .cursor))
+        }
+
         // Start the on-disk debug log mirror as early as possible so
         // that startup-time diagnostics (hook installer, socket bind)
         // are captured. The file is recreated on every launch.
