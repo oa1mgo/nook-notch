@@ -581,82 +581,9 @@ struct ChatView: View {
 
     /// Try every terminal focus method in order; return true on first success.
     /// Order: tmux (yabai) → non-tmux process tree → last-resort bundle ID.
+    /// Logic lives in TerminalFocusHelper so the question panel can reuse it.
     private func tryFocusTerminal() async -> Bool {
-        // tmux path (Claude's default): the Yabai controller walks
-        // `client_pid → terminal` via tmux's own `list-clients` and
-        // focuses the right pane. Skipped silently if yabai isn't
-        // installed.
-        if session.isInTmux, let pid = session.pid {
-            if await YabaiController.shared.focusWindow(forClaudePid: pid) {
-                DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) succeeded")
-                return true
-            }
-            DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) failed, trying forWorkingDirectory")
-            if await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd) {
-                DebugLog.shared.write("[focus] tmux focusWindow(forWorkingDirectory) succeeded")
-                return true
-            }
-            DebugLog.shared.write("[focus] tmux path failed, falling through to non-tmux fallback")
-            // Fall through to non-tmux fallback — yabai may not be
-            // installed or the tmux lookup may have failed.
-        }
-        // Non-tmux fallback (e.g. opencode running directly in Ghostty).
-        // Yabai focuses whole windows by PID; for a non-tmux shell we
-        // don't have a window handle, only the shell's PID. Walk the
-        // process tree up to the terminal app's PID and activate it
-        // via NSWorkspace — `activate(ignoringOtherApps:)` brings the
-        // terminal to the front so the user can interact with the
-        // opencode question popup.
-        if let pid = session.pid {
-            if await focusTerminalApp(forChildPid: Int(pid)) {
-                DebugLog.shared.write("[focus] non-tmux focusTerminalApp succeeded")
-                return true
-            }
-            DebugLog.shared.write("[focus] non-tmux focusTerminalApp failed: could not find terminal app for pid=\(pid)")
-            // Last resort: try activating any known terminal app
-            // by bundle ID. Works when the process tree walk fails
-            // (e.g. Ghostty launched via launchd, PID namespace quirks).
-            let terminalBundleIds = ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"]
-            for bundleId in terminalBundleIds {
-                if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
-                    let ok = app.activate()
-                    DebugLog.shared.write("[focus] last-resort activate bundleId=\(bundleId) success=\(ok)")
-                    if ok { return true }
-                }
-            }
-            DebugLog.shared.write("[focus] all focus methods failed")
-        } else {
-            DebugLog.shared.write("[focus] session.pid is nil, cannot focus terminal")
-        }
-        return false
-    }
-
-    /// Walk up the process tree from `childPid` until we hit a known
-    /// terminal app process, then activate that app. Returns true if a
-    /// terminal app was found and activated.
-    private func focusTerminalApp(forChildPid childPid: Int) async -> Bool {
-        let tree = ProcessTreeBuilder.shared.buildTree()
-        guard let terminalPid = ProcessTreeBuilder.shared.findTerminalPid(
-            forProcess: childPid, tree: tree
-        ) else {
-            return false
-        }
-        // NSRunningApplication is the only API that gives us `activate`
-        // and survives app-sandbox quirks for already-running processes.
-        // `processIdentifier` matches the PID we just looked up. Note:
-        // `.activateIgnoringOtherApps` is deprecated in macOS 14 (no-op),
-        // so we call `activate()` plain — on macOS 14+ that's enough to
-        // surface the terminal window.
-        guard let app = NSRunningApplication(processIdentifier: pid_t(terminalPid)),
-              let bundleId = app.bundleIdentifier,
-              TerminalAppRegistry.isTerminalBundle(bundleId) else {
-            // Process found but isn't a known terminal app (e.g. parent
-            // is `login` or some other intermediary). Fall through.
-            return false
-        }
-        let activated = app.activate()
-        DebugLog.shared.write("[focus] activated terminal app pid=\(terminalPid) bundleId=\(bundleId) success=\(activated)")
-        return activated
+        return await TerminalFocusHelper.tryFocusTerminal(for: session)
     }
 
     private func approvePermission() {
