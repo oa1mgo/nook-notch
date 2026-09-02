@@ -94,8 +94,6 @@ class NotchViewModel: ObservableObject {
     /// is always the active one. Weak so it never extends the view model's
     /// lifetime. Needed by service-side callers (question providers, notch
     /// auto-expand) that run outside the SwiftUI environment.
-    static weak var shared: NotchViewModel?
-
     // MARK: - Published State
 
     @Published var status: NotchStatus = .closed
@@ -303,7 +301,6 @@ class NotchViewModel: ObservableObject {
         )
         self.hasPhysicalNotch = hasPhysicalNotch
         setupEventHandlers()
-        Self.shared = self
     }
 
     private var instancesPageOpenedHeight: CGFloat {

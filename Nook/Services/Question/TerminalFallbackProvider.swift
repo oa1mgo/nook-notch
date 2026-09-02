@@ -20,19 +20,16 @@ struct TerminalFallbackProvider: QuestionReplyProvider {
         throw QuestionReplyError.unsupportedProvider
     }
 
+    /// Focus the terminal running the session. Returns whether focus succeeded.
+    /// The caller (QuestionPanelView, which owns the NotchViewModel) decides
+    /// whether to close the notch — the provider must not reach into a
+    /// NotchViewModel singleton.
     @MainActor
-    func focusTerminalForAnswer(session: SessionState) {
-        guard let vm = NotchViewModel.shared else {
-            DebugLog.shared.write("[question] focusTerminal: no NotchViewModel.shared")
-            return
+    func focusTerminalForAnswer(session: SessionState) async -> Bool {
+        let ok = await TerminalFocusHelper.tryFocusTerminal(for: session)
+        if !ok {
+            DebugLog.shared.write("[question] focusTerminal failed")
         }
-        Task {
-            let ok = await TerminalFocusHelper.tryFocusTerminal(for: session)
-            if ok {
-                vm.notchClose(restorePreviousApp: false)
-            } else {
-                DebugLog.shared.write("[question] focusTerminal failed")
-            }
-        }
+        return ok
     }
 }
