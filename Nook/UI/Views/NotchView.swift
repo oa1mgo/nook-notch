@@ -339,6 +339,18 @@ struct NotchView: View {
         viewModel.status != .opened && showMusicActivity
     }
 
+    private var showCompactQuestionChip: Bool {
+        viewModel.status != .opened &&
+        sessionMonitor.instances.contains {
+            $0.phase == .waitingForInput && $0.pendingQuestionContext != nil
+        }
+    }
+
+    private var isCurrentlyViewingWaitingChat: Bool {
+        guard viewModel.status == .opened, case .chat(let s) = viewModel.contentType else { return false }
+        return s.phase == .waitingForInput || s.phase.isWaitingForTerminalApproval
+    }
+
     private var hasArtworkThemeSource: Bool {
         musicManager.albumArt != nil && musicManager.hasArtworkGradient
     }
@@ -671,7 +683,23 @@ struct NotchView: View {
 
     @ViewBuilder
     private var headerRow: some View {
-        if showCompactMusicActivity {
+        if showCompactQuestionChip {
+            CompactQuestionActivityView(
+                sessionMonitor: sessionMonitor,
+                musicManager: musicManager,
+                onTap: {
+                    if let s = sessionMonitor.instances
+                        .filter({ $0.phase == .waitingForInput && $0.pendingQuestionContext != nil })
+                        .sorted(by: { $0.lastActivity > $1.lastActivity })
+                        .first {
+                        viewModel.notchOpen(reason: .notification)
+                        viewModel.pushTo(.question(s))
+                    }
+                }
+            )
+            .frame(width: closedContentWidth, height: closedNotchSize.height, alignment: .leading)
+            .frame(height: closedNotchSize.height)
+        } else if showCompactMusicActivity {
             CompactMusicActivityView(musicManager: musicManager)
                 .frame(width: closedContentWidth, height: closedNotchSize.height, alignment: .leading)
                 .frame(height: closedNotchSize.height)
@@ -906,15 +934,12 @@ struct NotchView: View {
                     secondaryTextColor: expandedSecondaryTextColor
                 )
             case .question(let session):
-                // Provisional: keeps this commit building. Task 14 replaces
-                // this branch with QuestionPanelView.
-                ChatView(
-                    sessionId: session.sessionId,
-                    initialSession: session,
-                    sessionMonitor: sessionMonitor,
+                QuestionPanelView(
+                    session: session,
+                    replyProvider: (try? QuestionReplyProviderRegistry.shared.provider(for: session))
+                        ?? TerminalFallbackProvider(provider: session.provider),
                     viewModel: viewModel,
-                    primaryTextColor: expandedPrimaryTextColor,
-                    secondaryTextColor: expandedSecondaryTextColor
+                    onClose: { viewModel.navigateBack() }
                 )
             }
         }
