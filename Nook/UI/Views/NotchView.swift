@@ -351,6 +351,16 @@ struct NotchView: View {
         return s.phase == .waitingForInput || s.phase.isWaitingForTerminalApproval
     }
 
+    /// Idempotency guard for question auto-expand: if the notch is already open
+    /// and showing the question panel for THIS session, a repeat change event
+    /// must not push a duplicate `.question` onto the nav stack.
+    private func isAlreadyShowingQuestion(for session: SessionState) -> Bool {
+        guard viewModel.status == .opened, case .question(let current) = viewModel.contentType else {
+            return false
+        }
+        return current.sessionId == session.sessionId
+    }
+
     private var hasArtworkThemeSource: Bool {
         musicManager.albumArt != nil && musicManager.hasArtworkGradient
     }
@@ -1111,7 +1121,8 @@ struct NotchView: View {
             if let questionSession = newlyWaitingSessions
                 .filter({ $0.phase == .waitingForInput && $0.pendingQuestionContext != nil })
                 .max(by: { $0.lastActivity < $1.lastActivity }),
-                !isCurrentlyViewingWaitingChat {
+                !isCurrentlyViewingWaitingChat,
+                !isAlreadyShowingQuestion(for: questionSession) {
                 viewModel.notchOpen(reason: .notification)
                 viewModel.pushTo(.question(questionSession))
             }
