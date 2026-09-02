@@ -686,6 +686,27 @@ final class OpencodeHookAdapter: @unchecked Sendable {
 
     private static func handleQuestionAsked(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
         guard let sessionId = props["sessionID"]?.value as? String else { return [] }
+        // The `question.asked` bus payload IS the question `Request` schema
+        // (opencode/src/question/index.ts → QuestionV1.Request), which carries
+        // everything the notch needs at asked-time:
+        //   {
+        //     "id": "que_xxx",             // request id (== top-level event.id)
+        //     "sessionID": "...",
+        //     "questions": [ { "question", "header",
+        //                      "options": [ { "label", "description" } ] } ],
+        //     "tool": { "messageID", "callID" }   // optional, when from a tool call
+        //   }
+        // Verified against opencode `packages/schema/src/v1/question.ts`. The
+        // plugin already forwards `properties` (this payload), so no plugin
+        // change is required to reach these fields.
+        //
+        // requestId: prefer the payload's own `id` (guaranteed `que_` prefix,
+        // identical to the top-level bus `event.id`). opencode's event envelope
+        // id is not forwarded by the plugin, so `properties.id` is the reliable
+        // source here.
+        let requestId = props["id"]?.value as? String
+        let toolUseId = ((props["tool"]?.value as? [String: Any])?["callID"] as? String) ?? ""
+        let questions = Self.buildQuestionItems(from: props["questions"]?.value)
         let cwd: String = {
             lock.lock()
             let v = sessionCwd[sessionId] ?? ""
@@ -738,12 +759,12 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             if wasStreamed {
                 Self.logNotice("→ retract streamed question parent text session=\(sessionId) messageID=\(messageId)")
                 return [.assistantStreamingCancelled(sessionId: sessionId, messageId: messageId),
-                        .waitingForUserInput(sessionId: sessionId, cwd: cwd, requestId: nil)]
+                        .waitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: toolUseId, questions: questions, requestId: requestId)]
             }
             Self.logNotice("→ suppressed question parent text session=\(sessionId) messageID=\(messageId)")
         }
-        Self.logNotice("→ waitingForUserInput (question.asked) session=\(sessionId) cwd=\(cwd)")
-        return [.waitingForUserInput(sessionId: sessionId, cwd: cwd, requestId: nil)]
+        Self.logNotice("→ waitingForUserInput (question.asked) session=\(sessionId) cwd=\(cwd) requestID=\(requestId ?? "<nil>") questions=\(questions.count)")
+        return [.waitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: toolUseId, questions: questions, requestId: requestId)]
     }
 
     /// Handle opencode's `permission.asked` event. opencode fires this when a
@@ -1387,7 +1408,14 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // its event model, or the plugin socket drops the event, the
             // list view still gets the correct phase.
             if toolName.lowercased() == "question" || toolName.lowercased() == "askuserquestion" {
-                return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd, requestId: nil)]
+                // Defensive fallback: derive questions from the tool call input
+                // (state.input.questions, same shape as the question.asked
+                // Request.questions). requestId stays nil — this is a
+                // `message.part.updated` event, whose top-level id is NOT a
+                // `que_` question request id. If `question.asked` also arrives
+                // (normal operation) SessionStore merges the requestId in.
+                let questions = Self.buildQuestionItems(from: input?["questions"])
+                return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: callId ?? "", questions: questions, requestId: nil)]
             }
             return [preToolEvent]
         case "completed":
@@ -1446,6 +1474,28 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    /// Build `[QuestionItem]` from an opencode question payload. Accepts the
+    /// raw `Any` value pulled either from `question.asked` `properties["questions"]`
+    /// or the `question` tool's `state.input["questions"]` (both decode to an
+    /// `[[String: Any]]` of `QuestionV1.Info` structs: `{ question, header,
+    /// options: [{ label, description }] }`). Returns [] for nil / malformed /
+    /// empty input so the panel simply renders no options rather than crashing.
+    static func buildQuestionItems(from raw: Any?) -> [QuestionItem] {
+        guard let array = raw as? [[String: Any]] else { return [] }
+        return array.compactMap { q in
+            guard let question = q["question"] as? String else { return nil }
+            let options = (q["options"] as? [[String: Any]])?.compactMap { opt -> QuestionOption? in
+                guard let label = opt["label"] as? String else { return nil }
+                return QuestionOption(label: label, description: opt["description"] as? String)
+            } ?? []
+            return QuestionItem(
+                question: question,
+                header: q["header"] as? String,
+                options: options
+            )
+        }
+    }
 
     private static func buildInputSummary(toolName: String, input: [String: Any]?) -> String {
         guard let input, !input.isEmpty else { return toolName }
