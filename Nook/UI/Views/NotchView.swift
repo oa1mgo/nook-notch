@@ -1105,6 +1105,17 @@ struct NotchView: View {
             playNotificationSoundIfNeeded(forPids: newlyCompletedSessions.map(\.pid), debugContext: debugContext)
             triggerNotificationBounce()
 
+            // Question auto-expand: newly-waiting session carrying an actual
+            // AskUserQuestion context → open notch + push question panel.
+            // Skip if the user is already looking at a waiting chat session.
+            if let questionSession = newlyWaitingSessions
+                .filter({ $0.phase == .waitingForInput && $0.pendingQuestionContext != nil })
+                .max(by: { $0.lastActivity < $1.lastActivity }),
+                !isCurrentlyViewingWaitingChat {
+                viewModel.notchOpen(reason: .notification)
+                viewModel.pushTo(.question(questionSession))
+            }
+
             // Schedule hiding the checkmark after 30 seconds
             DispatchQueue.main.asyncAfter(deadline: .now() + displayDuration) { [self] in
                 // Trigger a UI update to re-evaluate hasWaitingForInput
