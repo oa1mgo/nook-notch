@@ -39,8 +39,8 @@ opencode/Claude → plugin/hook → HookSocketServer → SessionStore.handleWait
 
 ### Codex / Claude 对照
 
-- **Permission** 有完整链路：`InlineApprovalButtons` → `SessionMonitor.approvePermission/denyPermission` → 分 provider 走 socket 或 tmux sendKeys → agent 收到决定。本 spec 让 question 走同一条 UI 路径。
-- **Question** 缺两步：(a) UI 面板，(b) 回复通道。
+- **Permission** 有完整链路：`InlineApprovalButtons`（在 `SessionListView` 实例行 / `ChatView` 里） → `SessionMonitor.approvePermission/denyPermission` → 分 provider 走 socket 或 tmux sendKeys → agent 收到决定。**但这不是 notch 面板** — 它在 chat view 行内 + 关闭态 `PermissionIndicatorIcon`。
+- **Question** 缺两步：(a) UI 面板（**这是第一个 notch 内的"等待回答面板"** — 从零新增），(b) 回复通道（OpenCode plugin `question.reply` 未实现）。
 
 ---
 
@@ -71,12 +71,12 @@ protocol QuestionReplyProvider {
 
 四个 provider 实现：
 
-| Class | Phase | 实现 |
+| Class | Phase 1 | Phase 2 |
 |---|---|---|
-| `OpencodeQuestionReplyProvider` | **Phase 1** | `OpencodeCommandSocket.sendCommand({"cmd":"question.reply", "requestId":..., "answers":[...]})` → plugin → `client.question.reply()` |
-| `ClaudeQuestionReplyProvider` | Phase 1 = stub / Phase 2 = tmux | Phase 1: `supportsInlineAnswer=false`（点击跳终端）；Phase 2: 改为 `tmux sendKeys` 合成选项字母 |
-| `CodexQuestionReplyProvider` | Phase 1 = stub / Phase 2 = tmux | 同 Claude（Codex 也在 tmux 跑） |
-| `CursorQuestionReplyProvider` | Phase 1 = stub | 同 Claude（Cursor 也走 tmux） |
+| `OpencodeQuestionReplyProvider` (NEW) | **真实**：plugin command socket `question.reply` → `client.questions.reply()` | 保持不变 |
+| `TerminalFallbackProvider(provider: .claude)` (NEW) | **占位**：`supportsInlineAnswer=false`，按钮跳终端 | 替换为 `ClaudeQuestionReplyProvider` (NEW)：tmux sendKeys 合成选项字母 |
+| `TerminalFallbackProvider(provider: .codex)` (NEW) | **占位**：跳终端 | 替换为 `CodexQuestionReplyProvider` (NEW)：tmux sendKeys |
+| `TerminalFallbackProvider(provider: .cursor)` (NEW) | **占位**：跳终端 | 替换为 `CursorQuestionReplyProvider` (NEW)：tmux sendKeys |
 
 注册中心：
 
@@ -92,16 +92,29 @@ final class QuestionReplyProviderRegistry {
     }
 
     func provider(for session: SessionState) -> QuestionReplyProvider {
-        providers[session.provider] ?? TerminalFallbackProvider.shared
+        guard let p = providers[session.provider] else {
+            fatalError("QuestionReplyProvider for \(session.provider) not registered. Did AppDelegate register all four providers?")
+        }
+        return p
     }
 }
 ```
 
-注册时机：`AppDelegate` 启动时注册所有四个 provider。Phase 1 时 `ClaudeQuestionReplyProvider`/`CodexQuestionReplyProvider`/`CursorQuestionReplyProvider` 是 `TerminalFallbackProvider`（点击跳终端，跟当前一致）。
+注册时机：`AppDelegate` 启动时注册全部四个实例：
+
+```swift
+let reg = QuestionReplyProviderRegistry.shared
+reg.register(OpencodeQuestionReplyProvider())
+reg.register(TerminalFallbackProvider(provider: .claude))
+reg.register(TerminalFallbackProvider(provider: .codex))
+reg.register(TerminalFallbackProvider(provider: .cursor))
+```
+
+`provider(for:)` 用 `fatalError` 而不是 fallback — 启动期注册失败应该早暴露（一个 provider 没注册意味着 AppDelegate 配置错误，默默回退到 `.claude` 的 TerminalFallback 会掩盖 bug）。
 
 ### 2. UI 内容类型扩展
 
-**`Nook/Core/NotchViewModel.swift`** — `NotchContentType` 新增 case：
+**`Nook/Core/NotchViewModel.swift`** — `NotchContentType` 新增 case（**这是 Nook 第一个"等待回答面板"** — 当前 `NotchContentType` 只有 `instances/menu/shortcuts/agents/performanceSettings/performance/chat` 七个 case，没有 `.permission`；permission 走的是 closed-state `PermissionIndicatorIcon` + `ChatView` 里的 `InlineApprovalButtons`，**不是 notch 面板**。本 spec 是从零新增的第一个 notch 等待面板，UI 借鉴 `InlineApprovalButtons` 的按钮风格但不沿用其架构）：
 
 ```swift
 case question(SessionState)
@@ -373,7 +386,7 @@ private func handleWaitingForUserInput(sessionId: String) {
 private func handleQuestionAsked(_ event: OpencodeQuestionAskedEvent) -> [SessionEvent] {
     // 当前 OpencodeHookAdapter.swift:687-747 只用 tool.messageID 抑制文本
     // 新增：提取 requestID 用于后续 reply
-    let requestID = event.properties?.requestID ?? event.id
+    let requestID = event.id   // question.asked 事件的顶层 id（que_xxx），不在 properties
     // ... 现有逻辑 + 把 requestID 存到 session metadata
     return [
         .waitingForUserInput(
@@ -421,10 +434,12 @@ async function handleCommand(cmd) {
             break
         case "question.reply":          // [NEW]
             if (!cmd.requestId) { console.error('question.reply missing requestId'); return }
-            const answers = cmd.answers  // [{label, value}, ...]
-            await client.question.reply({
+            // answers 是 string[][]：每题一元素，元素是该题选中 label 的列表
+            // SDK 类型 client.questions.reply({ sessionID, requestID, answers }) → 204
+            await client.questions.reply({
+                sessionID: cmd.sessionId,
                 requestID: cmd.requestId,
-                answers: answers
+                answers: cmd.answers
             })
             break
     }
@@ -434,13 +449,19 @@ async function handleCommand(cmd) {
 **`Nook/Services/Hooks/OpencodeCommandSocket.swift`** — `sendCommand` 已经接受任意 payload，不改方法签名。调用方在 `OpencodeQuestionReplyProvider.sendAnswer` 里发：
 
 ```swift
+// answers: [String] 是按 question 顺序的"每题最终答案"列表（每个元素是单选 label 或自由文本）
+// 协议要 string[][]（每题 = [选中的 label 列表]），所以每个元素包一层数组：
+let wireAnswers: [[String]] = answers.map { [$0] }
 let payload: [String: Any] = [
     "cmd": "question.reply",
+    "sessionId": sessionId,
     "requestId": requestId,
-    "answers": answers.map { ["label, $0", "value": $0] }   // value 是用户回答文本
+    "answers": wireAnswers
 ]
 try await OpencodeCommandSocket.shared.sendCommand(payload, pid: session.pid)
 ```
+
+`OpencodeQuestionReplyProvider` 的 `sendAnswer` 入参 `answers: [String]` 已是按 question index 一一对应的扁平列表（上层 `QuestionPanelView` 维护），由 provider 包成 `string[][]` 发出去。
 
 **`Nook/Services/Question/OpencodeQuestionReplyProvider.swift` (NEW)**：
 
@@ -458,10 +479,12 @@ final class OpencodeQuestionReplyProvider: QuestionReplyProvider {
         guard let requestId else {
             throw QuestionReplyError.missingRequestId
         }
+        let wireAnswers: [[String]] = answers.map { [$0] }   // string[][] 协议形状
         let payload: [String: Any] = [
             "cmd": "question.reply",
+            "sessionId": sessionId,
             "requestId": requestId,
-            "answers": answers.map { ["label": $0, "value": $0] }
+            "answers": wireAnswers
         ]
         try await OpencodeCommandSocket.shared.sendCommand(
             payload,
@@ -473,10 +496,10 @@ final class OpencodeQuestionReplyProvider: QuestionReplyProvider {
 
 ### 6. Claude/Codex/Cursor 占位（Phase 1）
 
-**`Nook/Services/Question/TerminalFallbackProvider.swift` (NEW)**：
+**`Nook/Services/Question/TerminalFallbackProvider.swift` (NEW)** — 一个简单 struct，按 provider 实例化：
 
 ```swift
-final class TerminalFallbackProvider: QuestionReplyProvider {
+struct TerminalFallbackProvider: QuestionReplyProvider {
     let provider: SessionProvider
     let supportsInlineAnswer: Bool = false
 
@@ -484,7 +507,12 @@ final class TerminalFallbackProvider: QuestionReplyProvider {
         self.provider = provider
     }
 
-    func sendAnswer(...) async throws {
+    func sendAnswer(
+        sessionId: String,
+        requestId: String?,
+        questions: [QuestionItem],
+        answers: [String]
+    ) async throws {
         throw QuestionReplyError.unsupportedProvider    // 永远不调
     }
 
@@ -498,11 +526,19 @@ final class TerminalFallbackProvider: QuestionReplyProvider {
 }
 ```
 
-`ClaudeQuestionReplyProvider` / `CodexQuestionReplyProvider` / `CursorQuestionReplyProvider` Phase 1 都是 `TerminalFallbackProvider` 的子类（用 provider 区分）。
+**Phase 1 不创建 ClaudeQuestionReplyProvider / CodexQuestionReplyProvider / CursorQuestionReplyProvider** — `AppDelegate` 直接注册 3 个 `TerminalFallbackProvider` 实例：
+
+```swift
+QuestionReplyProviderRegistry.shared.register(TerminalFallbackProvider(provider: .claude))
+QuestionReplyProviderRegistry.shared.register(TerminalFallbackProvider(provider: .codex))
+QuestionReplyProviderRegistry.shared.register(TerminalFallbackProvider(provider: .cursor))
+```
+
+Registry 的 `provider(for:)` 不需要 fallback（如果 miss 就是 bug，直接 crash 在 dev 期早暴露）。
 
 `QuestionPanelView` 根据 `replyProvider.supportsInlineAnswer` 切换 UI：
 - `true`（opencode）：显示选项按钮 + 输入框
-- `false`（claude/codex/cursor）：隐藏选项按钮，显示大字「Go to Terminal →」按钮，点击 → `focusTerminalForAnswer`
+- `false`（claude/codex/cursor）：隐藏选项按钮，显示大字「Go to Terminal →」按钮，点击 → `replyProvider.focusTerminalForAnswer(session:)`
 
 ### 7. Phase 2 范围（不在本 spec 实施）
 
@@ -562,13 +598,18 @@ final class TerminalFallbackProvider: QuestionReplyProvider {
 
 ## 风险与边界
 
-1. **plugin `question.reply` 协议**：opencode SDK 是否有 `client.question.reply()` 需确认 → plugin 端实现前先查 `/Users/wuruofan/mine/rfw/opencode/` 源码确认。如果 SDK 不暴露，降级为 `client._client.post({url:"/question/{id}/reply", ...})`（仿照现有 `permission.reply` 用法）。**实施前 0.5d 调研**。
+1. **plugin `question.reply` 协议**：**已确认** — opencode SDK `client.ts` 暴露 `client.questions.reply({ sessionID, requestID, answers }) → 204`（HTTP `POST /api/session/:sessionID/question/:requestID/reply`）。**payload 形状（来自 `question-v1.ts`）**：`Reply = { answers: Array<Answer> }` 其中 `Answer = Array<String>`，即 `string[][]` — 每个问题一组"已选中 label"的字符串数组。单选 = `["选项A"]`，多选 = `["选项A", "选项B"]`，自由文本 = `["自由文本"]`。**无需调研，无需降级路径，直接用 SDK**。同时：`question.asked` 事件的 requestID 在顶层 `id` 字段（schema `Request.id`，形如 `que_xxx`），不在 `properties.requestID` — 主路径直接 `event.id` 即可。
+
+⚠️ **本 spec 之前误把 payload 写成 `{label, value}` 对象数组 — 已修正为 `string[][]`**。plugin → SDK 的 `answers` 字段是 `[ [option_label_or_text], [option_label_or_text], ... ]`，按 question index 一一对应。
 
 2. **多 question 顺序**：opencode `AskUserQuestion` 一次可包含 1-4 个 questions。本 spec Phase 1 假设 plugin `question.reply` 一次性收 answers 数组（与现有 `client.question.reply` SDK 行为对齐）。如果实际是逐题 API，需要在 plugin 里循环。
 
 4. **物理刘海遮挡**：Nook 不主动让出刘海宽度。中间信息被遮挡由 OS 物理遮挡完成（用户视觉上看到的是左问号 + 右音乐，中间空）。这与 `MusicCardView` 当前行为一致。
 
-5. **Question + Permission 同时发生**：当前 `.waitingForInput` 和 `.waitingForApproval` 不可能同 session 同时存在（`SessionPhase.canTransition(to:)` 互斥）。但跨 session 可能：A 等待 question、B 等待 permission → 弹哪个？看 phase 时间戳，`pushTo` 选最新。
+5. **Question + Permission 同时发生**：
+   - **同 session**：`.waitingForInput` 和 `.waitingForApproval` 通过 `SessionPhase.canTransition(to:)` 互斥 — 天然安全，不会有同 session 同时等两件事。
+   - **跨 session**：A 等 question + B 等 permission 都发生。Phase 进入时会刷新 `session.lastActivity`（见 `SessionStore.processOpencodeWaitingForUserInput` 等），直接用 `lastActivity` 排序取最新。不新增字段。
+   - **抢焦点判定**：本 spec **不**做 `isPermissionLike` guard（理由：`.permission(SessionState)` case 当前不存在，permission 也不自动展开 notch — 见风险 #10）。简单策略：notch 关闭态 → 展开并 pushTo 最新 question；如果 notch 已经开着且用户在 chat view 看另一 session → 不 yank（用户在做事别打断）。未来 permission 若做成 notch 面板，再补 `.permission` case + 抢焦点规则，**不要在本 spec 提前承担这个依赖**。
 
 6. **Auto-expand 干扰用户**：用户可能在看其他 app，突然 notch 自动展开会打断。考虑加 `@AppStorage` 设置：`autoExpandOnQuestion` 默认 true，用户可关。
 
@@ -578,7 +619,7 @@ final class TerminalFallbackProvider: QuestionReplyProvider {
 
 9. **WaveIndicator 组件**：`CompactQuestionActivityView` 引用的 `WaveIndicator` 是仿 MusicCardView 波纹条的小型组件，封装 `musicManager.playbackState.isPlaying` 状态。Phase 1 实现保持简单（8 个静态柱形 + isPlaying 时缓慢上下浮动即可，不复用 MusicCardView 的 TimelineView 复杂度）。
 
-10. **`NotchContentType.isPermissionLike` 判定**：当前没有这个 API，需要加 — 等同于 `case .permission(SessionState)`。Phase 1 时 permission 已经是独立 case，所以这个判定是直接的。
+10. ~~`NotchContentType.isPermissionLike` 判定~~：**已删**。原本想用来防止 question 面板抢正在显示 permission 的 notch 焦点，但 (a) `.permission` case 当前不存在，(b) SessionStore 现在根本不自动展开 permission notch（permission 只通过 closed-state chip + chat view 按钮交互）。不需要这个 guard — 跨 session 多 question 时直接用 `session.lastActivity` 排序取最新（见风险 #5 重写）。
 
 ---
 
