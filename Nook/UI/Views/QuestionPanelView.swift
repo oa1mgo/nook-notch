@@ -27,10 +27,15 @@ struct QuestionPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             headerBar
-            if pendingQuestions.isEmpty {
-                loadingPlaceholder
-            } else if !replyProvider.supportsInlineAnswer {
+            // Capability check first: the terminal-fallback path may legitimately
+            // have no questions/context yet (opencode-less providers), so it must
+            // still render the "Go to Terminal" button instead of spinning on
+            // loadingPlaceholder forever. Only inline-answer providers gate on
+            // questions being loaded.
+            if !replyProvider.supportsInlineAnswer {
                 terminalFallbackCard
+            } else if pendingQuestions.isEmpty {
+                loadingPlaceholder
             } else if pendingQuestions.count == 1 {
                 singleQuestionCard
             } else {
