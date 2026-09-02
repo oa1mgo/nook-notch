@@ -738,12 +738,12 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             if wasStreamed {
                 Self.logNotice("→ retract streamed question parent text session=\(sessionId) messageID=\(messageId)")
                 return [.assistantStreamingCancelled(sessionId: sessionId, messageId: messageId),
-                        .waitingForUserInput(sessionId: sessionId, cwd: cwd)]
+                        .waitingForUserInput(sessionId: sessionId, cwd: cwd, requestId: nil)]
             }
             Self.logNotice("→ suppressed question parent text session=\(sessionId) messageID=\(messageId)")
         }
         Self.logNotice("→ waitingForUserInput (question.asked) session=\(sessionId) cwd=\(cwd)")
-        return [.waitingForUserInput(sessionId: sessionId, cwd: cwd)]
+        return [.waitingForUserInput(sessionId: sessionId, cwd: cwd, requestId: nil)]
     }
 
     /// Handle opencode's `permission.asked` event. opencode fires this when a
@@ -1387,7 +1387,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // its event model, or the plugin socket drops the event, the
             // list view still gets the correct phase.
             if toolName.lowercased() == "question" || toolName.lowercased() == "askuserquestion" {
-                return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd)]
+                return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd, requestId: nil)]
             }
             return [preToolEvent]
         case "completed":

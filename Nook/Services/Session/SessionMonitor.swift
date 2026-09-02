@@ -108,7 +108,7 @@ class SessionMonitor: ObservableObject {
                         await SessionStore.shared.process(.opencodeSessionStarted(sessionId: sessionId, cwd: cwd))
                     case .processingStarted(let sessionId, let cwd):
                         await SessionStore.shared.process(.opencodeProcessingStarted(sessionId: sessionId, cwd: cwd))
-                    case .waitingForUserInput(let sessionId, let cwd):
+                    case .waitingForUserInput(let sessionId, let cwd, _):
                         await SessionStore.shared.process(.opencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd))
                     case .stop(let sessionId, let cwd):
                         OpencodeChatItemAdapter.shared.clearSession(sessionId)

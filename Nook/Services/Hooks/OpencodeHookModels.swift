@@ -32,7 +32,7 @@ enum OpencodeSessionEvent: Sendable {
     case sessionStart(sessionId: String, cwd: String)
     case userPromptSubmitted(sessionId: String, cwd: String, prompt: String?, messageId: String? = nil)
     case processingStarted(sessionId: String, cwd: String)
-    case waitingForUserInput(sessionId: String, cwd: String)
+    case waitingForUserInput(sessionId: String, cwd: String, requestId: String?)
     case assistantThinking(sessionId: String, cwd: String, text: String, messageId: String? = nil)
     /// Streaming assistant reasoning (thinking) — emitted on every
     /// `message.part.delta` when the delta is routed into the reasoning buffer.
