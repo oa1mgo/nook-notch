@@ -905,6 +905,17 @@ struct NotchView: View {
                     primaryTextColor: expandedPrimaryTextColor,
                     secondaryTextColor: expandedSecondaryTextColor
                 )
+            case .question(let session):
+                // Provisional: keeps this commit building. Task 14 replaces
+                // this branch with QuestionPanelView.
+                ChatView(
+                    sessionId: session.sessionId,
+                    initialSession: session,
+                    sessionMonitor: sessionMonitor,
+                    viewModel: viewModel,
+                    primaryTextColor: expandedPrimaryTextColor,
+                    secondaryTextColor: expandedSecondaryTextColor
+                )
             }
         }
         .frame(width: notchSize.width - 24) // Fixed width to prevent text reflow
