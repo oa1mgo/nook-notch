@@ -56,7 +56,7 @@
 
 import Foundation
 
-enum QuestionReplyError: LocalizedError {
+enum QuestionReplyError: LocalizedError, Equatable {
     case missingRequestId
     case unsupportedProvider
     case transportError(String)
@@ -202,9 +202,9 @@ final class QuestionReplyProviderRegistry {
         providers[provider.provider] = provider
     }
 
-    func provider(for session: SessionState) -> QuestionReplyProvider {
+    func provider(for session: SessionState) throws -> QuestionReplyProvider {
         guard let p = providers[session.provider] else {
-            fatalError("QuestionReplyProvider for \(session.provider) not registered")
+            throw QuestionReplyError.unsupportedProvider
         }
         return p
     }
@@ -234,76 +234,91 @@ git commit -m "feat(question): add QuestionReplyProviderRegistry"
 
 - [ ] **Step 1: 创建 TerminalFocusHelper.swift**
 
-把 `ChatView.tryFocusTerminal()` (lines 584-632) 的核心逻辑迁移到这里：
+**原样复制** `ChatView.tryFocusTerminal()` (lines 584-632) + `focusTerminalApp(forChildPid:)` (lines 637-660) 的逻辑，只改签名：`session: SessionState` 作为入参（不依赖 `viewModel`）。三级回退全部保留：Yabai → process tree → bundle ID。
 
 ```swift
 // Nook/UI/Components/TerminalFocusHelper.swift
 
+import AppKit
 import Foundation
 
 enum TerminalFocusHelper {
-    /// 与 ChatView.tryFocusTerminal 相同逻辑，抽取为独立 helper。
-    /// 成功返回 true，失败返回 false + errorMessage。
+    /// 原样复制 ChatView.tryFocusTerminal (lines 584-632) + focusTerminalApp (lines 637-660)。
+    /// 不依赖 viewModel，只用 session.pid / session.cwd / session.isInTmux。
+    /// 返回 true = 成功激活终端窗口，false = 所有路径失败。
     @MainActor
-    static func tryFocusTerminal(
-        for session: SessionState,
-        viewModel: NotchViewModel
-    ) async -> (success: Bool, error: String?) {
-        guard let pid = session.pid else {
-            return (false, "No process ID for session \(session.id)")
-        }
-
-        // 1. tmux 路径
-        if let target = TmuxTargetFinder.findTarget(forClaudePid: pid) {
-            TmuxController.shared.switchToPane(target)
-            return (true, nil)
-        }
-
-        // 2. non-tmux fallback
-        if let terminalPid = ProcessTreeBuilder.findTerminalPid(forChildPid: pid),
-           let app = NSRunningApplication(processIdentifier: terminalPid) {
-            app.activate()
-            return (true, nil)
-        }
-
-        // 3. last-resort bundle ID
-        let knownBundles = [
-            "com.mitchellh.ghostty",
-            "com.googlecode.iterm2",
-            "com.apple.Terminal"
-        ]
-        for bundleId in knownBundles {
-            if let app = NSRunningApplication.runningApplications(
-                withBundleIdentifier: bundleId
-            ).first {
-                app.activate()
-                return (true, nil)
+    static func tryFocusTerminal(for session: SessionState) async -> Bool {
+        // tmux path (Claude's default)
+        if session.isInTmux, let pid = session.pid {
+            if await YabaiController.shared.focusWindow(forClaudePid: pid) {
+                DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) succeeded")
+                return true
             }
+            DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) failed, trying forWorkingDirectory")
+            if await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd) {
+                DebugLog.shared.write("[focus] tmux focusWindow(forWorkingDirectory) succeeded")
+                return true
+            }
+            DebugLog.shared.write("[focus] tmux path failed, falling through to non-tmux fallback")
         }
+        // Non-tmux fallback (e.g. opencode running directly in Ghostty)
+        if let pid = session.pid {
+            if await focusTerminalApp(forChildPid: Int(pid)) {
+                DebugLog.shared.write("[focus] non-tmux focusTerminalApp succeeded")
+                return true
+            }
+            DebugLog.shared.write("[focus] non-tmux focusTerminalApp failed: could not find terminal app for pid=\(pid)")
+            let terminalBundleIds = ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"]
+            for bundleId in terminalBundleIds {
+                if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+                    let ok = app.activate()
+                    DebugLog.shared.write("[focus] last-resort activate bundleId=\(bundleId) success=\(ok)")
+                    if ok { return true }
+                }
+            }
+            DebugLog.shared.write("[focus] all focus methods failed")
+        } else {
+            DebugLog.shared.write("[focus] session.pid is nil, cannot focus terminal")
+        }
+        return false
+    }
 
-        return (false, "No terminal app found for session \(session.id)")
+    /// Walk up the process tree from childPid until we hit a known terminal app.
+    /// 原样复制 ChatView.focusTerminalApp(forChildPid:) (lines 637-660)。
+    private static func focusTerminalApp(forChildPid childPid: Int) async -> Bool {
+        let tree = ProcessTreeBuilder.shared.buildTree()
+        guard let terminalPid = ProcessTreeBuilder.shared.findTerminalPid(
+            forChildPid: childPid,
+            tree: tree
+        ) else {
+            return false
+        }
+        guard let app = NSRunningApplication(processIdentifier: pid_t(terminalPid)) else {
+            return false
+        }
+        return app.activate()
     }
 }
 ```
+
+**注意**：`ProcessTreeBuilder.shared.buildTree()` 和 `findTerminalPid(forChildPid:tree:)` 的确切签名需对照 `ProcessTreeBuilder.swift` 调整。plan 里保留了原始方法调用，如果签名不同以源码为准。
 
 - [ ] **Step 2: 修改 ChatView.swift — tryFocusTerminal 改为调 TerminalFocusHelper**
 
-找到 `ChatView.swift` 里的 `tryFocusTerminal` 方法，把核心逻辑替换成：
+找到 `ChatView.swift` 里的 `tryFocusTerminal()` 方法 (lines 584-632)，替换为：
 
 ```swift
-@MainActor
 private func tryFocusTerminal() async -> Bool {
     guard let session = viewModel.currentChatSession else { return false }
-    let result = await TerminalFocusHelper.tryFocusTerminal(
-        for: session,
-        viewModel: viewModel
-    )
-    if !result.success {
-        focusErrorMessage = result.error ?? "Failed to focus terminal"
+    let ok = await TerminalFocusHelper.tryFocusTerminal(for: session)
+    if !ok {
+        focusErrorMessage = "Failed to focus terminal"
     }
-    return result.success
+    return ok
 }
 ```
+
+同样，`focusTerminalApp(forChildPid:)` (lines 637-660) 可以删掉（已迁移到 helper），或者保留为 wrapper 调 helper。推荐删除重复代码。
 
 - [ ] **Step 3: 编译验证**
 
@@ -388,6 +403,8 @@ git commit -m "feat(question): add TerminalFallbackProvider for Claude/Codex/Cur
 
 - [ ] **Step 1: 创建文件**
 
+`OpencodeCommandSocket.sendCommand` 是同步、fire-and-forget、非 async 非 throws（`OpencodeCommandSocket.swift:36`）。`sendAnswer` 只对前置条件（缺 requestId）抛错；transport 视为乐观发送。notch 关闭由 `QuestionPanelView.onChange(sessionMonitor.changes)` 检测 `phase ≠ .waitingForInput` 自动触发（spec §2 已写，这是 SSOT）。
+
 ```swift
 // Nook/Services/Question/OpencodeQuestionReplyProvider.swift
 
@@ -407,6 +424,9 @@ final class OpencodeQuestionReplyProvider: QuestionReplyProvider {
             throw QuestionReplyError.missingRequestId
         }
 
+        // OpencodeCommandSocket.sendCommand 是同步 fire-and-forget，
+        // 不是 async/throws。仅对前置条件抛错；transport 乐观发送。
+        // notch 关闭由 panel onChange(phase ≠ .waitingForInput) 驱动。
         let wireAnswers: [[String]] = answers.map { [$0] }
         let payload: [String: Any] = [
             "cmd": "question.reply",
@@ -418,8 +438,34 @@ final class OpencodeQuestionReplyProvider: QuestionReplyProvider {
         let pid = await MainActor.run {
             SessionStore.shared.sessions[sessionId]?.pid
         }
+        OpencodeCommandSocket.shared.sendCommand(payload, pid: pid)
+        // fire-and-forget: 不 await，不 throw
+    }
+}
+```
 
-        try await OpencodeCommandSocket.shared.sendCommand(payload, pid: pid)
+同样，`QuestionPanelView.sendAnswers` 的 catch/errorMessage 分支也要简化（只有 `missingRequestId` 会 throw，transport 不会）：
+
+```swift
+// QuestionPanelView.sendAnswers 里：
+private func sendAnswers(_ answers: [String]) {
+    isSending = true
+    Task {
+        do {
+            try await replyProvider.sendAnswer(
+                sessionId: session.id,
+                requestId: session.pendingQuestionContext?.requestId,
+                questions: session.pendingQuestionContext?.questions ?? [],
+                answers: answers
+            )
+            // sendAnswer 是 fire-and-forget，成功不 throw。
+            // notch 关闭由 .onChange(phase ≠ .waitingForInput) 驱动。
+        } catch {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                isSending = false
+            }
+        }
     }
 }
 ```
@@ -467,14 +513,17 @@ final class QuestionReplyProviderTests: XCTestCase {
         XCTAssertEqual(result.provider, .claude)
     }
 
-    func testRegistryFatalErrorOnMissing() throws {
+    func testRegistryThrowsOnMissing() throws {
         let reg = QuestionReplyProviderRegistry()
         let session = SessionState(
             sessionId: "test", cwd: "/tmp", phase: .idle, provider: .opencode
         )
 
         XCTAssertThrowsError(try reg.provider(for: session)) { error in
-            XCTAssertTrue(error is QuestionReplyError)
+            guard let qErr = error as? QuestionReplyError else {
+                return XCTFail("Expected QuestionReplyError, got \(error)")
+            }
+            XCTAssertEqual(qErr, .unsupportedProvider)
         }
     }
 
@@ -604,7 +653,15 @@ private func handleWaitingForUserInput(sessionId: String) {
 
 - [ ] **Step 2: 在所有 .waitingForInput 入口调用 helper**
 
-搜索 `processOpencodeWaitingForUserInput` 和 `processHookEvent` 里走到 `.waitingForInput` 的路径，在设完 `session.phase = .waitingForInput` 后调 `handleWaitingForUserInput(sessionId:)`。
+**Phase 1 范围说明**：`SessionStore.swift:1010` 是当前唯一设置 `session.phase = .waitingForInput` 的地方（`processOpencodeWaitingForUserInput`）。`processClaudeWaitingForUserInput` 不存在 — Claude 的 question 走的是 `.waitingForTerminalApproval` 或直接跳终端，Phase 1 不触发 auto-expand。所以 Phase 1 只需在 `processOpencodeWaitingForUserInput` 里调 helper。
+
+在 `processOpencodeWaitingForUserInput(sessionId:cwd:toolUseId:requestId:)` 里，设完 `session.phase` 后调：
+
+```swift
+await handleWaitingForUserInput(sessionId: sessionId)
+```
+
+如果 Phase 2 需要 Claude auto-expand，在 `processHookEvent` 里走到 `.waitingForInput` 的路径补调即可。
 
 - [ ] **Step 3: 编译验证**
 
@@ -638,16 +695,24 @@ async function handleCommand(cmd) {
             // 现有逻辑 (lines ~86-120)
             break;
         case "question.reply":          // [NEW]
+            // 镜像 permission.reply 模式（index.js:95-114），
+            // 使用 client._client (HeyApi Client) 的 post 方法，
+            // 而不是 SDK 的 client.questions.reply（后者未验证在当前版本可用）。
             if (!cmd.requestId || !cmd.sessionId) {
                 logDebug('question.reply missing requestId or sessionId');
                 return;
             }
             const answers = cmd.answers;  // string[][] 协议形状
             try {
-                await client.questions.reply({
-                    sessionID: cmd.sessionId,
-                    requestID: cmd.requestId,
-                    answers: answers
+                const heyApiClient = input?.client?._client;
+                if (!heyApiClient) {
+                    logDebug('question.reply: heyApiClient not available, cannot send');
+                    return;
+                }
+                await heyApiClient.post({
+                    url: "/api/session/{sessionID}/question/{requestID}/reply",
+                    path: { sessionID: cmd.sessionId, requestID: cmd.requestId },
+                    body: { answers }
                 });
                 logDebug(`question.reply sent: requestId=${cmd.requestId} answers=${JSON.stringify(answers)}`);
             } catch (err) {
@@ -673,11 +738,20 @@ async function handleCommand(cmd) {
 cd /Users/wuruofan/mine/rfw/nook/Nook/Resources/opencode-plugin && npm install 2>&1 | tail -3
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: 实测 heyApiClient.post 路径**
+
+在 opencode 实例里触发一个 AskUserQuestion，看 `/tmp/nook-plugin-debug.log`：
+- 有 `question.reply sent` → 通了
+- 有 `heyApiClient not available` → 输入参数路径不对，需调试 `input?.client?._client`
+- 有 `question.reply failed` → URL/path/body 格式需对照 opencode 源码调整
+
+如果 `client._client.post` 走不通，回退到 `client.questions.reply()`（SDK 直接调用），此时加注释说明版本差异。
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add Nook/Resources/opencode-plugin/index.js Nook/Resources/opencode-plugin/package.json
-git commit -m "feat(opencode-plugin): add question.reply handler + bump version"
+git commit -m "feat(opencode-plugin): add question.reply handler (mirror permission pattern) + bump version"
 ```
 
 ---
@@ -700,11 +774,18 @@ case question(SessionState)
 在 `NotchViewModel.openedSize` 的 switch 里，加 `.question` case（高度用 `panelHeightForPage`，宽度 `min(screenRect.width * 0.4, 480)` — 与 menu/agents/shortcuts 相同）：
 
 ```swift
-case .question(let session):
-    let width = min(screenRect.width * 0.4, 480)
-    let contentHeight: CGFloat = 420  // 约 4 行选项 + 输入框 + header
-    let height = min(contentHeight + headerHeight + 12, maxHeight)
-    return (width: width, height: height)
+case .question:
+    // 仿 .agents 模式：固定 content 高度 + header + 12pt trailing gap。
+    // Question 面板内容固定（1 question 标题 + 3-4 options + 输入框 ≈ 340pt），
+    // 不需要动态测量。与 .menu/.agents 用同一套 maxHeight 公式。
+            let headerHeight = settingsPageHeaderHeight(for: geometry)
+            let contentHeight: CGFloat = 340  // question title + options + input
+            let raw = contentHeight + headerHeight + 12
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
+            return CGSize(
+                width: min(screenRect.width * 0.4, 480),
+                height: min(raw, maxHeight)
+            )
 ```
 
 - [ ] **Step 3: 编译验证**
@@ -880,7 +961,8 @@ if showCompactQuestionChip {
 case .question(let session):
     QuestionPanelView(
         session: session,
-        replyProvider: QuestionReplyProviderRegistry.shared.provider(for: session),
+        replyProvider: (try? QuestionReplyProviderRegistry.shared.provider(for: session))
+            ?? TerminalFallbackProvider(provider: session.provider),
         onClose: { viewModel.navigateBack() }
     )
 ```
