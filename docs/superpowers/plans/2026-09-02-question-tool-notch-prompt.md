@@ -364,17 +364,14 @@ struct TerminalFallbackProvider: QuestionReplyProvider {
     func focusTerminalForAnswer(session: SessionState) {
         let vm = NotchViewModel.shared
         Task {
-            let result = await TerminalFocusHelper.tryFocusTerminal(
-                for: session,
-                viewModel: vm
-            )
-            if result.success {
+            // Task 5 定义：tryFocusTerminal(for:) async -> Bool
+            // 不传 viewModel（helper 不依赖它），返回 Bool 而非 Result
+            let ok = await TerminalFocusHelper.tryFocusTerminal(for: session)
+            if ok {
                 vm.notchClose(restorePreviousApp: false)
             } else {
                 // 不关闭 notch，让用户看到错误
-                DebugLog.shared.write(
-                    "[question] focusTerminal failed: \(result.error ?? "unknown")"
-                )
+                DebugLog.shared.write("[question] focusTerminal failed")
             }
         }
     }
@@ -498,6 +495,7 @@ git commit -m "feat(question): add OpencodeQuestionReplyProvider (question.reply
 import XCTest
 @testable import Nook
 
+@MainActor
 final class QuestionReplyProviderTests: XCTestCase {
 
     func testRegistryReturnsRegisteredProvider() throws {
@@ -508,7 +506,7 @@ final class QuestionReplyProviderTests: XCTestCase {
         let session = SessionState(
             sessionId: "test", cwd: "/tmp", phase: .idle, provider: .claude
         )
-        let result = reg.provider(for: session)
+        let result = try reg.provider(for: session)
         XCTAssertTrue(result.supportsInlineAnswer == false)
         XCTAssertEqual(result.provider, .claude)
     }
@@ -540,7 +538,7 @@ final class QuestionReplyProviderTests: XCTestCase {
 }
 ```
 
-注意：`provider(for:)` 当前用 `fatalError`，测试里 `XCTAssertThrowsError` 可能不会完美捕获 fatal。如果编译时 `fatalError` 导致测试 crash，改用 `XCTExpectCrash` 或改 Registry 实现为 `throws` 返回。
+注意：`provider(for:)` 已改为 `throws` 返回 `QuestionReplyError.unsupportedProvider`（见 Task 4 P4 修复），`XCTAssertThrowsError` 直接可用。
 
 - [ ] **Step 2: 运行测试**
 
@@ -684,44 +682,44 @@ git commit -m "feat(question): add handleWaitingForUserInput auto-expand helper"
 - Modify: `Nook/Resources/opencode-plugin/index.js`
 - Modify: `Nook/Resources/opencode-plugin/package.json`
 
-- [ ] **Step 1: 打开 index.js，找到 handleCommand 函数**
+- [ ] **Step 1: 打开 index.js，找到 handleCommand 函数，在现有 permission.reply 块后追加 else if 分支**
 
-在 `handleCommand` 的 switch/case 里加 `question.reply` 分支：
+**真实签名**：`async function handleCommand(rawLine, input)`（index.js:75），permission 用 `if (cmd.cmd === ...)` 块（index.js:86）。**不要重定义函数，也不要把现有 if 改成 switch**——会破坏 `input` 闭包和现有 permission 逻辑。在 `if (cmd.cmd === "permission.reply") { ... }` 块后**插入 `else if` 分支**，复用现有 `input`：
 
 ```js
-async function handleCommand(cmd) {
-    switch (cmd.cmd) {
-        case "permission.reply":
-            // 现有逻辑 (lines ~86-120)
-            break;
-        case "question.reply":          // [NEW]
-            // 镜像 permission.reply 模式（index.js:95-114），
-            // 使用 client._client (HeyApi Client) 的 post 方法，
-            // 而不是 SDK 的 client.questions.reply（后者未验证在当前版本可用）。
-            if (!cmd.requestId || !cmd.sessionId) {
-                logDebug('question.reply missing requestId or sessionId');
+async function handleCommand(rawLine, input) {
+    // ... 现有 JSON parse 等逻辑 ...
+    const cmd = JSON.parse(rawLine);
+    if (cmd.cmd === "permission.reply") {
+        // 现有逻辑 (lines ~86-120)，保留原样
+    } else if (cmd.cmd === "question.reply") {       // [NEW]
+        // 镜像 permission.reply 模式：使用 client._client (HeyApi Client) 的 post 方法，
+        // 而不是 SDK 的 client.questions.reply（后者未验证在当前版本可用）。
+        if (!cmd.requestId || !cmd.sessionId) {
+            logDebug('question.reply missing requestId or sessionId');
+            return;
+        }
+        const answers = cmd.answers;  // string[][] 协议形状
+        try {
+            const heyApiClient = input?.client?._client;
+            if (!heyApiClient) {
+                logDebug('question.reply: heyApiClient not available, cannot send');
                 return;
             }
-            const answers = cmd.answers;  // string[][] 协议形状
-            try {
-                const heyApiClient = input?.client?._client;
-                if (!heyApiClient) {
-                    logDebug('question.reply: heyApiClient not available, cannot send');
-                    return;
-                }
-                await heyApiClient.post({
-                    url: "/api/session/{sessionID}/question/{requestID}/reply",
-                    path: { sessionID: cmd.sessionId, requestID: cmd.requestId },
-                    body: { answers }
-                });
-                logDebug(`question.reply sent: requestId=${cmd.requestId} answers=${JSON.stringify(answers)}`);
-            } catch (err) {
-                logDebug(`question.reply failed: ${err.message}`);
-            }
-            break;
+            await heyApiClient.post({
+                url: "/api/session/{sessionID}/question/{requestID}/reply",
+                path: { sessionID: cmd.sessionId, requestID: cmd.requestId },
+                body: { answers }
+            });
+            logDebug(`question.reply sent: requestId=${cmd.requestId} answers=${JSON.stringify(answers)}`);
+        } catch (err) {
+            logDebug(`question.reply failed: ${err.message}`);
+        }
     }
 }
 ```
+
+**保留原函数签名、闭包、permission 块不动**，只在末尾追加 else if 分支。
 
 - [ ] **Step 2: 在 package.json bump 版本**
 
@@ -1023,6 +1021,15 @@ struct QuestionPanelView: View {
             }
         }
         .onAppear { loadPendingQuestions() }
+        // [SSOT] P2/B4 修复：notch 关闭的唯一真值来源是 agent 推进 phase。
+        // 即使 sendAnswer 静默失败（heyApiClient 不可用、socket 丢包），
+        // agent 一旦处理完问题把 phase 转 .processing/.ended，notch 自动关。
+        // Task 16 的乐观 notchClose 作为兜底保留（onChange 二次触发幂等）。
+        .onChange(of: session.phase) { _, newPhase in
+            if newPhase != .waitingForInput {
+                onClose()
+            }
+        }
     }
 
     // MARK: - Header
