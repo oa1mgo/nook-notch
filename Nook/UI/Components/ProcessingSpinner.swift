@@ -49,13 +49,34 @@ struct ProcessingSpinner: View {
 
     @ViewBuilder
     var body: some View {
-        Text(SessionLoadingStyle.symbols[phase % SessionLoadingStyle.symbols.count])
-            .font(.system(size: 16, weight: .bold))
-            .foregroundColor(color)
-            .frame(width: 16, alignment: .center)
-            .onReceive(timer) { _ in
-                phase = (phase + 1) % SessionLoadingStyle.symbols.count
+        if provider == .codex {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                let cycle = timeline.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 0.8) / 0.8
+
+                ZStack {
+                    Circle()
+                        .stroke(color.opacity(0.18), lineWidth: 1.6)
+
+                    Circle()
+                        .trim(from: 0.12, to: 0.72)
+                        .stroke(
+                            color,
+                            style: StrokeStyle(lineWidth: 1.8, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(cycle * 360))
+                }
             }
+            .frame(width: 16, height: 16)
+        } else {
+            Text(SessionLoadingStyle.symbols[phase % SessionLoadingStyle.symbols.count])
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(color)
+                .frame(width: 16, alignment: .center)
+                .onReceive(timer) { _ in
+                    phase = (phase + 1) % SessionLoadingStyle.symbols.count
+                }
+        }
     }
 }
 

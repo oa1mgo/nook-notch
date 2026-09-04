@@ -1,6 +1,6 @@
 # Progress
 
-> Last updated: 2026-09-04 (Audio-Reactive Music Glow Beta)
+> Last updated: 2026-09-04 (Codex activity icon restoration)
 
 ## 🎯 Current Focus
 <!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复 + Shortcuts 页面 panel 底部空白修复**（两个 1.3.2 follow-up）：
@@ -38,6 +38,7 @@
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
 
 ## ✅ Recently Completed
+- **2026-09-04 Codex activity icon restoration** — Restored the Codex-specific rotating processing ring in session/chat rows after confirming hooks and lifecycle state remained healthy. Replaced only the small-notch Codex activity mark with the ChatGPT knot template and a timeline-driven breathing animation; the Agents settings page keeps the Codex product icon. Full macOS suite: 60 tests, 0 failures; Debug build and launch verified.
 - **2026-09-04 Audio-Reactive Music Glow Beta** — Added opt-in system-audio capture and beat analysis for the glow and compact music bars behind a dedicated Beta Features switch. The regular Music Edge Glow remains permission-free with its simulated breathing fallback; capture failures fall back cleanly and surface actionable feedback. Full macOS suite: 60 tests, 0 failures; Debug build and launch verified.
 - **2026-09-01 Codex hooks/transcript compatibility (1.3.3)** — Synced the Nook Codex integration with the current lifecycle by adding `SessionEnd`, using its documented 3-second timeout cap, and routing it through session cleanup. Codex transcript history now accepts user text only from the direct `event_msg/user_message` boundary, excluding injected memory/environment/plugin context; tool parsing now supports string inputs and array text outputs. Hook writes are atomic and uninstall preserves unrelated hooks. Full macOS test suite: 28 tests, 0 failures.
 - **2026-07-08 focus 修复 + ⌃O 关 notch + ChatView 日志/文案清理 (1.3.2)** — 三个改动一起:
