@@ -3,6 +3,7 @@ import SwiftUI
 
 struct CompactMusicActivityView: View {
     @ObservedObject var musicManager: MusicManager
+    let realSpectrumLevels: [Float]?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -28,7 +29,8 @@ struct CompactMusicActivityView: View {
 
             CompactPlaybackIndicatorView(
                 isPlaying: musicManager.playbackState.isPlaying,
-                gradientColors: musicManager.artworkGradient
+                gradientColors: musicManager.artworkGradient,
+                realSpectrumLevels: realSpectrumLevels
             )
             .frame(width: 16, height: 16)
             .padding(1)
@@ -82,9 +84,14 @@ private extension CompactMusicActivityView {
 private struct CompactPlaybackIndicatorView: View {
     let isPlaying: Bool
     let gradientColors: [NSColor]
+    let realSpectrumLevels: [Float]?
 
     var body: some View {
-        CompactAudioSpectrumView(isPlaying: isPlaying, gradientColors: gradientColors)
+        CompactAudioSpectrumView(
+            isPlaying: isPlaying,
+            gradientColors: gradientColors,
+            realSpectrumLevels: realSpectrumLevels
+        )
             .frame(width: 16, height: 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
@@ -93,16 +100,19 @@ private struct CompactPlaybackIndicatorView: View {
 private struct CompactAudioSpectrumView: NSViewRepresentable {
     let isPlaying: Bool
     let gradientColors: [NSColor]
+    let realSpectrumLevels: [Float]?
 
     func makeNSView(context: Context) -> CompactAudioSpectrum {
         let spectrum = CompactAudioSpectrum()
         spectrum.setGradientColors(gradientColors)
+        spectrum.setRealSpectrumLevels(realSpectrumLevels)
         spectrum.setPlaying(isPlaying)
         return spectrum
     }
 
     func updateNSView(_ nsView: CompactAudioSpectrum, context: Context) {
         nsView.setGradientColors(gradientColors)
+        nsView.setRealSpectrumLevels(realSpectrumLevels)
         nsView.setPlaying(isPlaying)
     }
 }
@@ -116,6 +126,7 @@ private final class CompactAudioSpectrum: NSView {
     private var barLayers: [CAShapeLayer] = []
     private var barScales: [CGFloat] = []
     private var isPlaying = true
+    private var realSpectrumLevels: [CGFloat]?
     private var animationTimer: Timer?
     private var gradientPhase: CGFloat = 0
 
@@ -136,13 +147,36 @@ private final class CompactAudioSpectrum: NSView {
     }
 
     func setPlaying(_ playing: Bool) {
-        guard isPlaying != playing || animationTimer == nil else { return }
+        guard isPlaying != playing || (animationTimer == nil && realSpectrumLevels == nil) else { return }
 
         isPlaying = playing
         if isPlaying {
-            startAnimating()
+            if let realSpectrumLevels {
+                stopRandomAnimation()
+                updateBars(with: realSpectrumLevels)
+            } else {
+                startAnimating()
+            }
         } else {
             stopAnimating()
+        }
+    }
+
+    func setRealSpectrumLevels(_ levels: [Float]?) {
+        let resolved = levels.map { values in
+            (0..<barCount).map { index in
+                CGFloat(index < values.count ? values[index] : 0)
+            }
+        }
+        guard resolved != realSpectrumLevels else { return }
+        realSpectrumLevels = resolved
+
+        guard isPlaying else { return }
+        if let resolved {
+            stopRandomAnimation()
+            updateBars(with: resolved)
+        } else {
+            startAnimating()
         }
     }
 
@@ -213,9 +247,46 @@ private final class CompactAudioSpectrum: NSView {
     }
 
     private func stopAnimating() {
+        stopRandomAnimation()
+        resetBars()
+    }
+
+    private func stopRandomAnimation() {
         animationTimer?.invalidate()
         animationTimer = nil
-        resetBars()
+
+        // Fake mode leaves a filled animation on the same scale key path used
+        // by real spectrum updates. Preserve its visible value while removing
+        // it so live bands neither snap nor compete with a stale fake pulse.
+        for (index, barLayer) in barLayers.enumerated() {
+            guard barLayer.animation(forKey: "scaleY") != nil else { continue }
+            let visibleScale = (barLayer.presentation()?.value(
+                forKeyPath: "transform.scale.y"
+            ) as? NSNumber)?.doubleValue
+            let resolvedScale = CGFloat(visibleScale ?? Double(barScales[index]))
+            barLayer.removeAnimation(forKey: "scaleY")
+            barLayer.transform = CATransform3DMakeScale(1, resolvedScale, 1)
+            barScales[index] = resolvedScale
+        }
+        gradientLayer.removeAnimation(forKey: "startPoint")
+        gradientLayer.removeAnimation(forKey: "endPoint")
+    }
+
+    private func updateBars(with levels: [CGFloat]) {
+        for (index, barLayer) in barLayers.enumerated() {
+            let currentScale = barScales[index]
+            let targetScale = min(max(0.18 + levels[index] * 0.82, 0.18), 1)
+            barScales[index] = targetScale
+
+            let animation = CABasicAnimation(keyPath: "transform.scale.y")
+            animation.fromValue = currentScale
+            animation.toValue = targetScale
+            animation.duration = 0.08
+            animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            animation.isRemovedOnCompletion = true
+            barLayer.transform = CATransform3DMakeScale(1, targetScale, 1)
+            barLayer.add(animation, forKey: "realScaleY")
+        }
     }
 
     private func updateBars() {

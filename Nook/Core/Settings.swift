@@ -5,6 +5,7 @@
 //  App settings manager using UserDefaults
 //
 
+import CryptoKit
 import Foundation
 
 /// Available notification sounds
@@ -69,6 +70,8 @@ enum AppSettings {
     nonisolated static let notchAppearanceStyleKey = "notchAppearanceStyle"
     nonisolated static let artworkAdaptiveBackgroundEnabledKey = "artworkAdaptiveBackgroundEnabled"
     nonisolated static let musicEdgeGlowEnabledKey = "musicEdgeGlowEnabled"
+    nonisolated static let musicAudioReactiveGlowEnabledKey = "musicAudioReactiveGlowEnabled"
+    nonisolated static let musicAudioCaptureWasGrantedKey = "musicAudioCaptureWasGranted"
     nonisolated static let vibeGlowEnabledKey = "vibeGlowEnabled"
     nonisolated static let performanceMonitorEnabledKey = "performanceMonitorEnabled"
     nonisolated static let musicAbovePerformanceKey = "musicAbovePerformance"
@@ -83,6 +86,9 @@ enum AppSettings {
         nonisolated static let notchAppearanceStyle = AppSettings.notchAppearanceStyleKey
         nonisolated static let artworkAdaptiveBackgroundEnabled = AppSettings.artworkAdaptiveBackgroundEnabledKey
         nonisolated static let musicEdgeGlowEnabled = AppSettings.musicEdgeGlowEnabledKey
+        nonisolated static let musicAudioReactiveGlowEnabled = AppSettings.musicAudioReactiveGlowEnabledKey
+        nonisolated static let musicAudioCaptureWasGranted = AppSettings.musicAudioCaptureWasGrantedKey
+        nonisolated static let musicAudioCaptureDebugBuildFingerprint = "musicAudioCaptureDebugBuildFingerprint"
         nonisolated static let vibeGlowEnabled = AppSettings.vibeGlowEnabledKey
         nonisolated static let performanceMonitorEnabled = AppSettings.performanceMonitorEnabledKey
         nonisolated static let musicAbovePerformance = AppSettings.musicAbovePerformanceKey
@@ -97,9 +103,12 @@ enum AppSettings {
 
     nonisolated static func registerDefaults() {
         migrateNotchAppearanceStyleIfNeeded()
+        disableAutomaticAudioCaptureForNewDebugBuildIfNeeded()
         defaults.register(defaults: [
             Keys.artworkAdaptiveBackgroundEnabled: true,
-            Keys.musicEdgeGlowEnabled: true,
+            Keys.musicEdgeGlowEnabled: false,
+            Keys.musicAudioReactiveGlowEnabled: false,
+            Keys.musicAudioCaptureWasGranted: false,
             Keys.vibeGlowEnabled: false,
             Keys.performanceMonitorEnabled: true,
             Keys.musicAbovePerformance: false,
@@ -111,6 +120,20 @@ enum AppSettings {
             Keys.cursorHooksEnabled: true,
             Keys.debugLogEnabled: false,
         ])
+    }
+
+    /// Ad-hoc debug signatures identify one exact build, so TCC can ask again
+    /// after every rebuild. Avoid surprising users with an automatic prompt at
+    /// launch; the audio-reactive Beta must be enabled explicitly once instead.
+    private nonisolated static func disableAutomaticAudioCaptureForNewDebugBuildIfNeeded() {
+        #if DEBUG
+        guard defaults.bool(forKey: Keys.musicAudioReactiveGlowEnabled),
+              let currentFingerprint = musicAudioCaptureDebugBuildFingerprint,
+              defaults.string(forKey: Keys.musicAudioCaptureDebugBuildFingerprint) != currentFingerprint else {
+            return
+        }
+        defaults.set(false, forKey: Keys.musicAudioReactiveGlowEnabled)
+        #endif
     }
 
     private nonisolated static func migrateNotchAppearanceStyleIfNeeded() {
@@ -196,18 +219,71 @@ enum AppSettings {
 
     // MARK: - Music Edge Glow
 
-    /// Controls whether the breathing edge glow is shown when music is playing.
-    /// Defaults to enabled.
+    /// Controls whether the decorative edge glow is shown when music is playing.
+    /// This permission-free master switch uses the fixed breathing animation
+    /// unless the separate audio-reactive Beta is enabled and running.
     nonisolated static var musicEdgeGlowEnabled: Bool {
         get {
             if defaults.object(forKey: Keys.musicEdgeGlowEnabled) == nil {
-                return true
+                return false
             }
             return defaults.bool(forKey: Keys.musicEdgeGlowEnabled)
         }
         set {
             defaults.set(newValue, forKey: Keys.musicEdgeGlowEnabled)
         }
+    }
+
+    /// Opts in to system-audio analysis for Music Edge Glow. This remains
+    /// separate from the visual master switch so ordinary glow never requests
+    /// capture permission and can always fall back to its simulated animation.
+    nonisolated static var musicAudioReactiveGlowEnabled: Bool {
+        get {
+            if defaults.object(forKey: Keys.musicAudioReactiveGlowEnabled) == nil {
+                return false
+            }
+            return defaults.bool(forKey: Keys.musicAudioReactiveGlowEnabled)
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.musicAudioReactiveGlowEnabled)
+        }
+    }
+
+    /// Records only that capture succeeded before, so repeat toggles can skip
+    /// the educational alert. It is not treated as a permission preflight:
+    /// every enable still has to start a real Core Audio tap successfully.
+    nonisolated static var musicAudioCaptureWasGranted: Bool {
+        get { defaults.bool(forKey: Keys.musicAudioCaptureWasGranted) }
+        set { defaults.set(newValue, forKey: Keys.musicAudioCaptureWasGranted) }
+    }
+
+    /// Marks this exact Debug build as safe to resume automatically. Release
+    /// builds rely on their stable development/distribution signature instead.
+    nonisolated static func markMusicAudioCaptureGrantedForCurrentBuild() {
+        musicAudioCaptureWasGranted = true
+        #if DEBUG
+        defaults.set(
+            musicAudioCaptureDebugBuildFingerprint,
+            forKey: Keys.musicAudioCaptureDebugBuildFingerprint
+        )
+        #endif
+    }
+
+    private nonisolated static var musicAudioCaptureDebugBuildFingerprint: String? {
+        #if DEBUG
+        let bundleURL = Bundle.main.bundleURL
+        let debugLibrary = bundleURL.appendingPathComponent("Contents/MacOS/Nook.debug.dylib")
+        let codeURL = FileManager.default.fileExists(atPath: debugLibrary.path)
+            ? debugLibrary
+            : Bundle.main.executableURL
+        guard let codeURL,
+              let codeData = try? Data(contentsOf: codeURL, options: .mappedIfSafe) else {
+            return nil
+        }
+        return SHA256.hash(data: codeData).map { String(format: "%02x", $0) }.joined()
+        #else
+        return nil
+        #endif
     }
 
     // MARK: - Vibe Glow

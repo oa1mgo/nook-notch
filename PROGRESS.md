@@ -1,6 +1,6 @@
 # Progress
 
-> Last updated: 2026-09-01 (Codex hooks/transcript compatibility + 1.3.3 release)
+> Last updated: 2026-09-04 (Audio-Reactive Music Glow Beta)
 
 ## 🎯 Current Focus
 <!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复 + Shortcuts 页面 panel 底部空白修复**（两个 1.3.2 follow-up）：
@@ -38,6 +38,7 @@
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
 
 ## ✅ Recently Completed
+- **2026-09-04 Audio-Reactive Music Glow Beta** — Added opt-in system-audio capture and beat analysis for the glow and compact music bars behind a dedicated Beta Features switch. The regular Music Edge Glow remains permission-free with its simulated breathing fallback; capture failures fall back cleanly and surface actionable feedback. Full macOS suite: 60 tests, 0 failures; Debug build and launch verified.
 - **2026-09-01 Codex hooks/transcript compatibility (1.3.3)** — Synced the Nook Codex integration with the current lifecycle by adding `SessionEnd`, using its documented 3-second timeout cap, and routing it through session cleanup. Codex transcript history now accepts user text only from the direct `event_msg/user_message` boundary, excluding injected memory/environment/plugin context; tool parsing now supports string inputs and array text outputs. Hook writes are atomic and uninstall preserves unrelated hooks. Full macOS test suite: 28 tests, 0 failures.
 - **2026-07-08 focus 修复 + ⌃O 关 notch + ChatView 日志/文案清理 (1.3.2)** — 三个改动一起:
   - **focus 修复（核心）**：`NotchViewModel.notchClose(restorePreviousApp: Bool = false)`。默认 `false`（安全），快捷键路径（`handleShortcutAction` 的 `.toggleNotch`/`.closeNotch` 分支）显式传 `true`。**关键细节：`previousActiveApp` 在每次 close 时无条件清空**，否则鼠标关闭会留下陈旧引用 → 下次快捷键关闭恢复到错的 app。`restoreFocus()` 私有方法删除（内联到 notchClose 末尾）。
