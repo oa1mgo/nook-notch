@@ -30,6 +30,7 @@ struct NotchView: View {
     @StateObject private var sessionMonitor = SessionMonitor()
     @StateObject private var activityCoordinator = NotchActivityCoordinator.shared
     @StateObject private var musicManager = MusicManager()
+    @StateObject private var musicAudioAnalyzer = MusicAudioAnalyzer.shared
     @StateObject private var performanceMonitor = PerformanceMonitor()
     @ObservedObject private var updateManager = UpdateManager.shared
     @State private var previousPendingIds: Set<String> = []
@@ -51,7 +52,8 @@ struct NotchView: View {
     // change, each one starts a fresh publisher → no rotation.
     private let carouselTimer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
     @AppStorage(AppSettings.notchAppearanceStyleKey) private var notchAppearanceStyleRaw = NotchAppearanceStyle.adaptiveArtwork.rawValue
-    @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
+    @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = false
+    @AppStorage(AppSettings.musicAudioReactiveGlowEnabledKey) private var musicAudioReactiveGlowEnabled = false
     @AppStorage(AppSettings.vibeGlowEnabledKey) private var vibeGlowEnabled = false
     @AppStorage(AppSettings.performanceMonitorEnabledKey) private var performanceMonitorEnabled = true
 
@@ -234,6 +236,7 @@ struct NotchView: View {
             syncInstancesPageLayoutState()
             handleProcessingChange()
             syncVisibilityForVibeGlow()
+            syncMusicAudioAnalysis()
             // On non-notched devices, keep visible so users have a target to interact with
             if !viewModel.hasPhysicalNotch {
                 isVisible = true
@@ -257,6 +260,13 @@ struct NotchView: View {
         .onChange(of: musicManager.playbackState) { _, _ in
             syncInstancesPageLayoutState()
             handleProcessingChange()
+            syncMusicAudioAnalysis()
+        }
+        .onChange(of: musicEdgeGlowEnabled) { _, _ in
+            syncMusicAudioAnalysis()
+        }
+        .onChange(of: musicAudioReactiveGlowEnabled) { _, _ in
+            syncMusicAudioAnalysis()
         }
         .onChange(of: performanceMonitorEnabled) { _, isEnabled in
             performanceMonitor.setActive(isEnabled)
@@ -511,12 +521,14 @@ struct NotchView: View {
         vibeGlowEnabled && viewModel.status == .closed && isAnyProcessing
     }
 
-    /// Whether to show the music progress edge glow
-    private var musicEdgeGlowVisible: Bool {
-        musicManager.playbackState.isPlaying
-            && viewModel.status == .closed
-            && musicEdgeGlowEnabled
-            && !vibeGlowVisible
+    private var musicGlowPresentationMode: MusicGlowPresentationMode {
+        MusicGlowPresentationMode.resolve(
+            isEdgeGlowEnabled: musicEdgeGlowEnabled,
+            isAudioReactiveEnabled: musicAudioReactiveGlowEnabled,
+            isPlaying: musicManager.playbackState.isPlaying,
+            isAnalyzerRunning: musicAudioAnalyzer.isRunning,
+            canPresentGlow: viewModel.status == .closed && !vibeGlowVisible
+        )
     }
 
     @State private var breathingOpacity: CGFloat = 0.9
@@ -528,7 +540,7 @@ struct NotchView: View {
                 topCornerRadius: viewModel.animatedTopCornerRadius,
                 bottomCornerRadius: viewModel.animatedBottomCornerRadius
             )
-        } else if musicEdgeGlowVisible {
+        } else if musicGlowPresentationMode != .hidden {
             let glowColors = musicManager.edgeGlowGradient.map(Color.init(nsColor:))
             let glowGradient = LinearGradient(colors: glowColors, startPoint: .leading, endPoint: .trailing)
 
@@ -541,20 +553,44 @@ struct NotchView: View {
                 .trim(from: 0, to: 1)
                 .stroke(glowGradient, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                 .blur(radius: 6)
-                .opacity(breathingOpacity * 0.75)
-                .task {
+                .opacity(musicGlowOpacity)
+                .task(id: musicGlowPresentationMode) {
+                    guard musicGlowPresentationMode == .simulated else { return }
                     while !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        do {
+                            try await Task.sleep(nanoseconds: 1_500_000_000)
+                        } catch {
+                            return
+                        }
                         withAnimation(.easeInOut(duration: 1.5)) {
                             breathingOpacity = 0.15
                         }
-                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        do {
+                            try await Task.sleep(nanoseconds: 1_500_000_000)
+                        } catch {
+                            return
+                        }
                         withAnimation(.easeInOut(duration: 1.5)) {
                             breathingOpacity = 1.0
                         }
                     }
                 }
         }
+    }
+
+    private var musicGlowOpacity: Double {
+        guard musicGlowPresentationMode == .reactive else {
+            return musicGlowPresentationMode == .simulated
+                ? Double(breathingOpacity * 0.75)
+                : 0
+        }
+
+        // Signal processing owns the reactive pulse/fallback transition on one
+        // monotonic clock. This mapping preserves the approved glow treatment.
+        let intensity = Double(min(max(musicAudioAnalyzer.glowIntensity, 0), 1))
+        let visibleIntensity = min(max((intensity - 0.12) / 0.88, 0), 1)
+        let easedVisibility = visibleIntensity * visibleIntensity * (3 - 2 * visibleIntensity)
+        return easedVisibility * 0.95
     }
 
     @ViewBuilder
@@ -672,7 +708,12 @@ struct NotchView: View {
     @ViewBuilder
     private var headerRow: some View {
         if showCompactMusicActivity {
-            CompactMusicActivityView(musicManager: musicManager)
+            CompactMusicActivityView(
+                musicManager: musicManager,
+                realSpectrumLevels: musicAudioReactiveGlowEnabled && musicAudioAnalyzer.isRunning
+                    ? musicAudioAnalyzer.realSpectrumLevels
+                    : nil
+            )
                 .frame(width: closedContentWidth, height: closedNotchSize.height, alignment: .leading)
                 .frame(height: closedNotchSize.height)
         } else {
@@ -878,6 +919,14 @@ struct NotchView: View {
                     secondaryTextColor: expandedSecondaryTextColor,
                     separatorColor: expandedSeparatorColor
                 )
+            case .betaFeatures:
+                BetaFeaturesSettingsView(
+                    viewModel: viewModel,
+                    primaryTextColor: expandedPrimaryTextColor,
+                    secondaryTextColor: expandedSecondaryTextColor,
+                    separatorColor: expandedSeparatorColor,
+                    musicBundleIdentifier: musicManager.playbackState.bundleIdentifier
+                )
             case .performance(let section):
                 PerformanceDetailView(
                     viewModel: viewModel,
@@ -922,6 +971,21 @@ struct NotchView: View {
         viewModel.instancesPageSessionCount = sessionCount
         viewModel.instancesPageShowsPerformance = performanceMonitorEnabled
         viewModel.instancesPageShowsMusic = showsMusic
+    }
+
+    private func syncMusicAudioAnalysis() {
+        let playback = musicManager.playbackState
+        musicAudioAnalyzer.sync(
+            enabled: MusicGlowPresentationMode.shouldAnalyzeAudio(
+                isEdgeGlowEnabled: musicEdgeGlowEnabled,
+                isAudioReactiveEnabled: musicAudioReactiveGlowEnabled,
+                isPlaying: playback.isPlaying
+            ),
+            isPlaying: playback.isPlaying,
+            bundleIdentifier: playback.bundleIdentifier,
+            title: playback.title,
+            artist: playback.artist
+        )
     }
 
     // MARK: - Event Handlers

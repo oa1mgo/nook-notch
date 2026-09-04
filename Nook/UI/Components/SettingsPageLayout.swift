@@ -281,6 +281,17 @@ struct PageLayout: Equatable {
     }
 }
 
+/// Static structure shared by the Beta Features view, keyboard navigation,
+/// and panel sizing. Keeping the row count here prevents those three paths
+/// from drifting when more Beta switches are added later.
+enum BetaFeaturesSettingsLayout {
+    static let itemCount = 2 // Back + Audio-Reactive Music Glow
+
+    static var pageLayout: PageLayout {
+        PageLayout(rowCount: itemCount, dividerCount: 1)
+    }
+}
+
 // MARK: - Page header
 
 /// Height of the panel's header row that sits above the VStack.

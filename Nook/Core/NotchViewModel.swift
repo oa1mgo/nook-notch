@@ -61,6 +61,7 @@ enum NotchContentType: Equatable {
     case shortcuts
     case agents
     case performanceSettings
+    case betaFeatures
     case performance(PerformanceSection)
     case chat(SessionState)
 
@@ -71,6 +72,7 @@ enum NotchContentType: Equatable {
         case .shortcuts: return "shortcuts"
         case .agents: return "agents"
         case .performanceSettings: return "performanceSettings"
+        case .betaFeatures: return "betaFeatures"
         case .performance(let section): return "performance-\(section.rawValue)"
         case .chat(let session): return "chat-\(session.sessionId)"
         }
@@ -237,6 +239,17 @@ class NotchViewModel: ObservableObject {
         case .performanceSettings:
             let headerHeight = settingsPageHeaderHeight(for: geometry)
             let raw = performanceSettingsContentHeight + headerHeight + 12
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
+            return CGSize(
+                width: min(screenRect.width * 0.4, 480),
+                height: min(raw, maxHeight)
+            )
+        case .betaFeatures:
+            let raw = panelHeightForPage(
+                pageLayout: BetaFeaturesSettingsLayout.pageLayout,
+                expandedPickerHeights: [],
+                geometry: geometry
+            )
             let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
@@ -642,6 +655,12 @@ class NotchViewModel: ObservableObject {
             } else {
                 settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
             }
+        case .betaFeatures:
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = BetaFeaturesSettingsLayout.itemCount - 1
+            } else {
+                settingsFocusedIndex = max(0, settingsFocusedIndex - 1)
+            }
         case .chat:
             // Chat scroll is handled by hardcoded keys in `ShortcutManager`
             // (↑/↓/⌃F/⌃B/⌃G), independent of the settings-page shortcuts.
@@ -695,6 +714,15 @@ class NotchViewModel: ObservableObject {
             } else {
                 settingsFocusedIndex = min(performanceSettingsItemCount - 1, settingsFocusedIndex + 1)
             }
+        case .betaFeatures:
+            if settingsFocusedIndex == -1 {
+                settingsFocusedIndex = 0
+            } else {
+                settingsFocusedIndex = min(
+                    BetaFeaturesSettingsLayout.itemCount - 1,
+                    settingsFocusedIndex + 1
+                )
+            }
         case .chat:
             // See `selectPreviousItem` — chat scroll is hardcoded in ShortcutManager.
             break
@@ -707,7 +735,7 @@ class NotchViewModel: ObservableObject {
     }
 
     /// Total focusable items in the menu page
-    let menuItemCount: Int = 13
+    let menuItemCount: Int = 14
     /// Total focusable items in the shortcuts page (Back + action rows + Restore)
     var shortcutsItemCount: Int { 1 + ShortcutAction.allCases.count + 1 }
     /// Whether the Claude dir picker inside the Agents page is expanded.
