@@ -1,5 +1,16 @@
 # Release Notes
 
+## 1.4.0
+
+What's New
+
+  - Audio-Reactive Music Glow (Beta) — adds an opt-in Beta Features control that follows system output audio with locally derived spectrum, tempo, and prominent accents.
+  - Live Compact Music Bars — drives the small-notch four-bar visualization from real audio while analysis is active, while retaining the simulated animation when it is not.
+  - Permission-Friendly Fallback — keeps the regular Music Edge Glow permission-free with its existing breathing effect, starts capture only when the Beta option is enabled, and falls back cleanly with actionable feedback if capture fails.
+  - Refined Codex Activity Feedback — restores the animated Codex processing ring in session and chat rows, and uses the ChatGPT knot mark for activity in the small notch while preserving the Codex product icon in Agents settings.
+  - Regression Coverage — adds presentation-policy and signal-processing tests for the new audio-reactive behavior; the full macOS suite passes 60 tests.
+  - Release Version — bumps Nook to version 1.4.0.
+
 ## 1.3.3
 
 What's New
