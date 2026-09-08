@@ -58,6 +58,85 @@ final class ChatItemUpdateReducerTests: XCTestCase {
         XCTAssertEqual(items.map(\.id), ["reasoning", "tool", "response"])
     }
 
+    /// Regression for the "tool card appears above the model's preamble
+    /// text" bug. Within a single assistant message, the model emits text
+    /// (preamble) BEFORE tool_use (Anthropic API convention), so the
+    /// response block must sort BEFORE the tool block — not after, even
+    /// though `action < response` in `BlockTypePriority`.
+    ///
+    /// The sorter keeps reasoning first, then falls back to `blockIndex`
+    /// (insertion order). Both streaming items here share `blockIndex = 0`
+    /// (the streaming upsert slot), but Swift's stable sort preserves the
+    /// original append order: response was inserted before tool.
+    func testMessageRelativeOrderingKeepsTextPreambleBeforeTool() {
+        var items: [ChatHistoryItem] = []
+        var orderings: [String: BlockOrdering] = [:]
+
+        apply(
+            id: "reasoning",
+            block: .thinking("thinking"),
+            ordering: .messageRelative(messageId: "msg-1", typePriority: .reasoning, blockIndex: 0),
+            messageTimestamp: fixedDate(1),
+            items: &items,
+            orderings: &orderings
+        )
+        apply(
+            id: "response",
+            block: .assistantText("I'll run bun run test next"),
+            ordering: .messageRelative(messageId: "msg-1", typePriority: .response, blockIndex: 0),
+            messageTimestamp: fixedDate(1),
+            items: &items,
+            orderings: &orderings
+        )
+        apply(
+            id: "tool",
+            block: .toolCall(makeToolCall(id: "tool", input: ["command": "bun run test"])),
+            ordering: .messageRelative(messageId: "msg-1", typePriority: .action, blockIndex: 0),
+            messageTimestamp: fixedDate(1),
+            items: &items,
+            orderings: &orderings
+        )
+
+        XCTAssertEqual(items.map(\.id), ["reasoning", "response", "tool"])
+    }
+
+    /// Multiple tool calls in the same message must keep their execution
+    /// order (blockIndex ascending). The `response` slot (if any) lands
+    /// at its insertion position, not bolted to the end.
+    func testMessageRelativeOrderingPreservesMultipleToolOrder() {
+        var items: [ChatHistoryItem] = []
+        var orderings: [String: BlockOrdering] = [:]
+
+        apply(
+            id: "tool-1",
+            block: .toolCall(makeToolCall(id: "tool-1")),
+            ordering: .messageRelative(messageId: "msg-1", typePriority: .action, blockIndex: 0),
+            messageTimestamp: fixedDate(1),
+            items: &items,
+            orderings: &orderings
+        )
+        apply(
+            id: "tool-2",
+            block: .toolCall(makeToolCall(id: "tool-2")),
+            ordering: .messageRelative(messageId: "msg-1", typePriority: .action, blockIndex: 1),
+            messageTimestamp: fixedDate(1),
+            items: &items,
+            orderings: &orderings
+        )
+        apply(
+            id: "reasoning",
+            block: .thinking("thinking"),
+            ordering: .messageRelative(messageId: "msg-1", typePriority: .reasoning, blockIndex: 0),
+            messageTimestamp: fixedDate(1),
+            items: &items,
+            orderings: &orderings
+        )
+
+        // Reasoning is forced first (arrived last but must lead); tools
+        // follow their blockIndex insertion order.
+        XCTAssertEqual(items.map(\.id), ["reasoning", "tool-1", "tool-2"])
+    }
+
     func testToolStatusUpdateMutatesExistingToolOnly() {
         var items: [ChatHistoryItem] = []
         var orderings: [String: BlockOrdering] = [:]

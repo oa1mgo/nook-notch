@@ -59,17 +59,38 @@ enum ChatItemSorter {
             // opencode messageIDs have a monotonic creation-time prefix,
             // so lexicographic order is chronological.
             //
-            // Within the same message, BlockTypePriority enforces causal
-            // ordering (reasoning → action → response) regardless of
-            // event arrival order. This mirrors opencode's own provider
-            // adapter which reorders reasoning before tool_use at API
-            // call time (see anomalyco/opencode PR #10474, commit e8d6d1c,
-            // and issues #9364, #3077).
+            // Within the same message we enforce two rules:
             //
-            // blockIndex preserves insertion order within the same type
-            // (e.g. multiple tool calls maintain their execution order).
+            //   1. **Reasoning always comes first.** The model computes
+            //      reasoning before anything else, but opencode's event
+            //      bus may emit the final reasoning text AFTER the tool
+            //      pending event (the original "reasoning appears after
+            //      tool" bug). The `.reasoning` priority forces the block
+            //      to the top regardless of arrival order — mirroring
+            //      opencode's own provider-adapter fix at API-call time
+            //      (anomalyco/opencode PR #10474, commit e8d6d1c, issues
+            //      #9364, #3077).
+            //
+            //   2. **All other blocks follow insertion order.** Within an
+            //      assistant message the model emits text (preamble)
+            //      BEFORE tool_use (Anthropic API convention), so the
+            //      event arrival order already encodes the correct
+            //      display order. `blockIndex` is set by `nextBlockIndex`
+            //      for non-streaming blocks; streaming blocks use fixed
+            //      `blockIndex = 0` to upsert into a single item, so
+            //      they tie with each other — Swift's stable sort then
+            //      preserves the original `items.append` order.
+            //
+            // We deliberately do NOT use `typePriority` to rank
+            // `action` vs `response`: the original design assumed
+            // "reasoning → tool → text" causality, but real models put
+            // text before tool (preamble). Enforcing action < response
+            // inverts the preamble so the tool card appears above the
+            // text that introduced it. See `BlockTypePriority` in
+            // `Nook/Models/ChatItemUpdate.swift` for the rationale.
             if m1 == m2 {
-                if p1 != p2 { return p1.rawValue < p2.rawValue }
+                if p1 == .reasoning && p2 != .reasoning { return true }
+                if p1 != .reasoning && p2 == .reasoning { return false }
                 return b1 < b2
             }
             return m1 < m2

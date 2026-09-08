@@ -102,9 +102,9 @@ enum BlockOrdering: Sendable, Equatable {
     case filePosition(messageIndex: Int, blockIndex: Int)
     /// Position relative to a message in an event stream (OpenCode).
     /// messageId encodes chronological order (opencode message IDs are
-    /// monotonic); typePriority ensures logical ordering within a message
-    /// (thinking=0 < tool=1 < text=2) regardless of event arrival order;
-    /// blockIndex preserves insertion order within the same type.
+    /// monotonic); the sorter keeps reasoning first via typePriority=0 and
+    /// uses blockIndex (model emission order) for the rest — see
+    /// `ChatItemSorter` for the full rationale.
     case messageRelative(messageId: String, typePriority: BlockTypePriority, blockIndex: Int)
     /// Fallback: raw timestamp ordering (Codex live events).
     case timestamp(Date)
@@ -126,10 +126,9 @@ enum BlockOrdering: Sendable, Equatable {
 
 // MARK: - BlockTypePriority
 
-/// Causal ordering of block types within a single message turn.
-///
-/// LLM generation follows a strict causal chain:
-///   reasoning (think) → tool use (act) → text response (respond)
+/// Semantic role of a chat block within a single message turn. Used by
+/// `ChatItemSorter` to keep reasoning at the top of its message even when
+/// its events arrive after the tool pending event.
 ///
 /// OpenCode's event bus emits `message.part.updated` events in stream-
 /// processing order, NOT in causal order — tool parts may arrive before
@@ -144,18 +143,23 @@ enum BlockOrdering: Sendable, Equatable {
 ///   - Multiple issues confirm: #9364 ("assistant message content order
 ///     causes API error"), #3077 ("Expected thinking, but found tool_use")
 ///
-/// Nook mirrors this two-phase approach: events are stored in arrival
-/// order (blockIndex via `nextBlockIndex`), and the correct display
-/// order is reconstructed at sort time using this enum as a tiebreaker
-/// within the same message — exactly what opencode's provider adapter
-/// does for the API layer.
+/// Nook mirrors this single rule: reasoning must come before everything
+/// else in its message, regardless of arrival order. The relative order
+/// of `action` (tool) and `response` (text) is NOT enforced here — within
+/// one assistant message the model emits text as a preamble before
+/// tool_use (Anthropic API convention), and `blockIndex` (assigned by
+/// `nextBlockIndex`) preserves that arrival order. Sorting on
+/// `action < response` (the old assumption) inverts the preamble so the
+/// tool card lands above the text that introduced it.
 enum BlockTypePriority: Int, Sendable {
     case reasoning = 0
     case action    = 1
     case response  = 2
     case terminal  = 99
 
-    /// Derive the causal priority from a block type.
+    /// Derive the block's semantic role. Only `.reasoning` participates
+    /// in the sorter's tiebreaker; the other raw values are kept for
+    /// documentation and future use.
     static func forBlock(_ block: ChatItemBlock) -> BlockTypePriority {
         switch block {
         case .thinking:      return .reasoning

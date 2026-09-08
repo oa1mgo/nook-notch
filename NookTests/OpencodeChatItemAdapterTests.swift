@@ -240,6 +240,27 @@ final class OpencodeChatItemAdapterTests: XCTestCase {
         ]
         """
 
+        // opencode fires `running` 2-3 times per call before `completed`;
+        // `OpencodeHookAdapter.handleToolPart` skips the postTool unless
+        // `runningToolCallIds` already contains the callID. Sending running
+        // first mirrors production event ordering.
+        _ = adapter.adaptAndConvert(envelope(
+            "message.part.updated",
+            sessionId: sessionId,
+            properties: [
+                "part": [
+                    "type": "tool",
+                    "messageID": "msg-assistant",
+                    "tool": "todowrite",
+                    "callID": "call-todo",
+                    "state": [
+                        "status": "running",
+                        "input": ["todos": todoOutput]
+                    ]
+                ]
+            ]
+        ))
+
         let postTool = adapter.adaptAndConvert(envelope(
             "message.part.updated",
             sessionId: sessionId,
