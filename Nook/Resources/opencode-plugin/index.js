@@ -240,16 +240,44 @@ export default function server(input) {
     const keys = Object.keys(obj).filter((k) => typeof k === "string" && k.startsWith("ses_"));
     return keys.length > 0 ? keys[0] : null;
   };
-  const reportCurrentSession = async () => {
+  // Fallback when status() returns empty (opencode v1.18.x server/port mode).
+  // List all sessions and pick the most recently updated one.
+  const listAndPickSession = async () => {
     try {
       const client = input?.client;
-      if (!client || typeof client.session?.status !== "function") {
-        logDebug("reportCurrentSession: no session.status available");
-        return false;
-      }
+      if (!client || typeof client.session?.list !== "function") return null;
+      const res = await client.session.list();
+      const sessions = res?.data || res;
+      if (!Array.isArray(sessions) || sessions.length === 0) return null;
+      const sorted = [...sessions].sort((a, b) => {
+        const ta = a.time?.updated ?? a.time?.created ?? 0;
+        const tb = b.time?.updated ?? b.time?.created ?? 0;
+        return tb - ta;
+      });
+      const top = sorted[0];
+      return top?.id || null;
+    } catch (err) {
+      logDebug(`listAndPickSession error: ${err.message}`);
+      return null;
+    }
+  };
+
+  const reportCurrentSession = async () => {
+    const client = input?.client;
+    if (!client || typeof client.session?.status !== "function") {
+      logDebug("reportCurrentSession: no session.status available");
+      return false;
+    }
+    try {
       const status = await client.session.status();
       logDebug(`reportCurrentSession status=${JSON.stringify(status)}`);
-      const sessionId = extractSessionId(status);
+      var sessionId = extractSessionId(status);
+      // Fallback: status() returned empty — try listing sessions and pick the
+      // most-recent one. opencode v1.18.x server mode returns empty status().
+      if (!sessionId) {
+        logDebug("reportCurrentSession: status empty, falling back to session.list()");
+        sessionId = await listAndPickSession();
+      }
       if (!sessionId) {
         logDebug("reportCurrentSession: no current session yet");
         return false;
