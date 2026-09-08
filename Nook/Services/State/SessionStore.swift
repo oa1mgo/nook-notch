@@ -182,8 +182,8 @@ actor SessionStore {
         case .opencodeProcessingStarted(let sessionId, let cwd):
             processOpencodeProcessingStarted(sessionId: sessionId, cwd: cwd)
 
-        case .opencodeWaitingForUserInput(let sessionId, let cwd):
-            processOpencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd)
+        case .opencodeWaitingForUserInput(let sessionId, let cwd, let toolUseId, let questions, let requestId):
+            processOpencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: toolUseId, questions: questions, requestId: requestId)
 
         case .opencodeStopped(let sessionId, let cwd):
             processOpencodeStop(sessionId: sessionId, cwd: cwd)
@@ -992,7 +992,7 @@ actor SessionStore {
         publishState()
     }
 
-    private func processOpencodeWaitingForUserInput(sessionId: String, cwd: String) {
+    private func processOpencodeWaitingForUserInput(sessionId: String, cwd: String, toolUseId: String, questions: [QuestionItem], requestId: String?) {
         if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration waitingForUserInput session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
@@ -1005,7 +1005,25 @@ actor SessionStore {
         // waiting on them). Transition is allowed from .processing by the
         // state machine; from .idle, .waitingForInput is also reachable.
         session.completionNotificationAt = nil
-        DebugLog.shared.write("[opencode-phase] waitingForUserInput session=\(sessionId.prefix(8)) currentPhase=\(session.phase)")
+        // Populate the pending question context so the notch panel can render
+        // the question + options and reply via the plugin command socket.
+        // PRIMARY path (`question.asked`) supplies requestId + questions +
+        // toolUseId; the DEFENSIVE `question`-tool preTool path may arrive
+        // first or second and can be missing requestId (a `message.part.updated`
+        // event carries no `que_` request id). Merge rather than clobber so
+        // whichever path holds the authoritative fields wins.
+        let existing = session.pendingQuestionContext
+        let mergedRequestId = requestId ?? existing?.requestId
+        let mergedQuestions = questions.isEmpty ? (existing?.questions ?? []) : questions
+        let mergedToolUseId = toolUseId.isEmpty ? (existing?.toolUseId ?? "") : toolUseId
+        session.pendingQuestionContext = AskUserQuestionContext(
+            sessionId: sessionId,
+            toolUseId: mergedToolUseId,
+            questions: mergedQuestions,
+            requestId: mergedRequestId,
+            provider: .opencode
+        )
+        DebugLog.shared.write("[opencode-phase] waitingForUserInput session=\(sessionId.prefix(8)) currentPhase=\(session.phase) requestID=\(mergedRequestId ?? "<nil>") questions=\(mergedQuestions.count)")
         if session.phase.canTransition(to: .waitingForInput) {
             session.phase = .waitingForInput
             DebugLog.shared.write("[opencode-phase] waitingForUserInput → phase set to .waitingForInput")

@@ -63,6 +63,7 @@ enum NotchContentType: Equatable {
     case performanceSettings
     case performance(PerformanceSection)
     case chat(SessionState)
+    case question(SessionState)
 
     var id: String {
         switch self {
@@ -73,6 +74,7 @@ enum NotchContentType: Equatable {
         case .performanceSettings: return "performanceSettings"
         case .performance(let section): return "performance-\(section.rawValue)"
         case .chat(let session): return "chat-\(session.sessionId)"
+        case .question: return "question"
         }
     }
 }
@@ -89,6 +91,11 @@ enum ChatScrollDirection {
 
 @MainActor
 class NotchViewModel: ObservableObject {
+    /// Most recently initialized view model. WindowManager owns exactly one
+    /// NotchWindowController (recreated on screen changes), so the latest init
+    /// is always the active one. Weak so it never extends the view model's
+    /// lifetime. Needed by service-side callers (question providers, notch
+    /// auto-expand) that run outside the SwiftUI environment.
     // MARK: - Published State
 
     @Published var status: NotchStatus = .closed
@@ -251,6 +258,15 @@ class NotchViewModel: ObservableObject {
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
                 height: instancesPageOpenedHeight
+            )
+        case .question:
+            let headerHeight = settingsPageHeaderHeight(for: geometry)
+            let contentHeight: CGFloat = 340
+            let raw = contentHeight + headerHeight + 12
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
+            return CGSize(
+                width: min(screenRect.width * 0.4, 480),
+                height: min(raw, maxHeight)
             )
         }
     }
@@ -648,6 +664,10 @@ class NotchViewModel: ObservableObject {
             // ⌃N/P are "previous/next session" — semantically navigation,
             // not scrolling — so they don't scroll chat here.
             break
+        case .question:
+            // Question panel drives its own option selection (Task 15+);
+            // settings-page keyboard nav does not apply here.
+            break
         }
     }
 
@@ -697,6 +717,9 @@ class NotchViewModel: ObservableObject {
             }
         case .chat:
             // See `selectPreviousItem` — chat scroll is hardcoded in ShortcutManager.
+            break
+        case .question:
+            // See `selectPreviousItem` — question panel handles its own keys.
             break
         }
     }

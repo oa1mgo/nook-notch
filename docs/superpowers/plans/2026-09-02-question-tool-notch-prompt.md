@@ -36,7 +36,7 @@
 | `Nook/Models/SessionEvent.swift` | `opencodeWaitingForUserInput` 加 `requestId: String?` |
 | `Nook/Models/ToolResultData.swift` | 新增 `AskUserQuestionContext`、`PendingQuestion` |
 | `Nook/Models/SessionState.swift` | 新增 `pendingQuestionContext: AskUserQuestionContext?` |
-| `Nook/Services/State/SessionStore.swift` | 提取 `handleWaitingForUserInput(sessionId:)` helper；调 `notchOpen` + `pushTo(.question)` |
+| `Nook/Services/State/SessionStore.swift` | (Task 9) opencode 路径填充 `pendingQuestionContext`（auto-expand 已改到 NotchView.handleWaitingForInputChange，见 Task 10 修正） |
 | `Nook/Services/Hooks/OpencodeHookAdapter.swift` | `handleQuestionAsked` 提取 `event.id` 作为 requestId |
 | `Nook/UI/Views/ChatView.swift` | `tryFocusTerminal` 逻辑迁移到 `TerminalFocusHelper`，自身调用 `TerminalFocusHelper` |
 | `Nook/Resources/opencode-plugin/index.js` | `handleCommand` 加 `question.reply` 分支 |
@@ -619,60 +619,66 @@ git commit -m "feat(question): extract requestId from question.asked event and s
 
 ---
 
-## Task 10: SessionStore.handleWaitingForUserInput helper
+## Task 10: 复用 NotchView.handleWaitingForInputChange 做 auto-expand
+
+> **架构修正（执行期发现）**：原计划让 `SessionStore`（actor）调 `NotchViewModel.shared`（不存在的单例）来自动展开——这是跨层依赖 + 脆弱 weak 单例。实际代码里 `NotchView.handleWaitingForInputChange(_:)`（`Nook/UI/Views/NotchView.swift:1016`）已经在观察 `sessionMonitor.instances` 的 `.waitingForInput` 转换（目前做响铃 + bounce）。auto-expand 应挂在这里，属于 view 层，天然持有 `viewModel`，无需单例。Task 6 已删掉 `NotchViewModel.shared`。
 
 **Files:**
-- Modify: `Nook/Services/State/SessionStore.swift`
+- Modify: `Nook/UI/Views/NotchView.swift`（`handleWaitingForInputChange`，~line 1061-1077）
 
-- [ ] **Step 1: 新增 helper 方法**
+- [ ] **Step 1: 在 handleWaitingForInputChange 里，对「新进入且带 question context」的 session 展开 question 面板**
 
-在 `SessionStore` 的 `// MARK: - Notch Auto-Expand` 区域（如果没有，新建）加：
+现有代码块（lines 1061-1077）：
 
 ```swift
-/// 当 session 进入 .waitingForInput 时，自动展开 notch 并 pushTo(.question)。
-/// 跨 session 多 question 时用 lastActivity 排序，取最新。
-@MainActor
-private func handleWaitingForUserInput(sessionId: String) {
-    guard let session = sessions[sessionId] else { return }
+let newlyWaitingSessions = waitingForInputSessions.filter { newWaitingIds.contains($0.stableId) }
+let newlyCompletedSessions = newlyWaitingSessions + newCompletionSessions
 
-    session.lastActivity = Date()
-
-    let vm = NotchViewModel.shared
-    // 如果 notch 正在显示另一个 waiting 面板（chat 在等 permission），不 yank
-    if vm.status == .opened, case .chat(let s) = vm.contentType,
-       s.phase.isWaitingForInput || s.phase.isWaitingForTerminalApproval {
-        return
-    }
-
-    vm.notchOpen(reason: .notification)
-    vm.pushTo(.question(session))
+if !newlyCompletedSessions.isEmpty {
+    // ... playNotificationSoundIfNeeded + triggerNotificationBounce ...
 }
 ```
 
-- [ ] **Step 2: 在所有 .waitingForInput 入口调用 helper**
-
-**Phase 1 范围说明**：`SessionStore.swift:1010` 是当前唯一设置 `session.phase = .waitingForInput` 的地方（`processOpencodeWaitingForUserInput`）。`processClaudeWaitingForUserInput` 不存在 — Claude 的 question 走的是 `.waitingForTerminalApproval` 或直接跳终端，Phase 1 不触发 auto-expand。所以 Phase 1 只需在 `processOpencodeWaitingForUserInput` 里调 helper。
-
-在 `processOpencodeWaitingForUserInput(sessionId:cwd:toolUseId:requestId:)` 里，设完 `session.phase` 后调：
+在 `triggerNotificationBounce()` 之后、if 块内，追加 question 展开（**优先级：最新 question 面板盖过 bounce**）：
 
 ```swift
-await handleWaitingForUserInput(sessionId: sessionId)
+    // Question auto-expand: if a newly-waiting session carries an actual
+    // AskUserQuestion context (not just terminal-approval waiting), open the
+    // notch and push the question panel. Guard against yanking when the user
+    // is already looking at a chat session in a waiting state.
+    if let questionSession = newlyWaitingSessions
+        .filter({ $0.phase == .waitingForInput && $0.pendingQuestionContext != nil })
+        .sorted(by: { $0.lastActivity > $1.lastActivity })
+        .first,
+        !(viewModel.status == .opened && {
+            if case .chat(let s) = viewModel.contentType {
+                return s.phase == .waitingForInput || s.phase.isWaitingForTerminalApproval
+            }
+            return false
+        }()) {
+        viewModel.notchOpen(reason: .notification)
+        viewModel.pushTo(.question(questionSession))
+    }
 ```
 
-如果 Phase 2 需要 Claude auto-expand，在 `processHookEvent` 里走到 `.waitingForInput` 的路径补调即可。
+- [ ] **Step 2: 确认 `.waitingForInput` 只由 opencode question 设置（Phase 1 范围）**
+
+`SessionStore.swift` 里 `.waitingForInput` 目前仅 `processOpencodeWaitingForUserInput`（~line 1010）设置。Claude/Codex 走 `.waitingForTerminalApproval`，不会命中 `pendingQuestionContext != nil`（该字段 Phase 1 只有 opencode 会填）。因此 Phase 1 auto-expand 只对 OpenCode 生效——符合 spec「Phase 1 = 只 OpenCode」。Task 9 确保 opencode 路径设置 `pendingQuestionContext`，本 task 的过滤条件才成立。
 
 - [ ] **Step 3: 编译验证**
 
 ```bash
-cd /Users/wuruofan/mine/rfw/nook && xcodebuild build -project Nook.xcodeproj -scheme Nook -destination 'platform=macOS' -quiet 2>&1 | tail -5
+cd /Users/wuruofan/mine/rfw/nook/.worktrees/question-tool-notch && xcodebuild build -project Nook.xcodeproj -scheme Nook -destination 'platform=macOS' 2>&1 | tail -3
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add Nook/Services/State/SessionStore.swift
-git commit -m "feat(question): add handleWaitingForUserInput auto-expand helper"
+git add Nook/UI/Views/NotchView.swift
+git commit -m "feat(question): auto-expand to question panel via handleWaitingForInputChange"
 ```
+
+> 注：本 task 依赖 Task 12 的 `.question` case 已存在。若先做 Task 10 会编译失败——**执行顺序上 Task 12 必须先于 Task 10**。见下方「执行顺序修正」。
 
 ---
 
@@ -1529,13 +1535,15 @@ Task 1 (protocol) → Task 2 (models) → Task 3 (event requestId)
                                           ↓
 Task 4 (registry) → Task 5 (TerminalFocusHelper) → Task 6 (fallback) → Task 7 (opencode provider)
                                           ↓
-Task 8 (tests) → Task 9 (hookAdapter requestId) → Task 10 (SessionStore helper) → Task 11 (plugin)
+Task 8 (tests) → Task 9 (hookAdapter requestId + set pendingQuestionContext) → Task 11 (plugin)
                                           ↓
-Task 12 (NotchViewModel) → Task 13 (chip) → Task 14 (NotchView wiring)
+Task 12 (NotchViewModel .question case) → Task 13 (chip) → Task 10 (auto-expand in handleWaitingForInputChange) → Task 14 (NotchView content switch)
                                           ↓
-Task 15 (panel skeleton) → Task 16 (options + input) → Task 17 (multi-question state)
+Task 15 (panel skeleton + onChange) → Task 16 (options + input) → Task 17 (multi-question state)
                                           ↓
 Task 18 (AppDelegate) → Task 19 (manual e2e) → Task 20 (docs)
 ```
+
+> **依赖修正**：Task 10（auto-expand）现在改到 `NotchView.handleWaitingForInputChange`，依赖 Task 12 的 `.question` case，且与 Task 14 同在 `NotchView.swift`。执行顺序必须 `Task 12 → Task 10 → Task 14`（都在 NotchView 落地）。Task 10 从「SessionStore helper」变为「NotchView 内追加」，见 Task 10 章节修正。
 
 **预期工作量**：~6-8 小时（含手动测试），按任务并行化可压缩到 ~4 小时。

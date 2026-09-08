@@ -1,5 +1,13 @@
 # Release Notes
 
+## Unreleased
+
+What's New
+
+  - Question Tool Notch Prompt — when an agent asks a question via `AskUserQuestion`, the notch now expands into a dedicated answer panel instead of silently showing a checkmark. The closed notch shows a three-segment chip (question mark · provider + question summary · music wave). Options render as tappable A/B/C cards; a free-text field accepts custom answers. Multiple concurrent questions use a left/right swiper. For OpenCode, tapping an option or sending free text replies over the plugin command socket (`question.reply` → opencode `/session/{id}/question/{requestID}/reply`). Claude / Codex / Cursor keep the existing "Go to Terminal" flow in this phase (Phase 2 will add tmux `sendKeys` inline replies). Introduces a `QuestionReplyProvider` protocol so the UI is provider-agnostic. See `docs/specs/2026-09-02-question-tool-notch-prompt-design.md`.
+
+  - Terminal Focus Extraction — `ChatView`'s three-tier terminal-focus logic (yabai/tmux → process tree → bundle-ID fallback) is extracted into a reusable `TerminalFocusHelper`, so the question panel and other callers can focus a terminal without a view dependency.
+
 ## 1.3.2
 
 What's New

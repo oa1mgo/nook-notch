@@ -57,7 +57,9 @@ enum SessionEvent: Sendable {
 
     /// OpenCode is showing an interactive prompt (ask_user_question) and
     /// waiting for the user to pick an option before the model can continue.
-    case opencodeWaitingForUserInput(sessionId: String, cwd: String)
+    /// `requestId` (format `que_xxx`) is required to reply via the plugin
+    /// command socket; `questions` carries the renderable options.
+    case opencodeWaitingForUserInput(sessionId: String, cwd: String, toolUseId: String, questions: [QuestionItem], requestId: String?)
 
     /// OpenCode stopped the current turn
     case opencodeStopped(sessionId: String, cwd: String)
@@ -309,7 +311,7 @@ extension SessionEvent: CustomStringConvertible {
             return "opencodeSessionStarted(session: \(sessionId.prefix(8)))"
         case .opencodeProcessingStarted(let sessionId, _):
             return "opencodeProcessingStarted(session: \(sessionId.prefix(8)))"
-        case .opencodeWaitingForUserInput(let sessionId, _):
+        case .opencodeWaitingForUserInput(let sessionId, _, _, _, _):
             return "opencodeWaitingForUserInput(session: \(sessionId.prefix(8)))"
         case .opencodeStopped(let sessionId, _):
             return "opencodeStopped(session: \(sessionId.prefix(8)))"

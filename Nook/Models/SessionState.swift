@@ -55,6 +55,11 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// This removes pre-/clear items that no longer exist in the JSONL
     var needsClearReconciliation: Bool
 
+    // MARK: - Pending Question
+
+    /// Context for an AskUserQuestion tool call awaiting an answer
+    var pendingQuestionContext: AskUserQuestionContext?
+
     // MARK: - Timestamps
 
     var completionNotificationAt: Date?
@@ -85,6 +90,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
             lastToolName: nil, firstUserMessage: nil, lastUserMessageDate: nil
         ),
         needsClearReconciliation: Bool = false,
+        pendingQuestionContext: AskUserQuestionContext? = nil,
         completionNotificationAt: Date? = nil,
         lastActivity: Date = Date(),
         createdAt: Date = Date()
@@ -103,6 +109,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.subagentState = subagentState
         self.conversationInfo = conversationInfo
         self.needsClearReconciliation = needsClearReconciliation
+        self.pendingQuestionContext = pendingQuestionContext
         self.completionNotificationAt = completionNotificationAt
         self.lastActivity = lastActivity
         self.createdAt = createdAt

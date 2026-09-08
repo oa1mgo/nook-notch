@@ -118,13 +118,43 @@ async function handleCommand(rawLine, input) {
       logDebug(`reply FAILED: ${err.message}\n${err.stack || ""}`);
     }
   }
+  else if (cmd.cmd === "question.reply") {
+    const requestId = cmd.requestId;
+    const sessionId = cmd.sessionId;
+    const answers = cmd.answers; // string[][] — one array per question, of selected labels/free text
+    if (!requestId || !sessionId || !answers) {
+      logDebug("question.reply missing requestId, sessionId, or answers");
+      return;
+    }
+    try {
+      const client = input?.client;
+      const heyApiClient = client?._client;
+      if (!heyApiClient || typeof heyApiClient.post !== "function") {
+        logDebug("question.reply FAILED: no client._client.post available");
+        return;
+      }
+      // opencode question reply route (schema v1: question.ts). Body: { answers }
+      // NOTE: URL verified against the permission.reply pattern (which uses
+      // "/permission/{requestID}/reply" against the same heyApiClient base).
+      // CONFIRM exact path at end-to-end test (Task 19); if the heyApi client
+      // base already prefixes /api/session/:id, adjust to match.
+      const res = await heyApiClient.post({
+        url: "/session/{sessionID}/question/{requestID}/reply",
+        path: { sessionID: sessionId, requestID: requestId },
+        body: { answers },
+      });
+      logDebug(`question.reply OK res=${JSON.stringify(res)}`);
+    } catch (err) {
+      logDebug(`question.reply FAILED: ${err.message}\n${err.stack || ""}`);
+    }
+  }
 }
 
 /// OpenCode server plugin entry point.
 /// opencode calls `server(input, options)` directly with the plugin input
 /// (including `client`). We capture `input` in the closure so the command
 /// socket handler can use it later for permission replies.
-  const PLUGIN_VERSION = "1.4.1";
+  const PLUGIN_VERSION = "1.5.0";
 export default function server(input) {
   logDebug(`nook plugin v${PLUGIN_VERSION} loaded serverUrl=${input?.serverUrl?.toString() ?? "undefined"} argv=${JSON.stringify(process.argv ?? [])}`);
   // Start listening for commands from Nook as soon as the plugin loads.

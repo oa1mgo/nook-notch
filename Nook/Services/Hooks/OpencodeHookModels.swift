@@ -32,7 +32,13 @@ enum OpencodeSessionEvent: Sendable {
     case sessionStart(sessionId: String, cwd: String)
     case userPromptSubmitted(sessionId: String, cwd: String, prompt: String?, messageId: String? = nil)
     case processingStarted(sessionId: String, cwd: String)
-    case waitingForUserInput(sessionId: String, cwd: String)
+    /// OpenCode is showing an ask_user_question dialog. `requestId` is the
+    /// question request id (top-level `event.id` == `properties.id`, format
+    /// `que_xxx`) used to reply via the plugin command socket. `toolUseId` is
+    /// the `question` tool call id when the prompt came from a tool call.
+    /// `questions` carries the full question + options payload so the notch
+    /// panel can render the choices without re-reading the transcript.
+    case waitingForUserInput(sessionId: String, cwd: String, toolUseId: String, questions: [QuestionItem], requestId: String?)
     case assistantThinking(sessionId: String, cwd: String, text: String, messageId: String? = nil)
     /// Streaming assistant reasoning (thinking) — emitted on every
     /// `message.part.delta` when the delta is routed into the reasoning buffer.

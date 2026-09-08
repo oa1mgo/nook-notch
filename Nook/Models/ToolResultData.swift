@@ -407,3 +407,20 @@ struct ToolStatusDisplay {
         }
     }
 }
+
+// MARK: - Question Context Types
+
+struct AskUserQuestionContext: Equatable, Sendable {
+    let sessionId: String
+    let toolUseId: String
+    let questions: [QuestionItem]
+    let requestId: String?
+    let provider: SessionProvider
+}
+
+struct PendingQuestion: Identifiable, Equatable, Sendable {
+    let id: String
+    let questionText: String
+    let header: String?
+    let options: [QuestionOption]
+}

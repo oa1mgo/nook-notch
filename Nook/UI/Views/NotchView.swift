@@ -339,6 +339,28 @@ struct NotchView: View {
         viewModel.status != .opened && showMusicActivity
     }
 
+    private var showCompactQuestionChip: Bool {
+        viewModel.status != .opened &&
+        sessionMonitor.instances.contains {
+            $0.phase == .waitingForInput && $0.pendingQuestionContext != nil
+        }
+    }
+
+    private var isCurrentlyViewingWaitingChat: Bool {
+        guard viewModel.status == .opened, case .chat(let s) = viewModel.contentType else { return false }
+        return s.phase == .waitingForInput || s.phase.isWaitingForTerminalApproval
+    }
+
+    /// Idempotency guard for question auto-expand: if the notch is already open
+    /// and showing the question panel for THIS session, a repeat change event
+    /// must not push a duplicate `.question` onto the nav stack.
+    private func isAlreadyShowingQuestion(for session: SessionState) -> Bool {
+        guard viewModel.status == .opened, case .question(let current) = viewModel.contentType else {
+            return false
+        }
+        return current.sessionId == session.sessionId
+    }
+
     private var hasArtworkThemeSource: Bool {
         musicManager.albumArt != nil && musicManager.hasArtworkGradient
     }
@@ -671,7 +693,23 @@ struct NotchView: View {
 
     @ViewBuilder
     private var headerRow: some View {
-        if showCompactMusicActivity {
+        if showCompactQuestionChip {
+            CompactQuestionActivityView(
+                sessionMonitor: sessionMonitor,
+                musicManager: musicManager,
+                onTap: {
+                    if let s = sessionMonitor.instances
+                        .filter({ $0.phase == .waitingForInput && $0.pendingQuestionContext != nil })
+                        .sorted(by: { $0.lastActivity > $1.lastActivity })
+                        .first {
+                        viewModel.notchOpen(reason: .notification)
+                        viewModel.pushTo(.question(s))
+                    }
+                }
+            )
+            .frame(width: closedContentWidth, height: closedNotchSize.height, alignment: .leading)
+            .frame(height: closedNotchSize.height)
+        } else if showCompactMusicActivity {
             CompactMusicActivityView(musicManager: musicManager)
                 .frame(width: closedContentWidth, height: closedNotchSize.height, alignment: .leading)
                 .frame(height: closedNotchSize.height)
@@ -905,6 +943,14 @@ struct NotchView: View {
                     primaryTextColor: expandedPrimaryTextColor,
                     secondaryTextColor: expandedSecondaryTextColor
                 )
+            case .question(let session):
+                QuestionPanelView(
+                    session: session,
+                    replyProvider: (try? QuestionReplyProviderRegistry.shared.provider(for: session))
+                        ?? TerminalFallbackProvider(provider: session.provider),
+                    viewModel: viewModel,
+                    onClose: { viewModel.navigateBack() }
+                )
             }
         }
         .frame(width: notchSize.width - 24) // Fixed width to prevent text reflow
@@ -1068,6 +1114,18 @@ struct NotchView: View {
                 .joined(separator: ",")
             playNotificationSoundIfNeeded(forPids: newlyCompletedSessions.map(\.pid), debugContext: debugContext)
             triggerNotificationBounce()
+
+            // Question auto-expand: newly-waiting session carrying an actual
+            // AskUserQuestion context → open notch + push question panel.
+            // Skip if the user is already looking at a waiting chat session.
+            if let questionSession = newlyWaitingSessions
+                .filter({ $0.phase == .waitingForInput && $0.pendingQuestionContext != nil })
+                .max(by: { $0.lastActivity < $1.lastActivity }),
+                !isCurrentlyViewingWaitingChat,
+                !isAlreadyShowingQuestion(for: questionSession) {
+                viewModel.notchOpen(reason: .notification)
+                viewModel.pushTo(.question(questionSession))
+            }
 
             // Schedule hiding the checkmark after 30 seconds
             DispatchQueue.main.asyncAfter(deadline: .now() + displayDuration) { [self] in

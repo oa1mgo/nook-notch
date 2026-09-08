@@ -1,38 +1,38 @@
 # Progress
 
-> Last updated: 2026-08-04 (opencode integration fixes: todo structuredResult, parseImageDataURI, publishState, user prompt fallback)
+> Last updated: 2026-09-02 (question tool notch prompt — code-complete on `feature/question-tool-notch`, pending e2e + Phase 2)
 
 ## 🎯 Current Focus
-<!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复 + Shortcuts 页面 panel 底部空白修复**（两个 1.3.2 follow-up）：
+**question tool notch prompt + provider-layered reply**（2026-09-02，spec `docs/specs/2026-09-02-question-tool-notch-prompt-design.md`，plan `docs/superpowers/plans/2026-09-02-question-tool-notch-prompt.md`）：
 
-  ### A. Picker 子项无 sub desc 时高度/垂直对齐
-  - **症状**：Screen picker 展开时非 built-in / 非 main 的屏幕行 + Claude dir picker 中 "Choose folder…" 行（未选自定义路径时），`sublabel == nil` 但 `verticalSublabel: true` 强制 `SettingsSubPickerRow` 渲染 41pt 高 + 13pt `Color.clear` 占位 → 标题"上浮"，底部留空白。
-  - **根因**：编译期 `pickerLayout.rowHeight` 是单一常量 `settingsSubPickerRowVerticalSublabelHeight`，但运行时不同行的 sublabel 实际有/无是数据驱动的，无法对齐。
-  - **修复**（4 文件）：
-    1. `SettingsSubPickerRow` 引入 `showsVerticalSublabel = verticalSublabel && sublabel != nil`，无 sublabel 时自动回落小尺寸 (~27pt) + 标题垂直居中（删除原 Color.clear 占位）。
-    2. `PickerLayout` 支持每行独立高度 `init(rowHeights: [CGFloat])`，保留原 `init(rowCount:rowHeight:)` 作为同构 picker 的便捷 init。
-    3. `ScreenPickerRow.pickerLayout` 把 `screenSublabel(for:)` 提升为 `static` 调用,按屏 sublabel 是否非 nil 决定该行高度。
-    4. `AgentSettingsView.claudeDirPickerLayout` 从 `static` 转 `private var`，读 `isCustomClaudeDir` 决定 "Choose folder…" 行高度；`agentsContentHeight` 从增量 `+=`/`-=` 改成全量重算 + `.onChange(of: currentClaudeDir)` 兜底。
-
-  ### B. Shortcuts 页面 panel 底部空白
-  - **症状**：Shortcuts 设置页面板底部（Restore Defaults 按钮下方）有约 44pt 空白带。
-  - **根因**：`NotchViewModel.openedSize` case `.shortcuts` 硬编码 `height: 480`，原注释 "446 → 480" 给出估算后故意 round up。估算本身有 4pt 误差（`ShortcutRow` 注释估 40pt，实际 36pt = `MenuRow` 等高），叠加 round up 共同造成 ~44pt overshoot。
-  - **修复**（1 文件）：换成与其他 settings 页面相同的 `PageLayout + panelHeightForPage` 编译期公式，行数复用 `shortcutsItemCount` 派生（9 行 + 2 divider），同样 `min(raw, maxHeight)` 窗口 cap。结果 ~436pt（vs 旧 480pt）。
-
-  - **build 验证**：`xcodebuild ... build` 通过。
-  - **PR**：commit `5f8bc86` (A) + `fc3bf50` (B) 都已 push 到 `release/1.3.2`，upstream **PR #9** "1.3.2 follow-up" 自动更新。-->
+- **状态**：Phase 1 全部 20 个 task 代码完成，落在分支 `feature/question-tool-notch`（未合并 main）。`xcodebuild` 全绿，`QuestionReplyProviderTests` 5/5 通过。
+- **已交付（Phase 1）**：
+  1. `QuestionReplyProvider` 协议（`: Sendable`）+ `QuestionReplyError`（Equatable）+ `QuestionReplyProviderRegistry`（`provider(for:) throws`，`@MainActor`）。
+  2. 数据模型：`AskUserQuestionContext` / `PendingQuestion` + `SessionState.pendingQuestionContext` + `OpencodeSessionEvent.waitingForUserInput` 扩 `requestId/toolUseId/questions`。
+  3. `OpencodeQuestionReplyProvider`（真实：`question.reply` 走 pid command socket，fire-and-forget，payload `string[][]`）；`TerminalFallbackProvider`（Claude/Codex/Cursor 占位，点击跳终端）。
+  4. `TerminalFocusHelper`（从 ChatView 抽出三级回退：yabai/tmux → 进程树 → bundle ID）。
+  5. UI：`NotchContentType.question` + `openedSize`（仿 .agents）；`QuestionPanelView`（单问题卡 + 多问题 `< >` swiper + A/B/C 选项 + 自由输入 + `.onChange(phase)` SSOT 关闭）；`CompactQuestionActivityView` 三段式 closed chip + `WaveIndicator`。
+  6. auto-expand 挂在既有 `NotchView.handleWaitingForInputChange`（不新建 NotchViewModel.shared 单例，执行期架构修正）+ 幂等 guard。
+  7. opencode plugin `handleCommand` 追加 `question.reply` 分支（镜像 permission 的 `client._client.post`，v1.5.0）。
+- **未做（关键遗留）**：
+  - **Task 19 e2e 实跑**（见 Quick Recovery / 待手测）：OpenCode 触发 AskUserQuestion → notch 自动展开 → 点选项/输入 → plugin 收到 answer → agent 继续。
+  - **Phase 2**：Claude/Codex/Cursor 的 tmux `sendKeys` inline 回答（用户本机无 Claude Code，暂无法测）。
+- **待验证风险**：auto-expand 依赖 `pendingQuestionContext` 与 `phase == .waitingForInput` 在同一次 `@Published` 刷新里就绪；若 SessionStore 分两拍 publish，bounce 会响但面板不展开（需 e2e 确认，必要时在 SessionStore 合并到一次 publish）。
 
 ## 📥 Next Phases
 <!-- 下一步候选，按优先级 -->
-1. **customIcon 类型优化**（2026-06-23 用户决议）— 当前 `AnyView?` 的 type-erase 成本可忽略，但 `some View` 或 generic 形式更优雅。备选方向见 2026-06-23 Context Notes。
-2. **Critical #3** — `createMinimalConfig()` 在 JSON 损坏时会覆盖原文件，先备份再覆盖更安全
-3. **yabai 缺失的 UX 提示**（来自 2026-06-17 用户反馈）— 没装 yabai 时 fallback 能工作但精度低。考虑设置页加说明或失败时一次性提示
-4. **Bug J 长期监控**（见 Blockers）— 当前 0 复现但保留诊断 log
-5. **(长期) picker-panel-height redesign**（2026-07-01 spec）— 取消 GeometryReader 反馈回路 + visualIsExpanded + Task cancellation 复杂方案。**当前不触发**(flicker 在 16pt buffer 下是偶发,不是必闪),但如果用户重新对 14pt 空白有强烈抱怨,或 macOS 更新让 NSScroller gutter 行为变化,需重新评估。Spec 已存档决策档案。
+1. **question 工具 Phase 2：Claude/Codex/Cursor inline 回答**（见 Paused Tasks #question-phase2）— 抽 `ToolApprovalHandler.sendKeys` 为 public，`ClaudeQuestionReplyProvider` 合成选项字母 + Enter，多 question 顺序发送。
+2. **question Phase 1 e2e 验收 + 清理 `pendingQuestionContext`**（Task 19）— 实跑通过后，补 phase 离开 `.waitingForInput` 时清空 context（防止 stale chip）。
+3. **customIcon 类型优化**（2026-06-23 用户决议）— 当前 `AnyView?` 的 type-erase 成本可忽略，但 `some View` 或 generic 形式更优雅。备选方向见 2026-06-23 Context Notes。
+4. **Critical #3** — `createMinimalConfig()` 在 JSON 损坏时会覆盖原文件，先备份再覆盖更安全
+5. **yabai 缺失的 UX 提示**（来自 2026-06-17 用户反馈）— 没装 yabai 时 fallback 能工作但精度低。考虑设置页加说明或失败时一次性提示
+6. **Bug J 长期监控**（见 Blockers）— 当前 0 复现但保留诊断 log
+7. **(长期) picker-panel-height redesign**（2026-07-01 spec）— 取消 GeometryReader 反馈回路 + visualIsExpanded + Task cancellation 复杂方案。**当前不触发**(flicker 在 16pt buffer 下是偶发,不是必闪),但如果用户重新对 14pt 空白有强烈抱怨,或 macOS 更新让 NSScroller gutter 行为变化,需重新评估。Spec 已存档决策档案。
 
 ## ⏸️ Paused Tasks
 | Task | 状态 | 阻塞点 / 入口 |
 | --- | --- | --- |
+| #question-phase2 | 代码路径未起，等 Claude Code 装机 | Claude/Codex/Cursor 的 question inline 回答。入口：`Nook/Services/Tmux/ToolApprovalHandler.swift` `sendKeys(to:keys:)` 当前 private（53-78），改 public 后在 `QuestionReplyProviderRegistry` 注册真 provider 替换 `TerminalFallbackProvider(provider:)`。多 question 顺序 sendKeys。用户本机无 cc，无法测。 |
 | #78 Bug H | Fix 2 已 commit，等实战验证 | TrailingEchoDetector 覆盖 handleTextPart + handlePartDelta 两条路径。验证方法：等 bug 自然触发时检查日志是否有 `→ text part suppressed (trailing-echo)` 或 `→ text delta suppressed (trailing-echo accumulated)` |
 | #79 Bug I | 诊断已就位，race 未被证实 | 3 条诊断 log 已部署。当前 opencode v1.15.13 下 `⚠ DIAG #79` 从未命中，`subagent routing HIT` 正常工作。保留诊断作为基线，暂不修复 |
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
