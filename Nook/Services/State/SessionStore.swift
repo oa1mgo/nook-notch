@@ -1433,10 +1433,30 @@ actor SessionStore {
                 }
             } else {
                 session.toolTracker.completeTool(id: update.id, success: !update.isError)
-                // Same opencode carve-out as assistantText above: between
-                // tool calls the session is still alive, so keep .processing
-                // until the explicit .stop event.
-                if session.provider == .opencode {
+
+                // When the tool that was awaiting approval completes (user
+                // approved in TUI, not through Nook), the phase is stuck in
+                // waitingForApproval because the adapter never receives a
+                // permissionApproved event (permission.replied is unhandled).
+                // Detect this: if the completed tool matches the phase context,
+                // advance to next pending or .processing.
+                if case .waitingForApproval(let ctx) = session.phase,
+                   ctx.toolUseId == update.id {
+                    if let nextPending = findNextPendingTool(in: session, excluding: update.id) {
+                        let newPhase = SessionPhase.waitingForApproval(PermissionContext(
+                            toolUseId: nextPending.id,
+                            toolName: nextPending.name,
+                            toolInput: nil,
+                            receivedAt: nextPending.timestamp
+                        ))
+                        session.phase = newPhase
+                    } else if session.phase.canTransition(to: .processing) {
+                        session.phase = .processing
+                    }
+                } else if session.provider == .opencode {
+                    // Same opencode carve-out as assistantText above: between
+                    // tool calls the session is still alive, so keep .processing
+                    // until the explicit .stop event.
                     if !session.phase.isWaitingForApproval && !session.phase.isWaitingForTerminalApproval {
                         session.phase = .processing
                     }
