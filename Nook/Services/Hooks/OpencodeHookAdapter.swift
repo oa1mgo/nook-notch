@@ -606,6 +606,20 @@ final class OpencodeHookAdapter: @unchecked Sendable {
 
         switch type {
         case "busy":
+            // Recovery: if this session was recently stopped, clear the flag now.
+            // session.status=busy is an authoritative signal that the session is
+            // active again. Without this, the flag set by handleSessionIdle would
+            // forever block handleSessionCreatedOrUpdated from re-emitting
+            // .sessionStart — plugin's reportCurrentSession only probes once at
+            // opencode startup (30 attempts) and never re-fires, so this path is
+            // the only way to recover. Symptoms: chat items accumulate in
+            // earlyChatItemBuffer forever after a single session.idle/busy cycle.
+            lock.lock()
+            let wasRecentlyStopped = recentlyStoppedSessions.removeValue(forKey: sessionId) != nil
+            lock.unlock()
+            if wasRecentlyStopped {
+                Self.logNotice("→ busy: cleared recentlyStopped for session=\(sessionId)")
+            }
             Self.logNotice("→ processingStarted (session.status=busy) session=\(sessionId) cwd=\(cwd)")
             return [.processingStarted(sessionId: sessionId, cwd: cwd)]
         case "idle":
