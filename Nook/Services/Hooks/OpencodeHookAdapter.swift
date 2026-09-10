@@ -296,6 +296,20 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             handled = handleSessionIdle(props)
         case "question.asked":
             handled = handleQuestionAsked(props)
+        case "question.replied":
+            // User answered in TUI or Nook. opencode processes the reply and
+            // fires question.replied before the model resumes. Without this
+            // handler the phase stays .waitingForInput until the (often delayed)
+            // session.status=busy arrives, leaving the question UI visible for
+            // seconds/minutes after the user already answered.
+            let cwd: String = {
+                lock.lock()
+                let v = sessionCwd[sessionId] ?? ""
+                lock.unlock()
+                return v
+            }()
+            Self.logNotice("→ question.replied session=\(sessionId) — transitioning to processing")
+            handled = [.processingStarted(sessionId: sessionId, cwd: cwd)]
         case "permission.asked":
             handled = handlePermissionAsked(props)
         case "serverPort":
