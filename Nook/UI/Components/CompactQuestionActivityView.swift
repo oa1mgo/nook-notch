@@ -30,15 +30,6 @@ struct CompactQuestionActivityView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Circle()
-                .fill(Color.orange)
-                .frame(width: 22, height: 22)
-                .overlay(
-                    Text("?")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.black)
-                )
-
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(providerLabel) · QUESTION")
                     .font(.system(size: 9, weight: .semibold))
@@ -48,7 +39,18 @@ struct CompactQuestionActivityView: View {
                     .foregroundColor(.white)
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+
+            Spacer(minLength: 0)
+
+            Circle()
+                .fill(Color.orange)
+                .frame(width: 22, height: 22)
+                .overlay(
+                    Text("?")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.black)
+                )
 
             if musicManager.isVisible {
                 WaveIndicator(isPlaying: musicManager.playbackState.isPlaying)
