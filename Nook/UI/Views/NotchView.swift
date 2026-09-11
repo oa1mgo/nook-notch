@@ -549,11 +549,13 @@ struct NotchView: View {
                 bottomCornerRadius: viewModel.animatedBottomCornerRadius
             )
 
-            edgeShape
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: musicGlowPresentationMode != .reactive)) { _ in
+                edgeShape
                 .trim(from: 0, to: 1)
                 .stroke(glowGradient, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                 .blur(radius: 6)
                 .opacity(musicGlowOpacity)
+            }
                 .task(id: musicGlowPresentationMode) {
                     guard musicGlowPresentationMode == .simulated else { return }
                     while !Task.isCancelled {
@@ -585,8 +587,8 @@ struct NotchView: View {
                 : 0
         }
 
-        // Signal processing owns the reactive pulse/fallback transition on one
-        // monotonic clock. This mapping preserves the approved glow treatment.
+        // Sample the audio-timestamped gesture at display cadence. The approved
+        // glow geometry, color, blur and visibility mapping stay the same.
         let intensity = Double(min(max(musicAudioAnalyzer.glowIntensity, 0), 1))
         let visibleIntensity = min(max((intensity - 0.12) / 0.88, 0), 1)
         let easedVisibility = visibleIntensity * visibleIntensity * (3 - 2 * visibleIntensity)

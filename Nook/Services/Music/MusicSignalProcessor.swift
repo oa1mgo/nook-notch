@@ -2,11 +2,15 @@ import Accelerate
 import Foundation
 
 /// Frequency-domain metrics used by Music Edge Glow and the compact spectrum.
-/// This type owns all scratch buffers so steady-state analysis does not allocate.
+/// FFT scratch storage is reused. Small value snapshots cross the worker boundary.
 nonisolated final class MusicSignalProcessor {
     struct Output: Equatable, Sendable {
+        /// End of this analysis window, measured in source samples, not UI time.
+        let timestamp: TimeInterval
         let level: Float
         let bands: [Float]
+        /// Per-band transient energy relative to recent energy, before display smoothing.
+        let onsetBands: [Float]
         /// Unsmooth low-frequency strength used only by Music Glow.
         let bassLevel: Float
         /// Positive low-frequency rise, independent from the display bars.
@@ -15,7 +19,7 @@ nonisolated final class MusicSignalProcessor {
     }
 
     private let fftSize = 2_048
-    private let hopSize = 1_024
+    private let hopSize = 512
     private let halfSize = 1_024
     private let setup: vDSP_DFT_Setup
 
@@ -29,6 +33,7 @@ nonisolated final class MusicSignalProcessor {
     private var outputImaginary: [Float]
     private var magnitudes: [Float]
     private var windowFill = 0
+    private var processedSampleCount: Int64 = 0
 
     private var smoothedLevel: Float = 0
     private var smoothedBands = [Float](repeating: 0, count: 4)
@@ -37,6 +42,7 @@ nonisolated final class MusicSignalProcessor {
     private var hasPreviousSpectrum = false
 
     init?(sampleRate: Double = 48_000) {
+        guard sampleRate.isFinite, sampleRate >= 16_000 else { return nil }
         guard let setup = vDSP_DFT_zrop_CreateSetup(
             nil,
             vDSP_Length(fftSize),
@@ -67,6 +73,7 @@ nonisolated final class MusicSignalProcessor {
         self.sampleRate = sampleRate
         inputWindow = [Float](repeating: 0, count: fftSize)
         windowFill = 0
+        processedSampleCount = 0
         smoothedLevel = 0
         smoothedBands = [Float](repeating: 0, count: 4)
         bandPeaks = [Float](repeating: 0.000_01, count: 4)
@@ -90,14 +97,18 @@ nonisolated final class MusicSignalProcessor {
             }
             windowFill += copyCount
             sourceIndex += copyCount
+            processedSampleCount += Int64(copyCount)
 
             if windowFill == fftSize {
+                for index in 0..<fftSize where !inputWindow[index].isFinite {
+                    inputWindow[index] = 0
+                }
                 onOutput(analyzeCurrentWindow())
                 inputWindow.withUnsafeMutableBufferPointer { buffer in
                     guard let base = buffer.baseAddress else { return }
-                    memmove(base, base.advanced(by: hopSize), hopSize * MemoryLayout<Float>.size)
+                    memmove(base, base.advanced(by: hopSize), (fftSize - hopSize) * MemoryLayout<Float>.size)
                 }
-                windowFill = hopSize
+                windowFill = fftSize - hopSize
             }
         }
     }
@@ -145,6 +156,8 @@ nonisolated final class MusicSignalProcessor {
         ]
         var bassLevel: Float = 0
         var bassFlux: Float = 0
+        var onsetBands = [Float](repeating: 0, count: 4)
+        let frameDuration = Float(Double(hopSize) / sampleRate)
         for (index, range) in bandRanges.enumerated() {
             let lower = max(
                 1,
@@ -161,7 +174,7 @@ nonisolated final class MusicSignalProcessor {
                 energy += magnitudes[bin] * magnitudes[bin]
             }
             energy = sqrtf(energy / Float(upper - lower + 1))
-            bandPeaks[index] = max(energy, bandPeaks[index] * 0.995)
+            bandPeaks[index] = max(energy, bandPeaks[index] * expf(-frameDuration / 2))
             let relativeEnergy = min(max(energy / max(bandPeaks[index], 0.000_01), 0), 1)
             let target = powf(relativeEnergy, 0.62) * (0.22 + smoothedLevel * 0.78)
             if index == 0 {
@@ -183,22 +196,37 @@ nonisolated final class MusicSignalProcessor {
                     bassFlux = min(max(fluxRMS / max(energy, 0.000_000_1), 0), 1)
                 }
 
+            }
+            if hasPreviousSpectrum, energy * sqrtf(Float(upper - lower + 1)) > rms * 0.07 {
+                // A one-bin maximum filter tolerates a partial moving sideways
+                // (vibrato / pitch bend). Only NEW spectral energy is an attack.
+                var novelty: Float = 0
                 for bin in lower...upper {
-                    previousBassMagnitudes[bin] = magnitudes[bin]
+                    let previous = max(previousBassMagnitudes[bin],
+                        max(previousBassMagnitudes[bin - 1], previousBassMagnitudes[min(bin + 1, halfSize - 1)]))
+                    let rise = max(magnitudes[bin] - previous, 0)
+                    novelty += rise * rise
                 }
+                onsetBands[index] = min(sqrtf(novelty / Float(upper - lower + 1))
+                    / max(bandPeaks[index], 0.000_01), 1)
             }
             smoothedBands[index] = smooth(
                 current: smoothedBands[index],
                 target: target,
-                attack: 0.62,
-                release: 0.16
+                attack: 1 - expf(-frameDuration / 0.022),
+                release: 1 - expf(-frameDuration / 0.12)
             )
+        }
+        for bin in 0..<halfSize {
+            previousBassMagnitudes[bin] = magnitudes[bin]
         }
         hasPreviousSpectrum = true
 
         return Output(
+            timestamp: Double(processedSampleCount) / sampleRate,
             level: smoothedLevel,
             bands: smoothedBands,
+            onsetBands: onsetBands,
             bassLevel: bassLevel,
             bassFlux: bassFlux,
             hasSignal: rms > 0.000_5

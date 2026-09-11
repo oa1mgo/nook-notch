@@ -15,7 +15,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (NSUInteger)readSamplesIntoBuffer:(float *)buffer
                            capacity:(NSUInteger)capacity
-    NS_SWIFT_NAME(readSamples(into:capacity:));
+                   endingAtHostTime:(double *)endTime
+    NS_SWIFT_NAME(readSamples(into:capacity:endingAt:));
 
 @end
 

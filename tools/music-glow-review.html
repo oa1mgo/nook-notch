@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Music Glow · 同曲对照</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101319;color:#e7eaf0;font:16px/1.6 system-ui,-apple-system,sans-serif}main{max-width:1040px;margin:52px auto;padding:0 26px}h1{font-size:32px;font-weight:600;letter-spacing:-1px;margin:4px 0}p{color:#a6adbc}small{color:#a6adbc}.tag{color:#93dfcf;letter-spacing:2px;font-size:12px}.controls{margin:28px 0;padding:20px;background:#1b202a;border-radius:16px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}select{color:#edf0f6;background:#2a3240;border:1px solid #444e62;border-radius:8px;padding:10px;font:inherit}audio{flex:1;min-width:260px;height:38px}.comparison{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{padding:20px 24px 28px;border:1px solid #343c49;border-radius:20px;background:#171b23}.label{display:flex;justify-content:space-between;gap:12px}.label span{font:13px ui-monospace,monospace;color:#8c95a4}.stage{height:220px;position:relative;margin-top:14px;display:grid;place-items:start center;border-radius:12px;background:radial-gradient(ellipse at 50% 0,#29283d,transparent 75%),#111419;overflow:hidden}.notch{width:190px;height:38px;background:#030406;border-radius:0 0 19px 19px;position:relative}.glow{position:absolute;inset:4px -1px -1px;border-bottom:6px solid #bca4ff;border-radius:0 0 19px 19px;filter:blur(6px);opacity:0;box-shadow:0 8px 12px #a997ff65}.wave{width:100%;height:95px;display:block;margin-top:16px}.hint{font-size:13px;margin:20px 0;color:#9ca7b8}.status{min-height:26px;color:#93dfcf}a{color:#99d8f5}details{border-top:1px solid #343c49;padding:14px 0;font-size:13px}summary{cursor:pointer}.legend{margin-top:28px;font-size:14px}button{font:inherit;cursor:pointer;border:1px solid #444e62;border-radius:8px;padding:8px 12px;background:#263142;color:inherit}@media(max-width:650px){.comparison{grid-template-columns:1fr}.stage{height:120px}main{margin-top:24px}.controls{gap:12px}}
+</style>
+<main>
+<div class="tag">NOOK / AUDIO LAB</div>
+<h1>同一首歌，两种闪动。</h1>
+<p>听重拍落下时，哪一边的光更贴合。两边沿用同一亮度映射；此页为离线算法对照，非系统采集延迟测试。</p>
+<div class="controls"><label>片段 <select id="track" aria-label="音乐片段"></select></label><audio id="audio" controls preload="metadata"></audio><button id="restart">从头播放</button></div>
+<div id="status" class="status" role="status">正在加载分析结果…</div>
+<div class="comparison">
+<section class="card"><div class="label"><strong>1.4.0</strong><span>BPM 筛拍 / 固定呼吸</span></div><div class="stage"><div class="notch"><div class="glow" id="oldGlow"></div></div></div><canvas class="wave" id="oldWave"></canvas></section>
+<section class="card"><div class="label"><strong>重写版</strong><span>击打时刻 / 分层强弱</span></div><div class="stage"><div class="notch"><div class="glow" id="newGlow"></div></div></div><canvas class="wave" id="newWave"></canvas></section>
+</div>
+<p class="hint">暂停时画面也暂停。下方曲线为最近 6 秒的光亮变化；强拍应清晰抬起，余辉应在下一拍前退下。</p>
+<p class="legend">建议依次听：① 鼓贝斯的重拍与碎拍　② 民谣的人声和拨弦　③ 三拍子的强弱关系　④ 古典的变速和停顿　⑤ 爵士的切分。</p>
+<details><summary>样本出处与验证边界</summary><p>样本来自 <a href="https://librosa.org/doc/latest/recordings.html">librosa 的公开示例录音</a>。本地测试用途，未打包进 Nook 或公开发布。Choice：Admiral Bob / CC BY-NC；Let's Go Fishin'：Karissa Hobbs / CC BY；Sweet Waltz：Setuniman / CC BY-NC；Hungarian Dance #5：US Army Strings / Public Domain；Vibe Ace：Kevin MacLeod / CC BY。页面左侧按 1.4.0 的算法和约 30 Hz 聚合重放，不模拟 macOS 调度抖动。听感是否自然仍需人判断；检测次数不是准确率。</p></details>
+</main>
+<script>
+const audio=document.querySelector('#audio'),select=document.querySelector('#track'),status=document.querySelector('#status');
+const names={'choice.wav':'鼓贝斯 · Choice','fishin.wav':"民谣 / 人声 · Let’s Go Fishin’",'waltz.wav':'三拍子 · Sweet Waltz','brahms.wav':'古典 / 变速 · Hungarian Dance #5','jazz.wav':'爵士 · Vibe Ace'};
+let tracks=[],track=null;
+function visibility(intensity){const x=Math.max(0,Math.min(1,(intensity-.12)/.88));return x*x*(3-2*x)*.95;}
+function pointAt(time){let low=0,high=track.envelope.length-1;while(low<high){const middle=Math.ceil((low+high)/2);if(track.envelope[middle][0]<=time)low=middle;else high=middle-1;}return track.envelope[low];}
+function graph(id,column,time){const c=document.getElementById(id),width=c.clientWidth,height=c.clientHeight,dpr=devicePixelRatio||1;if(c.width!==Math.round(width*dpr)||c.height!==Math.round(height*dpr)){c.width=Math.round(width*dpr);c.height=Math.round(height*dpr);}const ctx=c.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,width,height);ctx.strokeStyle='#30394a';ctx.beginPath();ctx.moveTo(0,height-5);ctx.lineTo(width,height-5);ctx.stroke();ctx.strokeStyle=column===1?'#a6dfd3':'#baabe3';ctx.lineWidth=1.6;ctx.beginPath();let began=false;for(const row of track.envelope){if(row[0]<time-6||row[0]>time)continue;const x=(row[0]-(time-6))/6*width,y=height-5-visibility(row[column]||0)*(height-12);if(began)ctx.lineTo(x,y);else{ctx.moveTo(x,y);began=true;}}ctx.stroke();}
+function draw(){if(track){const time=audio.currentTime,row=pointAt(time);const valid=time>=row[0];document.querySelector('#oldGlow').style.opacity=valid?visibility(row[2]||0):0;document.querySelector('#newGlow').style.opacity=valid?visibility(row[1]):0;graph('oldWave',2,time);graph('newWave',1,time);}requestAnimationFrame(draw);}
+select.addEventListener('change',()=>{audio.pause();track=tracks[Number(select.value)];audio.src='../build/MusicGlowEvaluation/'+track.file;audio.load();status.textContent=names[track.file]+' · '+track.duration.toFixed(1)+' 秒 · 点击播放，或拖动进度条比较片段';});
+document.querySelector('#restart').addEventListener('click',()=>{audio.currentTime=0;audio.play().catch(e=>status.textContent=e.message);});
+audio.addEventListener('error',()=>status.textContent='音频加载失败，请先按方案文档生成 WAV 样本。');
+fetch('../build/MusicGlowEvaluation/comparison.json').then(r=>{if(!r.ok)throw Error('未找到比较数据，请按方案文档生成 comparison.json。');return r.json();}).then(data=>{tracks=data;for(const [index,t] of tracks.entries()){const option=new Option(names[t.file]||t.file,String(index));select.add(option);}select.dispatchEvent(new Event('change'));draw();}).catch(e=>status.textContent=e.message);
+</script>
+</html>
