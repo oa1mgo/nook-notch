@@ -1,6 +1,6 @@
 # Progress
 
-> Last updated: 2026-09-11 (Music Glow ambient base)
+> Last updated: 2026-09-11 (Music Glow documentation and merge verification)
 
 ## 🎯 Current Focus
 <!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复 + Shortcuts 页面 panel 底部空白修复**（两个 1.3.2 follow-up）：
@@ -38,6 +38,7 @@
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
 
 ## ✅ Recently Completed
+- **2026-09-11 Music Glow README and merge verification** — Updated English/Chinese READMEs with regular versus Beta glow behavior, the opt-in permission flow, ambient light, real music bars, local-only audio processing, and evaluation notes. Re-ran all 67 macOS tests and Debug build/launch successfully before main integration; version remains 1.4.0, with no new release tag.
 - **2026-09-11 Music Glow ambient base** — Added an audio-gated, album-colored 18% floor beneath the existing transient gestures; silence expires it and pause stops capture immediately with a finite 450ms visual fade. Detector, accent timing, geometry, peak opacity, and permission-free glow remain unchanged. 67 tests pass; Debug build/launch verified; five-style local review now isolates no-base/base with an optional 1.4.0 reference. Details: [spec](docs/specs/2026-09-11-music-glow-transients.md#user-approved-follow-up-ambient-base).
 - **2026-09-11 Music Glow transient-engine rewrite** — Replaced BPM-lock/phrase-stride/fake-fallback gating with worker-side, multi-band transient detection and host-timestamped light gestures; preserved glow styling and the opt-in permission boundary. Full suite: 56 tests, 0 failures; Debug build/launch and Release build passed. Five music styles have a reproducible local 1.4.0/new-engine audio comparison; perceptual acceptance and hardware-output latency remain live-listening checks. Design, evidence, credits, and reproduction: [spec](docs/specs/2026-09-11-music-glow-transients.md).
 - **2026-09-04 Nook 1.4.0 release preparation** — Bundles the Audio-Reactive Music Glow Beta and Codex activity icon restoration, adds the 1.4.0 release notes, and bumps the app marketing version from 1.3.3 to 1.4.0. Full macOS suite: 60 tests, 0 failures; Release build, bundle version, and code-signature validation passed.
