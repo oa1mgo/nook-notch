@@ -15,7 +15,7 @@ struct TerminalFallbackProvider: QuestionReplyProvider {
         sessionId: String,
         requestId: String?,
         questions: [QuestionItem],
-        answers: [String]
+        answers: [[String]]
     ) async throws {
         throw QuestionReplyError.unsupportedProvider
     }

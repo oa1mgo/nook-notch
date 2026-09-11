@@ -82,7 +82,13 @@ struct ToolResultContent: View {
                     return QuestionOption(label: label, description: opt["description"] as? String)
                 }
             }
-            return QuestionItem(question: question, header: q["header"] as? String, options: options)
+            return QuestionItem(
+                question: question,
+                header: q["header"] as? String,
+                options: options,
+                multiple: q["multiple"] as? Bool ?? false,
+                custom: q["custom"] as? Bool ?? true
+            )
         }
 
         guard !questions.isEmpty else { return nil }

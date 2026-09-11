@@ -54,6 +54,6 @@ protocol QuestionReplyProvider: Sendable {
         sessionId: String,
         requestId: String?,
         questions: [QuestionItem],
-        answers: [String]
+        answers: [[String]]
     ) async throws
 }

@@ -50,14 +50,16 @@ final class QuestionReplyProviderTests: XCTestCase {
         let question = QuestionItem(
             question: "Pick one",
             header: "Choice",
-            options: [QuestionOption(label: "A", description: nil)]
+            options: [QuestionOption(label: "A", description: nil)],
+            multiple: false,
+            custom: true
         )
         do {
             try await TerminalFallbackProvider(provider: .claude).sendAnswer(
                 sessionId: "session",
                 requestId: "req-1",
                 questions: [question],
-                answers: ["A"]
+                answers: [["A"]]
             )
             XCTFail("sendAnswer should throw for terminal fallback")
         } catch {

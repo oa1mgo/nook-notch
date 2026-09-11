@@ -196,6 +196,13 @@ struct QuestionItem: Equatable, Sendable {
     let question: String
     let header: String?
     let options: [QuestionOption]
+    /// Allow selecting multiple choices. Defaults to false when not provided
+    /// (matches opencode SDK gen/types.gen.d.ts QuestionInfo.multiple which
+    /// is optional `boolean`).
+    let multiple: Bool
+    /// Allow typing a custom answer. Defaults to true when not provided
+    /// (matches opencode SDK QuestionInfo.custom which defaults to true).
+    let custom: Bool
 }
 
 struct QuestionOption: Equatable, Sendable {
@@ -423,4 +430,6 @@ struct PendingQuestion: Identifiable, Equatable, Sendable {
     let questionText: String
     let header: String?
     let options: [QuestionOption]
+    let multiple: Bool
+    let custom: Bool
 }

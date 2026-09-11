@@ -17,18 +17,17 @@ final class OpencodeQuestionReplyProvider: QuestionReplyProvider, @unchecked Sen
         sessionId: String,
         requestId: String?,
         questions: [QuestionItem],
-        answers: [String]
+        answers: [[String]]
     ) async throws {
         guard let requestId else {
             throw QuestionReplyError.missingRequestId
         }
 
-        let wireAnswers: [[String]] = answers.map { [$0] }
         let payload: [String: Any] = [
             "cmd": "question.reply",
             "sessionId": sessionId,
             "requestId": requestId,
-            "answers": wireAnswers
+            "answers": answers
         ]
 
         // SessionStore is an actor and `sessions` is private; the public

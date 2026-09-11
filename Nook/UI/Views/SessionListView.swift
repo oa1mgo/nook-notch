@@ -189,6 +189,7 @@ struct SessionListView: View {
                             onFocus: { focusSession(session) },
                             onChat: { openChat(session) },
                             onArchive: { archiveSession(session) },
+                            onReply: session.phase == .waitingForInput ? { replyToQuestion(session) } : nil,
                             onApprove: { approveSession(session) },
                             onReject: { rejectSession(session) },
                             onApproveAlways: session.provider == .opencode ? { approveAlwaysSession(session) } : nil,
@@ -253,6 +254,15 @@ struct SessionListView: View {
 
     private func archiveSession(_ session: SessionState) {
         sessionMonitor.archiveSession(sessionId: session.sessionId)
+    }
+
+    /// Open the chat view for a session and push the question panel onto the
+    /// notch in one step. Used by the per-row reply button so the user can
+    /// jump straight into answering without navigating through chat first.
+    private func replyToQuestion(_ session: SessionState) {
+        openChat(session)
+        viewModel.notchOpen(reason: .notification)
+        viewModel.pushTo(.question(session))
     }
 }
 
@@ -361,6 +371,11 @@ struct InstanceRow: View {
     let onFocus: () -> Void
     let onChat: () -> Void
     let onArchive: () -> Void
+    /// Optional "Reply to question" affordance. When non-nil, a reply icon
+    /// renders next to the archive button and the click opens the chat view
+    /// with the question panel pushed (so the user doesn't need to enter the
+    /// chat view first then re-open the question UI after collapsing the notch).
+    let onReply: (() -> Void)?
     let onApprove: () -> Void
     let onReject: () -> Void
     /// Optional "Always allow" affordance. When non-nil, the inline approval
@@ -595,6 +610,17 @@ struct InstanceRow: View {
                     if session.phase == .idle || session.phase == .waitingForInput {
                         IconButton(icon: "archivebox") {
                             onArchive()
+                        }
+                    }
+
+                    // Reply button - only when the session is actually
+                    // waiting for an answer (opencode ask_user_question,
+                    // Claude Code interactive tool, etc.). Clicking it opens
+                    // the chat view AND pushes the question panel onto the
+                    // notch in one step — saving the user a navigation hop.
+                    if let onReply, session.phase == .waitingForInput {
+                        IconButton(icon: "arrowshape.turn.up.left.fill") {
+                            onReply()
                         }
                     }
                 }

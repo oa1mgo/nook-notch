@@ -6,6 +6,15 @@
 // compact card; multiple questions render a left/right swiper where EVERY card
 // keeps its answer controls. Notch auto-closes when the session leaves
 // .waitingForInput (SSOT), with an optimistic close after send as backup.
+//
+// Selection model:
+//   - Each question supports multi-select when QuestionItem.multiple is true.
+//   - State is `selectedAnswers: [Int: Set<String>]` — labels per question.
+//   - Custom text input is hidden when QuestionItem.custom is false.
+//   - Send is the ONLY way to submit; clicking an option never auto-sends.
+//     (Auto-send caused mis-clicks: tapping one option in a multi-question
+//     batch sent an incomplete payload, and tapping any option in a multi-
+//     select question sent immediately before the user could pick more.)
 
 import SwiftUI
 
@@ -18,7 +27,7 @@ struct QuestionPanelView: View {
     @State private var pendingQuestions: [PendingQuestion] = []
     @State private var currentIndex: Int = 0
     @State private var freeText: String = ""
-    @State private var selectedAnswers: [Int: String] = [:]
+    @State private var selectedAnswers: [Int: Set<String>] = [:]
     @State private var isSending: Bool = false
     @State private var errorMessage: String?
 
@@ -95,7 +104,10 @@ struct QuestionPanelView: View {
             questionTitle(pendingQuestions[currentIndex])
             optionsList(questionIndex: currentIndex)
             Divider().background(Color.white.opacity(0.08))
-            freeFormInput
+            if pendingQuestions[currentIndex].custom {
+                freeFormInput
+            }
+            sendBar
         }
         .padding(16)
     }
@@ -113,7 +125,10 @@ struct QuestionPanelView: View {
                 questionTitle(pendingQuestions[currentIndex])
                 optionsList(questionIndex: currentIndex)
                 Divider().background(Color.white.opacity(0.08))
-                freeFormInput
+                if pendingQuestions[currentIndex].custom {
+                    freeFormInput
+                }
+                sendBar
             }
             .frame(maxWidth: .infinity)
 
@@ -134,17 +149,27 @@ struct QuestionPanelView: View {
                 Text(header).font(.system(size: 9.5, weight: .semibold))
                     .foregroundColor(.white.opacity(0.4)).textCase(.uppercase)
             }
-            Text(q.questionText).font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Text(q.questionText).font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                if q.multiple {
+                    Text("可多选").font(.system(size: 9, weight: .semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.25))
+                        .foregroundColor(.orange)
+                        .clipShape(Capsule())
+                }
+            }
         }
     }
 
     private func optionsList(questionIndex: Int) -> some View {
         let q = pendingQuestions[questionIndex]
+        let selected = selectedAnswers[questionIndex] ?? []
         return VStack(spacing: 5) {
             ForEach(Array(q.options.enumerated()), id: \.offset) { optIndex, option in
-                let isSelected = selectedAnswers[questionIndex] == option.label
-                Button { pickOption(questionIndex: questionIndex, label: option.label) } label: {
+                let isSelected = selected.contains(option.label)
+                Button { toggleOption(questionIndex: questionIndex, label: option.label) } label: {
                     HStack(spacing: 10) {
                         Text(letterLabel(for: optIndex)).font(.system(size: 11, weight: .semibold))
                             .frame(width: 22, height: 22)
@@ -173,18 +198,52 @@ struct QuestionPanelView: View {
     }
 
     private var freeFormInput: some View {
-        HStack(spacing: 8) {
-            TextField("自定义回答...", text: $freeText)
-                .textFieldStyle(.plain).font(.system(size: 11))
-                .padding(8).background(Color.white.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .onSubmit { sendFreeForm() }
-            Button { sendFreeForm() } label: {
-                Text("Send ⏎").font(.system(size: 10, weight: .semibold))
+        TextField("自定义回答...", text: $freeText)
+            .textFieldStyle(.plain).font(.system(size: 11))
+            .padding(8).background(Color.white.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// Send bar — single source of truth for "submit my answers".
+    /// Disabled until every question has at least one answer (selection OR
+    /// custom text). Same white-pill capsule as the permission Allow button
+    /// for visual consistency across the app.
+    private var sendBar: some View {
+        HStack {
+            Spacer()
+            Button { sendAnswers() } label: {
+                Text("Send").font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(canSend ? 0.92 : 0.35))
+                    .clipShape(Capsule())
             }
-            .buttonStyle(.borderedProminent).tint(.orange)
-            .disabled(isSending || freeText.trimmingCharacters(in: .whitespaces).isEmpty)
+            .buttonStyle(.plain)
+            .disabled(!canSend || isSending)
+            .help("Send your answer to the agent")
         }
+    }
+
+    private var canSend: Bool {
+        guard !pendingQuestions.isEmpty else { return false }
+        for i in 0..<pendingQuestions.count {
+            let q = pendingQuestions[i]
+            let selected = selectedAnswers[i] ?? []
+            // For single-select (multiple=false): exactly 1 selection OR custom text for this index
+            // For multi-select (multiple=true): at least 1 selection OR custom text for this index
+            if !q.custom {
+                // No custom input allowed for this question — must pick at least one option
+                if selected.isEmpty { return false }
+            } else {
+                // Custom input is offered; text counts as answer for currentIndex only
+                if i == currentIndex && !freeText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    continue
+                }
+                if selected.isEmpty { return false }
+            }
+        }
+        return true
     }
 
     // MARK: - Terminal fallback (Claude/Codex/Cursor Phase 1)
@@ -214,33 +273,56 @@ struct QuestionPanelView: View {
 
     private func loadPendingQuestions() {
         pendingQuestions = (context?.questions ?? []).enumerated().map { i, q in
-            PendingQuestion(id: "q\(i)", questionText: q.question, header: q.header, options: q.options)
+            PendingQuestion(
+                id: "q\(i)",
+                questionText: q.question,
+                header: q.header,
+                options: q.options,
+                multiple: q.multiple,
+                custom: q.custom
+            )
         }
     }
 
-    private func pickOption(questionIndex: Int, label: String) {
-        selectedAnswers[questionIndex] = label
-        tryAutoSendIfComplete()
+    /// Toggle a label in the multi-select set. Picking an option NEVER sends —
+    /// the user must explicitly press Send. (Previous behaviour auto-sent on
+    /// every click which caused mis-clicks in multi-question flows.)
+    private func toggleOption(questionIndex: Int, label: String) {
+        var set = selectedAnswers[questionIndex] ?? []
+        if set.contains(label) {
+            set.remove(label)
+        } else {
+            // Single-select questions: replace any prior selection
+            if !pendingQuestions[questionIndex].multiple {
+                set = [label]
+            } else {
+                set.insert(label)
+            }
+        }
+        selectedAnswers[questionIndex] = set
     }
 
-    private func sendFreeForm() {
-        let text = freeText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        selectedAnswers[currentIndex] = text
-        tryAutoSendIfComplete()
-    }
-
-    private func tryAutoSendIfComplete() {
-        // Send only when every question has an answer (prevents premature partial send).
-        guard selectedAnswers.count == pendingQuestions.count, !pendingQuestions.isEmpty else { return }
-        let answers = (0..<pendingQuestions.count).map { selectedAnswers[$0] ?? "" }
-        sendAnswers(answers)
-    }
-
-    private func sendAnswers(_ answers: [String]) {
-        guard !isSending else { return }
+    private func sendAnswers() {
+        guard canSend, !isSending else { return }
         isSending = true
         errorMessage = nil
+
+        // Build [[String]] — one inner array per question; custom text (if any
+        // and not empty) replaces the option selection for the current question.
+        let answers: [[String]] = (0..<pendingQuestions.count).map { i in
+            var labels = Array(selectedAnswers[i] ?? [])
+            let q = pendingQuestions[i]
+            if q.custom, i == currentIndex {
+                let text = freeText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    labels = labels.filter { $0 != text }
+                    labels.append(text)
+                }
+            }
+            // Guarantee non-empty arrays (canSend already enforced this)
+            return labels.isEmpty ? [""] : labels
+        }
+
         Task {
             do {
                 try await replyProvider.sendAnswer(
