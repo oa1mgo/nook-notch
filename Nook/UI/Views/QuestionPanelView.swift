@@ -100,31 +100,19 @@ struct QuestionPanelView: View {
 
             // Multi-question pager arrows + counter on the far right.
             if pendingQuestions.count > 1 {
-                Button { if currentIndex > 0 { currentIndex -= 1 } } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(currentIndex == 0 ? 0.15 : 0.6))
-                        .frame(width: 16, height: 22)
-                        .contentShape(Rectangle())
+                PagerChevronButton(systemImage: "chevron.left", disabled: currentIndex == 0) {
+                    if currentIndex > 0 { currentIndex -= 1 }
                 }
-                .buttonStyle(.plain)
-                .disabled(currentIndex == 0)
                 .help("Previous question")
 
                 Text("\(currentIndex + 1)/\(pendingQuestions.count)")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.white.opacity(0.5))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.85))
                     .fixedSize()
 
-                Button { if currentIndex < pendingQuestions.count - 1 { currentIndex += 1 } } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(currentIndex == pendingQuestions.count - 1 ? 0.15 : 0.6))
-                        .frame(width: 16, height: 22)
-                        .contentShape(Rectangle())
+                PagerChevronButton(systemImage: "chevron.right", disabled: currentIndex == pendingQuestions.count - 1) {
+                    if currentIndex < pendingQuestions.count - 1 { currentIndex += 1 }
                 }
-                .buttonStyle(.plain)
-                .disabled(currentIndex == pendingQuestions.count - 1)
                 .help("Next question")
             }
         }
@@ -219,10 +207,24 @@ struct QuestionPanelView: View {
     }
 
     private var freeFormInput: some View {
+        // Match ChatView.inputBar style so the two text inputs feel like
+        // siblings: same corner radius (20), same border stroke, same
+        // horizontal/vertical padding. Font is a bit smaller (11 vs 13)
+        // because the question panel is narrower than the chat panel.
         TextField("自定义回答...", text: $freeText)
-            .textFieldStyle(.plain).font(.system(size: 11))
-            .padding(8).background(Color.white.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .textFieldStyle(.plain)
+            .font(.system(size: 11))
+            .foregroundColor(.white.opacity(0.9))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                    )
+            )
             .onSubmit { if canSend { sendAnswers() } }
     }
 
@@ -412,5 +414,39 @@ private struct BackChevronButton: View {
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .help("Back to sessions")
+    }
+}
+
+// MARK: - Pager Chevron Button (matches BackChevronButton hover style)
+
+private struct PagerChevronButton: View {
+    let systemImage: String
+    let disabled: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            action()
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(foreground)
+                .frame(width: 18, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isHovered && !disabled ? Color.white.opacity(0.12) : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .disabled(disabled)
+    }
+
+    private var foreground: Color {
+        if disabled { return .white.opacity(0.15) }
+        if isHovered { return .white }
+        return .white.opacity(0.65)
     }
 }
