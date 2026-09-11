@@ -1,6 +1,6 @@
 # Progress
 
-> Last updated: 2026-09-11 (DMG drag-to-install layout)
+> Last updated: 2026-09-11 (1.4.1 release preparation)
 
 ## 🎯 Current Focus
 <!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复 + Shortcuts 页面 panel 底部空白修复**（两个 1.3.2 follow-up）：
@@ -38,6 +38,7 @@
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
 
 ## ✅ Recently Completed
+- **2026-09-11 Nook 1.4.1 release preparation** — Bundles the redesigned drag-to-install DMG and the already-merged transient/ambient Music Glow improvements; adds release notes and bumps both app configurations to 1.4.1. Full macOS suite: 67 tests, 0 failures; 7 packaging tests, Release build, bundle-version check, and mounted DMG/signature validation passed. Signing policy is unchanged. Installer reproduction: [packaging](docs/packaging.md).
 - **2026-09-11 DMG installer redesign** — Replaced bare-app disk-image packaging with a compact 600 × 360 Finder layout, a real Applications drop target, Retina background, and shared layout coordinates. Release CI now runs 7 packaging tests and mounted-image/signature checks; local Release build, DMG validation, and actual Finder/Applications-link inspection passed. English/Chinese READMEs include the installer screenshot. Packaging only; no release tag or signing-policy changes. Reproduction and the FinderInfo signature pitfall: [packaging](docs/packaging.md).
 - **2026-09-11 Music Glow README and merge verification** — Updated English/Chinese READMEs with regular versus Beta glow behavior, the opt-in permission flow, ambient light, real music bars, local-only audio processing, and evaluation notes. Re-ran all 67 macOS tests and Debug build/launch successfully before main integration; version remains 1.4.0, with no new release tag.
 - **2026-09-11 Music Glow ambient base** — Added an audio-gated, album-colored 18% floor beneath the existing transient gestures; silence expires it and pause stops capture immediately with a finite 450ms visual fade. Detector, accent timing, geometry, peak opacity, and permission-free glow remain unchanged. 67 tests pass; Debug build/launch verified; five-style local review now isolates no-base/base with an optional 1.4.0 reference. Details: [spec](docs/specs/2026-09-11-music-glow-transients.md#user-approved-follow-up-ambient-base).
