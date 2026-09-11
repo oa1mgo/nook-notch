@@ -29,36 +29,38 @@ struct CompactQuestionActivityView: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Color.orange)
+                .frame(width: 18, height: 18)
+                .overlay(
+                    Text("?")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.black)
+                )
+
+            VStack(alignment: .leading, spacing: 0) {
                 Text("\(providerLabel) · QUESTION")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.orange)
-                Text(summaryText)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundColor(.white)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text(summaryText)
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.85))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .layoutPriority(1)
 
             Spacer(minLength: 0)
 
-            Circle()
-                .fill(Color.orange)
-                .frame(width: 22, height: 22)
-                .overlay(
-                    Text("?")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.black)
-                )
-
             if musicManager.isVisible {
                 WaveIndicator(isPlaying: musicManager.playbackState.isPlaying)
-                    .frame(width: 50, height: 16)
+                    .frame(width: 36, height: 14)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 7)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
