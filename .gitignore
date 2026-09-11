@@ -26,6 +26,7 @@ Pods/
 ._*
 
 # Temporary files
+__pycache__/
 *.swp
 *.swo
 *~

@@ -74,9 +74,15 @@ Turning off Beta restores the regular permission-free breathing effect. Beat res
 
 ## Install
 
-1. Download the latest `Nook.dmg` from [Releases](https://github.com/oa1mgo/nook-notch/releases/latest).
-2. Drag `Nook.app` into `Applications`.
+<p align="center">
+  <img src="./readme/img_nook_installer.jpg" alt="Nook installer with the app and Applications drag target" width="600" />
+</p>
+
+1. Download and open the latest Nook `.dmg` from [Releases](https://github.com/oa1mgo/nook-notch/releases/latest).
+2. Drag `Nook` onto the `Applications` folder in the installer window.
 3. Open `Nook` from `Applications`.
+
+Once copying finishes, you can eject the Nook disk image.
 
 If macOS blocks the first launch, open `System Settings` -> `Privacy & Security`, allow Nook to run, then open it again.
 
@@ -100,6 +106,7 @@ xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug -deriv
 
 See [docs/testing.md](./docs/testing.md) for testing notes.
 For the Music Glow design, regression coverage, and a reproducible five-style audio comparison, see the [Music Glow technical notes](./docs/specs/2026-09-11-music-glow-transients.md).
+For building and validating the drag-to-install disk image, see [DMG packaging](./docs/packaging.md).
 
 ## Project Map
 

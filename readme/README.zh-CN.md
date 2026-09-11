@@ -74,9 +74,15 @@ Nook 会把不同 agent 的本地事件整理成统一的会话时间线。
 
 ## 安装
 
-1. 从 [Releases](https://github.com/oa1mgo/nook-notch/releases/latest) 下载最新 `Nook.dmg`。
-2. 将 `Nook.app` 拖入 `Applications`。
+<p align="center">
+  <img src="./img_nook_installer.jpg" alt="Nook 安装窗口：将左侧 App 拖入右侧 Applications" width="600" />
+</p>
+
+1. 从 [Releases](https://github.com/oa1mgo/nook-notch/releases/latest) 下载并打开最新 Nook `.dmg`。
+2. 将安装窗口左侧的 `Nook` 拖到右侧的 `Applications` 文件夹。
 3. 从 `Applications` 打开 `Nook`。
+
+复制完成后即可推出 Nook 磁盘映像。
 
 如果 macOS 首次启动时拦截，可以到 `系统设置` -> `隐私与安全性` 中允许 Nook 运行，然后重新打开。
 
@@ -100,6 +106,7 @@ xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug -deriv
 
 测试说明见 [docs/testing.md](../docs/testing.md)。
 音乐光晕的实现方案、回归覆盖和五种音乐风格的可复现对照见 [Music Glow 技术说明](../docs/specs/2026-09-11-music-glow-transients.md)。
+拖放安装磁盘映像的构建与校验见 [DMG 打包说明](../docs/packaging.md)。
 
 ## 项目结构
 

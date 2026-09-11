@@ -88,17 +88,25 @@ jobs:
             -derivedDataPath build \
             build
 
-      - name: Package DMG
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install DMG tooling
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r tools/dmg/requirements.txt
+
+      - name: Test DMG validation
+        run: python -m unittest discover -s tools/dmg -p 'test_*.py'
+
+      - name: Package and validate DMG
         run: |
           set -euo pipefail
 
           APP_PATH="build/Build/Products/Release/Nook.app"
           DMG_PATH="${GITHUB_WORKSPACE}/Nook-${VERSION}.dmg"
 
-          hdiutil create -volname "Nook" \
-            -srcfolder "${APP_PATH}" \
-            -ov -format UDZO \
-            "${DMG_PATH}"
+          python tools/dmg/build.py --app "${APP_PATH}" --output "${DMG_PATH}"
 
       - name: Create GitHub Release
         env:
