@@ -69,29 +69,22 @@ struct QuestionPanelView: View {
 
     private var headerBar: some View {
         HStack {
-            // Left: the question's header label (max 30 chars per opencode
-            // SDK). This replaces the redundant "PROVIDER · QUESTION" tag —
-            // the user already knows they're in a question UI from the body.
-            // Falls back to the provider name only if no header is set.
-            if !pendingQuestions.isEmpty {
-                Text(pendingQuestions[currentIndex].header ?? session.provider.rawValue.uppercased())
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundColor(.orange)
-                    .textCase(.uppercase)
-                    .lineLimit(1)
+            // Back chevron — pushes the question view onto the stack
+            // intentionally (so it has its own back affordance), but if
+            // the user wants to back out without answering they can.
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.7))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("Back to sessions")
 
             Spacer()
-
-            // Right: project directory name (last path component of cwd)
-            // — more useful than a truncated session ID for at-a-glance
-            // orientation when answering in the notch.
-            if replyProvider.supportsInlineAnswer {
-                Text(session.projectName)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.white.opacity(0.5))
-                    .lineLimit(1)
-            }
 
             // Multi-question pager dots
             if pendingQuestions.count > 1 {
@@ -105,9 +98,9 @@ struct QuestionPanelView: View {
                 }
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
     }
 
     // MARK: - Single
@@ -119,7 +112,8 @@ struct QuestionPanelView: View {
             Divider().background(Color.white.opacity(0.08))
             bottomActionRow
         }
-        .padding(16)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 14)
     }
 
     // MARK: - Multi (swiper) — top padding matches single; content indented for ‹ ›
@@ -144,23 +138,43 @@ struct QuestionPanelView: View {
             }
             .buttonStyle(.plain).disabled(currentIndex == pendingQuestions.count - 1)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 12)
         .padding(.bottom, 14)
     }
 
     // MARK: - Building blocks
 
     private func questionTitle(_ q: PendingQuestion) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            if let header = q.header {
-                Text(header).font(.system(size: 9.5, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.4)).textCase(.uppercase)
+        VStack(alignment: .leading, spacing: 6) {
+            // Title row: header label (left) + project name (right) on the
+            // same line. The header was previously duplicated (top bar +
+            // here); consolidated here per user feedback.
+            HStack(alignment: .firstTextBaseline) {
+                if let header = q.header {
+                    Text(header)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.orange)
+                        .textCase(.uppercase)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                // Project directory name (last path component of cwd) —
+                // more useful than a truncated session ID for at-a-glance
+                // orientation when answering in the notch.
+                Text(session.projectName)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .lineLimit(1)
             }
-            HStack(spacing: 6) {
-                Text(q.questionText).font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
+            // Question text + multi-select pill on the next line.
+            HStack(alignment: .top, spacing: 8) {
+                Text(q.questionText)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
                     .fixedSize(horizontal: false, vertical: true)
                 if q.multiple {
-                    Text("可多选").font(.system(size: 9, weight: .semibold))
+                    Text("可多选")
+                        .font(.system(size: 9, weight: .semibold))
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Color.orange.opacity(0.25))
                         .foregroundColor(.orange)

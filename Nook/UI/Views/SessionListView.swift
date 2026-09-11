@@ -599,30 +599,25 @@ struct InstanceRow: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             } else {
                 HStack(spacing: 8) {
-                    // Left side: Reply (bubble) + Focus (eye), only when applicable.
-                    // Reply (opencode ask_user_question / Claude interactive tool)
-                    // renders as a chat bubble — semantic for "answer the question".
-                    // Clicking it opens chat + pushes the question panel in one step,
-                    // saving the user a navigation hop.
-                    if let onReply, session.phase == .waitingForInput {
-                        IconButton(icon: "bubble.left.and.bubble.right.fill") {
-                            onReply()
-                        }
-                    }
+                    // Left: Focus (eye) when available — only for tmux+yabai.
                     if session.isInTmux && isYabaiAvailable {
                         IconButton(icon: "eye") {
                             onFocus()
                         }
                     }
 
-                    // Push the archive button to the far right regardless of
-                    // whether anything else is showing — fixed-position affordance
-                    // for muscle memory.
+                    // Push everything else right.
                     Spacer(minLength: 0)
 
-                    // Right side: Archive (only when eligible — idle or
-                    // waitingForInput). Stays at the right edge so users
-                    // always know where to find it.
+                    // Right cluster: Reply (bubble, when waitingForInput)
+                    // sits immediately to the LEFT of Archive so the two
+                    // primary row actions group together. Archive always
+                    // stays at the far-right edge.
+                    if let onReply, session.phase == .waitingForInput {
+                        IconButton(icon: "bubble.left.and.bubble.right.fill") {
+                            onReply()
+                        }
+                    }
                     if session.phase == .idle || session.phase == .waitingForInput {
                         IconButton(icon: "archivebox") {
                             onArchive()
