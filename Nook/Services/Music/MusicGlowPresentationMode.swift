@@ -15,10 +15,14 @@ nonisolated enum MusicGlowPresentationMode: Equatable {
         isAudioReactiveEnabled: Bool,
         isPlaying: Bool,
         isAnalyzerRunning: Bool,
-        canPresentGlow: Bool
+        canPresentGlow: Bool,
+        isFadingOut: Bool = false
     ) -> MusicGlowPresentationMode {
-        guard isEdgeGlowEnabled, isPlaying, canPresentGlow else {
+        guard isEdgeGlowEnabled, canPresentGlow else {
             return .hidden
+        }
+        guard isPlaying else {
+            return isAudioReactiveEnabled && isFadingOut ? .reactive : .hidden
         }
         guard isAudioReactiveEnabled, isAnalyzerRunning else {
             return .simulated

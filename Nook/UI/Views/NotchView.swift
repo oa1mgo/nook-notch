@@ -527,7 +527,8 @@ struct NotchView: View {
             isAudioReactiveEnabled: musicAudioReactiveGlowEnabled,
             isPlaying: musicManager.playbackState.isPlaying,
             isAnalyzerRunning: musicAudioAnalyzer.isRunning,
-            canPresentGlow: viewModel.status == .closed && !vibeGlowVisible
+            canPresentGlow: viewModel.status == .closed && !vibeGlowVisible,
+            isFadingOut: musicAudioAnalyzer.isFadingOut
         )
     }
 
@@ -549,11 +550,13 @@ struct NotchView: View {
                 bottomCornerRadius: viewModel.animatedBottomCornerRadius
             )
 
-            edgeShape
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: musicGlowPresentationMode != .reactive)) { _ in
+                edgeShape
                 .trim(from: 0, to: 1)
                 .stroke(glowGradient, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                 .blur(radius: 6)
                 .opacity(musicGlowOpacity)
+            }
                 .task(id: musicGlowPresentationMode) {
                     guard musicGlowPresentationMode == .simulated else { return }
                     while !Task.isCancelled {
@@ -585,12 +588,9 @@ struct NotchView: View {
                 : 0
         }
 
-        // Signal processing owns the reactive pulse/fallback transition on one
-        // monotonic clock. This mapping preserves the approved glow treatment.
-        let intensity = Double(min(max(musicAudioAnalyzer.glowIntensity, 0), 1))
-        let visibleIntensity = min(max((intensity - 0.12) / 0.88, 0), 1)
-        let easedVisibility = visibleIntensity * visibleIntensity * (3 - 2 * visibleIntensity)
-        return easedVisibility * 0.95
+        // The appearance composes the ambient floor after the accent visibility
+        // curve. Geometry, album colors, blur, and peak opacity stay unchanged.
+        return musicAudioAnalyzer.glowOpacity
     }
 
     @ViewBuilder

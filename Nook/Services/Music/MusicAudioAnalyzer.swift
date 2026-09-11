@@ -1,530 +1,10 @@
 import Combine
 import Foundation
 
-/// Converts low-frequency onsets into slow, phrase-level ambient light.
-///
-/// BPM decides whether the rhythm is dependable and whether to present every
-/// second or fourth beat. The physical light curve remains fixed, so the edge
-/// follows musical structure without behaving like a fast metronome.
-nonisolated struct MusicGlowEnvelope {
-    private enum Timing {
-        static let attack: Float = 0.05
-        static let crest: Float = 0.08
-        static let release: Float = 0.65
-        // The rendered glow crosses the visibility floor before the numeric
-        // 0.78s envelope ends, so 1.15s still leaves a clear pause while
-        // allowing a stable two-beat cadence through 102 BPM.
-        static let visualCooldown: Float = 1.15
-        static let fallbackPeriod: Float = 3
-        static let fallbackFadeOut: Float = 0.8
-        static let fallbackFadeIn: Float = 1
-        static let silenceGrace: Float = 0.65
-        static let silenceFade: Float = 0.35
-        static let signalRecoveryDebounce: Float = 0.12
-        static let signalFadeIn: Float = 0.2
-    }
-
-    private(set) var value: Float = 1
-    private(set) var reactiveValue: Float = 0
-    private(set) var fallbackMix: Float = 1
-    private(set) var signalGain: Float = 1
-    private(set) var rhythmConfidence: Float = 0
-    private(set) var isBeatLocked = false
-    private(set) var isSilent = false
-    private(set) var estimatedBPM: Float?
-    private(set) var pulseDuration = Timing.attack + Timing.crest + Timing.release
-    private(set) var detectedOnsetCount = 0
-    private(set) var visualBeatStride = 4
-    private(set) var visualPulseCount = 0
-    private(set) var lastPulsePeak: Float = 0
-
-    private var clock: Float = 0
-    private var fluxMean: Float = 0
-    private var fluxDeviation: Float = 0
-    private var isOnsetArmed = true
-    private var onsetSuppressionRemaining: Float = 0
-    private var timeSinceOnset: Float?
-    private var timeSinceVisualPulse: Float?
-    private var recentOnsetIntervals: [Float] = []
-    private var recentOnsetStrengths: [Float] = []
-    private var hasPresentedPulseForCurrentLock = false
-    private var isAccentPhaseAnchored = false
-    private var lowConfidenceDuration: Float = 0
-    private var silenceDuration: Float = 0
-    private var signalDuration: Float = 0
-    private var pulseAge: Float?
-    private var pulseStartValue: Float = 0
-    private var pulsePeak: Float = 0
-
-    mutating func advance(
-        bassLevel: Float,
-        bassFlux: Float,
-        audioLevel: Float = 1,
-        hasSignal: Bool,
-        minimumFluxBeforeOnset: Float = 1,
-        minimumFluxAfterOnset: Float = 1,
-        deltaTime: TimeInterval
-    ) -> Float {
-        let elapsed = Float(min(max(deltaTime, 1.0 / 240.0), 2))
-        let level = Self.clamp(bassLevel.isFinite ? bassLevel : 0)
-        let flux = Self.clamp(bassFlux.isFinite ? bassFlux : 0)
-        let loudness = Self.clamp(audioLevel.isFinite ? audioLevel : 0)
-        let fluxBeforeOnset = Self.clamp(
-            minimumFluxBeforeOnset.isFinite ? minimumFluxBeforeOnset : 1
-        )
-        let fluxAfterOnset = Self.clamp(
-            minimumFluxAfterOnset.isFinite ? minimumFluxAfterOnset : 1
-        )
-        clock += elapsed
-        onsetSuppressionRemaining = max(onsetSuppressionRemaining - elapsed, 0)
-
-        if let currentTimeSinceOnset = timeSinceOnset {
-            timeSinceOnset = currentTimeSinceOnset + elapsed
-        }
-        if let currentTimeSinceVisualPulse = timeSinceVisualPulse {
-            timeSinceVisualPulse = currentTimeSinceVisualPulse + elapsed
-        }
-        updateAudibility(hasSignal: hasSignal, elapsed: elapsed)
-
-        let onsetThreshold = max(0.085, fluxMean + max(0.045, fluxDeviation * 2.2))
-        let rearmThreshold = max(0.025, onsetThreshold * 0.45)
-        if !isOnsetArmed,
-           min(flux, fluxBeforeOnset) <= rearmThreshold {
-            isOnsetArmed = true
-        }
-
-        let isOutsideRefractoryPeriod = timeSinceOnset.map { $0 >= 0.16 } ?? true
-        let isDistinctOnset = hasSignal
-            && onsetSuppressionRemaining == 0
-            && isOnsetArmed
-            && level >= 0.12
-            && loudness >= 0.08
-            && flux >= onsetThreshold
-            && isOutsideRefractoryPeriod
-        if isDistinctOnset {
-            isOnsetArmed = false
-            let thresholdProgress = Self.clamp(
-                (flux - onsetThreshold) / max(1 - onsetThreshold, 0.001)
-            )
-            let strength = Self.clamp(
-                (flux * 0.48)
-                    + (level * 0.27)
-                    + (loudness * 0.1)
-                    + (thresholdProgress * 0.15)
-            )
-            registerOnset(strength: strength)
-        }
-        if fluxAfterOnset <= rearmThreshold {
-            isOnsetArmed = true
-        }
-
-        // Strong transients are winsorized before entering the noise model;
-        // otherwise one kick raises its own threshold and hides the next one.
-        let baselineSample = min(flux, onsetThreshold)
-        let baselineBlend = min(elapsed / 1.8, 1)
-        fluxMean += (baselineSample - fluxMean) * baselineBlend
-        fluxDeviation += (abs(baselineSample - fluxMean) - fluxDeviation) * baselineBlend
-
-        updateRhythmLock(elapsed: elapsed)
-        updateFallbackMix(elapsed: elapsed)
-
-        advancePulse(by: elapsed)
-        updateFinalValue()
-        return value
-    }
-
-    mutating func reset(suppressOnsetsFor duration: Float = 0) {
-        value = 1
-        reactiveValue = 0
-        fallbackMix = 1
-        signalGain = 1
-        rhythmConfidence = 0
-        isBeatLocked = false
-        isSilent = false
-        estimatedBPM = nil
-        pulseDuration = Timing.attack + Timing.crest + Timing.release
-        detectedOnsetCount = 0
-        visualBeatStride = 4
-        visualPulseCount = 0
-        lastPulsePeak = 0
-        clock = 0
-        fluxMean = 0
-        fluxDeviation = 0
-        isOnsetArmed = true
-        onsetSuppressionRemaining = max(duration, 0)
-        timeSinceOnset = nil
-        timeSinceVisualPulse = nil
-        recentOnsetIntervals.removeAll(keepingCapacity: true)
-        recentOnsetStrengths.removeAll(keepingCapacity: true)
-        hasPresentedPulseForCurrentLock = false
-        isAccentPhaseAnchored = false
-        lowConfidenceDuration = 0
-        silenceDuration = 0
-        signalDuration = 0
-        pulseAge = nil
-        pulseStartValue = 0
-        pulsePeak = 0
-    }
-
-    /// Drops tempo evidence for a new track without restarting the visual
-    /// oscillator. The old pulse can finish and fallback fades in from its
-    /// current phase, so metadata changes never create a full-bright jump.
-    mutating func resetRhythm(suppressOnsetsFor duration: Float) {
-        rhythmConfidence = 0
-        isBeatLocked = false
-        estimatedBPM = nil
-        detectedOnsetCount = 0
-        visualBeatStride = 4
-        visualPulseCount = 0
-        fluxMean = 0
-        fluxDeviation = 0
-        isOnsetArmed = true
-        onsetSuppressionRemaining = max(duration, 0)
-        timeSinceOnset = nil
-        recentOnsetIntervals.removeAll(keepingCapacity: true)
-        recentOnsetStrengths.removeAll(keepingCapacity: true)
-        hasPresentedPulseForCurrentLock = false
-        isAccentPhaseAnchored = false
-        lowConfidenceDuration = 0
-    }
-
-    private var estimatedBeatInterval: Float {
-        guard let estimatedBPM else { return 0.6 }
-        return 60 / estimatedBPM
-    }
-
-    private mutating func registerOnset(strength: Float) {
-        detectedOnsetCount += 1
-        if let interval = timeSinceOnset,
-           interval >= 0.22,
-           interval <= 2 {
-            var normalizedInterval = interval
-            while normalizedInterval < 0.333 {
-                normalizedInterval *= 2
-            }
-            while normalizedInterval > 1 {
-                normalizedInterval /= 2
-            }
-
-            recentOnsetIntervals.append(normalizedInterval)
-            if recentOnsetIntervals.count > 8 {
-                recentOnsetIntervals.removeFirst()
-            }
-
-            let medianInterval = Self.median(recentOnsetIntervals)
-            let measuredBPM = 60 / medianInterval
-            if let estimatedBPM {
-                self.estimatedBPM = estimatedBPM * 0.8 + measuredBPM * 0.2
-            } else {
-                estimatedBPM = measuredBPM
-            }
-
-            let relativeErrors = recentOnsetIntervals.map {
-                abs($0 - medianInterval) / max(medianInterval, 0.001)
-            }
-            let robustError = (Self.median(relativeErrors) * 0.65)
-                + ((relativeErrors.reduce(0, +) / Float(relativeErrors.count)) * 0.35)
-            let stability = Self.clamp(1 - (robustError / 0.18))
-            let evidence = min(Float(recentOnsetIntervals.count) / 4, 1)
-            rhythmConfidence = stability * evidence
-            if !isBeatLocked,
-               recentOnsetIntervals.count >= 3,
-               rhythmConfidence >= 0.68 {
-                isBeatLocked = true
-                lowConfidenceDuration = 0
-                hasPresentedPulseForCurrentLock = false
-                isAccentPhaseAnchored = false
-                updateVisualBeatStride(force: true)
-            } else if isBeatLocked {
-                updateVisualBeatStride(force: false)
-            }
-        }
-
-        timeSinceOnset = 0
-        recentOnsetStrengths.append(strength)
-        // Nine samples retain both accents when the main beat repeats every
-        // eight detected onsets, while still adapting within a few seconds.
-        if recentOnsetStrengths.count > 9 {
-            recentOnsetStrengths.removeFirst()
-        }
-
-        guard isBeatLocked else { return }
-
-        let requestedPeak = 0.72 + strength * 0.28
-        if let pulseAge,
-           pulseAge <= Timing.attack + Timing.crest {
-            pulsePeak = max(pulsePeak, requestedPeak)
-            lastPulsePeak = pulsePeak
-        }
-
-        let targetVisualInterval = max(
-            estimatedBeatInterval * Float(visualBeatStride),
-            Timing.visualCooldown
-        )
-        let hasClearedPhysicalCooldown = timeSinceVisualPulse.map {
-            $0 >= Timing.visualCooldown
-        } ?? true
-        guard hasClearedPhysicalCooldown else { return }
-
-        let accent = accentProfile(for: strength)
-        if !hasPresentedPulseForCurrentLock {
-            let shouldStartFirstPulse = accent.isRepeatedMainAccent
-                || accent.isCurrentProvisionalAccent
-                || (!accent.hasProvisionalContrast && accent.isAtLeastTypical)
-            guard shouldStartFirstPulse else { return }
-            startPulse(
-                peak: requestedPeak,
-                anchorsAccentPhase: accent.isRepeatedMainAccent
-            )
-            return
-        }
-
-        let hasReachedScheduledBeat = timeSinceVisualPulse.map {
-            $0 + 0.06 >= targetVisualInterval
-        } ?? true
-        let accentAnchorLifetime = max(
-            targetVisualInterval * 2.25,
-            estimatedBeatInterval * 9
-        )
-        if isAccentPhaseAnchored,
-           timeSinceVisualPulse.map({ $0 >= accentAnchorLifetime }) ?? false {
-            // If the established accent disappears for more than a full
-            // strength-history window, let ordinary beats establish a new
-            // phase instead of waiting forever.
-            isAccentPhaseAnchored = false
-        }
-
-        if accent.isRepeatedMainAccent,
-           !isAccentPhaseAnchored || hasReachedScheduledBeat {
-            startPulse(peak: requestedPeak, anchorsAccentPhase: true)
-        } else if accent.isCurrentProvisionalAccent,
-                  !isAccentPhaseAnchored || hasReachedScheduledBeat {
-            // The first clearly stronger transient is a better phase candidate
-            // than the arbitrary beat on which tempo lock was acquired. It can
-            // correct that phase once; repeated accents confirm the anchor.
-            startPulse(peak: requestedPeak, anchorsAccentPhase: false)
-        } else if !isAccentPhaseAnchored,
-                  !accent.hasRepeatedContrast,
-                  accent.isAtLeastTypical,
-                  hasReachedScheduledBeat {
-            // Some recordings have nearly uniform kicks. With no trustworthy
-            // accent hierarchy, retain the stable phrase-level cadence.
-            startPulse(peak: requestedPeak, anchorsAccentPhase: false)
-        }
-    }
-
-    private struct AccentProfile {
-        let hasProvisionalContrast: Bool
-        let hasRepeatedContrast: Bool
-        let isCurrentProvisionalAccent: Bool
-        let isRepeatedMainAccent: Bool
-        let isAtLeastTypical: Bool
-    }
-
-    private func accentProfile(for strength: Float) -> AccentProfile {
-        let sortedStrengths = recentOnsetStrengths.sorted()
-        let baseline = Self.median(sortedStrengths)
-        let contrastFloor = max(0.03, baseline * 0.08)
-        let recentPeak = sortedStrengths.last ?? strength
-        let provisionalSpan = max(recentPeak - baseline, 0)
-        let hasProvisionalContrast = sortedStrengths.count >= 4
-            && provisionalSpan >= contrastFloor
-        let provisionalAccentFloor = baseline + provisionalSpan * 0.55
-        let isCurrentProvisionalAccent = hasProvisionalContrast
-            && strength + 0.001 >= recentPeak
-            && strength >= provisionalAccentFloor
-
-        let repeatedPeak = sortedStrengths.count >= 2
-            ? sortedStrengths[sortedStrengths.count - 2]
-            : recentPeak
-        let repeatedSpan = max(repeatedPeak - baseline, 0)
-        let hasRepeatedContrast = sortedStrengths.count >= 5
-            && repeatedSpan >= contrastFloor
-        let repeatedAccentFloor = baseline + repeatedSpan * 0.55
-        let isRepeatedMainAccent = hasRepeatedContrast
-            && strength >= repeatedAccentFloor
-
-        let typicalTolerance = max(0.025, baseline * 0.12)
-        return AccentProfile(
-            hasProvisionalContrast: hasProvisionalContrast,
-            hasRepeatedContrast: hasRepeatedContrast,
-            isCurrentProvisionalAccent: isCurrentProvisionalAccent,
-            isRepeatedMainAccent: isRepeatedMainAccent,
-            isAtLeastTypical: strength + typicalTolerance >= baseline
-        )
-    }
-
-    private mutating func startPulse(peak: Float, anchorsAccentPhase: Bool) {
-        let isFirstPulseForLock = !hasPresentedPulseForCurrentLock
-        if isFirstPulseForLock {
-            // Hand off from the breathing fallback at its current brightness.
-            // This keeps the first real accent visible without a mode jump.
-            pulseStartValue = signalGain > 0.001
-                ? Self.clamp(value / signalGain)
-                : reactiveValue
-            fallbackMix = 0
-        } else {
-            pulseStartValue = reactiveValue
-        }
-        let resolvedPeak = max(peak, pulseStartValue)
-        pulsePeak = resolvedPeak
-        lastPulsePeak = resolvedPeak
-        pulseAge = 0
-        timeSinceVisualPulse = 0
-        hasPresentedPulseForCurrentLock = true
-        isAccentPhaseAnchored = anchorsAccentPhase
-        visualPulseCount += 1
-    }
-
-    private mutating func updateVisualBeatStride(force: Bool) {
-        guard let estimatedBPM else { return }
-        let previousStride = visualBeatStride
-        if force {
-            visualBeatStride = estimatedBPM <= 102 ? 2 : 4
-        } else if visualBeatStride == 2, estimatedBPM >= 108 {
-            visualBeatStride = 4
-        } else if visualBeatStride == 4, estimatedBPM <= 96 {
-            visualBeatStride = 2
-        }
-        if visualBeatStride != previousStride {
-            isAccentPhaseAnchored = false
-        }
-    }
-
-    private mutating func updateAudibility(hasSignal: Bool, elapsed: Float) {
-        if hasSignal {
-            silenceDuration = 0
-            signalDuration += elapsed
-            if signalDuration >= Timing.signalRecoveryDebounce {
-                isSilent = false
-                signalGain = min(signalGain + elapsed / Timing.signalFadeIn, 1)
-            }
-        } else {
-            signalDuration = 0
-            silenceDuration += elapsed
-            if silenceDuration >= Timing.silenceGrace {
-                isSilent = true
-                signalGain = max(signalGain - elapsed / Timing.silenceFade, 0)
-            }
-        }
-    }
-
-    private mutating func updateRhythmLock(elapsed: Float) {
-        guard isBeatLocked else {
-            lowConfidenceDuration = 0
-            return
-        }
-
-        if rhythmConfidence < 0.35 {
-            lowConfidenceDuration += elapsed
-        } else {
-            lowConfidenceDuration = 0
-        }
-
-        let maximumOnsetGap = max(2.2, estimatedBeatInterval * 3)
-        let hasTimedOut = timeSinceOnset.map { $0 >= maximumOnsetGap } ?? true
-        if hasTimedOut || lowConfidenceDuration >= 2 {
-            isBeatLocked = false
-            rhythmConfidence = 0
-            estimatedBPM = nil
-            recentOnsetIntervals.removeAll(keepingCapacity: true)
-            recentOnsetStrengths.removeAll(keepingCapacity: true)
-            lowConfidenceDuration = 0
-            hasPresentedPulseForCurrentLock = false
-            isAccentPhaseAnchored = false
-        }
-    }
-
-    private mutating func updateFallbackMix(elapsed: Float) {
-        let target: Float
-        if isBeatLocked, !isSilent {
-            // Keep the complete breathing glow visible while tempo is locked
-            // but the first credible accent is still pending. startPulse()
-            // hands off at the current brightness when that accent arrives.
-            target = hasPresentedPulseForCurrentLock ? 0 : 1
-        } else {
-            target = 1
-        }
-        if target < fallbackMix {
-            fallbackMix = max(fallbackMix - elapsed / Timing.fallbackFadeOut, target)
-        } else if target > fallbackMix {
-            fallbackMix = min(fallbackMix + elapsed / Timing.fallbackFadeIn, target)
-        }
-    }
-
-    private mutating func advancePulse(by elapsed: Float) {
-        guard let currentAge = pulseAge else {
-            reactiveValue = 0
-            return
-        }
-
-        let age = currentAge + elapsed
-        pulseAge = age
-
-        if age < Timing.attack {
-            let progress = Self.clamp(age / Timing.attack)
-            let eased = Self.smoothstep(progress)
-            reactiveValue = pulseStartValue + (pulsePeak - pulseStartValue) * eased
-            return
-        }
-
-        let releaseStart = Timing.attack + Timing.crest
-        if age < releaseStart {
-            reactiveValue = pulsePeak
-            return
-        }
-
-        let releaseProgress = Self.clamp((age - releaseStart) / Timing.release)
-        reactiveValue = pulsePeak * (1 - Self.smoothstep(releaseProgress))
-        if releaseProgress >= 1 {
-            reactiveValue = 0
-            pulseAge = nil
-        }
-    }
-
-    private mutating func updateFinalValue() {
-        let phase = (clock.truncatingRemainder(dividingBy: Timing.fallbackPeriod))
-            / Timing.fallbackPeriod
-        let breathingWave = 0.5 + 0.5 * cosf(phase * 2 * .pi)
-        let fallbackValue = 0.15 + breathingWave * 0.85
-        let mixedValue = (fallbackValue * fallbackMix)
-            + (reactiveValue * (1 - fallbackMix))
-        let nextValue = Self.clamp(mixedValue * signalGain)
-        value = isSilent ? min(value, nextValue) : nextValue
-        if value < 0.004 {
-            value = 0
-        }
-    }
-
-    private static func smoothstep(_ value: Float) -> Float {
-        value * value * (3 - 2 * value)
-    }
-
-    private static func clamp(_ value: Float) -> Float {
-        min(max(value, 0), 1)
-    }
-
-    private static func median(_ values: [Float]) -> Float {
-        guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
-        let middle = sorted.count / 2
-        if sorted.count.isMultiple(of: 2) {
-            return (sorted[middle - 1] + sorted[middle]) / 2
-        }
-        return sorted[middle]
-    }
-}
-
 nonisolated private final class MusicAudioAnalysisWorker: @unchecked Sendable {
     struct Update: Sendable {
-        let timestamp: TimeInterval
         let bands: [Float]
-        let bassLevel: Float
-        let bassFlux: Float
-        let audioLevel: Float
-        let hasSignal: Bool
-        let minimumFluxBeforeOnset: Float
-        let minimumFluxAfterOnset: Float
+        let appearance: MusicGlowAppearance
     }
 
     enum StartResult: @unchecked Sendable {
@@ -533,23 +13,13 @@ nonisolated private final class MusicAudioAnalysisWorker: @unchecked Sendable {
     }
 
     private let capture = NookSystemAudioCapture()
-    private let queue = DispatchQueue(
-        label: "com.oaimgo.nook.music-audio-analysis",
-        qos: .userInitiated
-    )
+    private let queue = DispatchQueue(label: "com.oaimgo.nook.music-audio-analysis", qos: .userInitiated)
     private var timer: DispatchSourceTimer?
+    private var engine: MusicReactiveEngine?
     private var readBuffer = [Float](repeating: 0, count: 4_096)
-    private var lastBands = [Float](repeating: 0, count: 4)
-    private var pendingBands: [Float]?
-    private var pendingBassLevel: Float = 0
-    private var pendingBassFlux: Float = 0
-    private var pendingAudioLevel: Float = 0
-    private var pendingOnsetScore: Float = -1
-    private var pendingMinimumBassFluxSeen: Float = 1
-    private var pendingMinimumFluxBeforeOnset: Float = 1
-    private var pendingMinimumFluxAfterOnset: Float = 1
-    private var pendingHasSignal = false
+    private var lastSampleTime: TimeInterval = 0
     private var lastPublishTime: TimeInterval = 0
+    private var lastPublishedEnvelope = MusicGlowEnvelope()
 
     func start(
         bundleIdentifier: String?,
@@ -558,137 +28,69 @@ nonisolated private final class MusicAudioAnalysisWorker: @unchecked Sendable {
     ) {
         queue.async { [self] in
             stopOnQueue()
-
             if let error = capture.start(bundleIdentifier: bundleIdentifier) {
                 onStarted(.failure(error))
                 return
             }
-
-            guard let processor = MusicSignalProcessor(sampleRate: capture.sampleRate) else {
-                let error = NSError(
-                    domain: "com.oaimgo.nook.audio-analysis",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Unable to initialize music frequency analysis."]
-                )
+            guard let engine = MusicReactiveEngine(sampleRate: capture.sampleRate) else {
                 capture.stop()
-                onStarted(.failure(error))
+                onStarted(.failure(NSError(domain: "com.oaimgo.nook.audio-analysis", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Unable to initialize music frequency analysis."])))
                 return
             }
-
-            installTimer(processor: processor, onUpdate: onUpdate)
+            self.engine = engine
+            installTimer(engine: engine, onUpdate: onUpdate)
             onStarted(.success)
         }
     }
 
-    func stop() {
-        queue.async { [self] in
-            stopOnQueue()
-        }
+    func stop() { queue.async { [self] in stopOnQueue() } }
+
+    func resetAnalysis() {
+        queue.async { [self] in engine?.resetAnalysis() }
     }
 
     private func stopOnQueue() {
         timer?.cancel()
         timer = nil
         capture.stop()
-        lastBands = [Float](repeating: 0, count: 4)
-        pendingBands = nil
-        pendingBassLevel = 0
-        pendingBassFlux = 0
-        pendingAudioLevel = 0
-        pendingOnsetScore = -1
-        pendingMinimumBassFluxSeen = 1
-        pendingMinimumFluxBeforeOnset = 1
-        pendingMinimumFluxAfterOnset = 1
-        pendingHasSignal = false
+        engine = nil
         lastPublishTime = 0
+        lastSampleTime = 0
+        lastPublishedEnvelope = MusicGlowEnvelope()
     }
 
     private func installTimer(
-        processor: MusicSignalProcessor,
+        engine: MusicReactiveEngine,
         onUpdate: @escaping @Sendable (Update) -> Void
     ) {
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(16), leeway: .milliseconds(3))
-        lastPublishTime = Foundation.ProcessInfo.processInfo.systemUptime
+        timer.schedule(deadline: .now(), repeating: .milliseconds(8), leeway: .milliseconds(1))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-
+            var endTime: TimeInterval = 0
             let sampleCount = readBuffer.withUnsafeMutableBufferPointer { buffer in
                 guard let baseAddress = buffer.baseAddress else { return 0 }
-                return Int(self.capture.readSamples(
-                    into: baseAddress,
-                    capacity: UInt(buffer.count)
-                ))
+                return Int(self.capture.readSamples(into: baseAddress,
+                    capacity: UInt(buffer.count), endingAt: &endTime))
             }
+            let now = Foundation.ProcessInfo.processInfo.systemUptime
             if sampleCount > 0 {
+                lastSampleTime = now
                 readBuffer.withUnsafeBufferPointer { buffer in
-                    processor.ingest(UnsafeBufferPointer(rebasing: buffer[..<sampleCount])) { output in
-                        self.pendingBands = output.bands
-                        self.pendingHasSignal = self.pendingHasSignal || output.hasSignal
-
-                        // Preserve the strongest complete onset feature pair
-                        // across the presentation interval. Taking only the
-                        // latest FFT frame loses short kicks that land first.
-                        let onsetScore = output.bassLevel
-                            * output.bassFlux
-                            * output.level
-                        if onsetScore > self.pendingOnsetScore {
-                            self.pendingOnsetScore = onsetScore
-                            self.pendingBassLevel = output.bassLevel
-                            self.pendingBassFlux = output.bassFlux
-                            self.pendingAudioLevel = output.level
-                            self.pendingMinimumFluxBeforeOnset = self.pendingMinimumBassFluxSeen
-                            self.pendingMinimumFluxAfterOnset = 1
-                        } else {
-                            self.pendingMinimumFluxAfterOnset = min(
-                                self.pendingMinimumFluxAfterOnset,
-                                output.bassFlux
-                            )
-                        }
-                        self.pendingMinimumBassFluxSeen = min(
-                            self.pendingMinimumBassFluxSeen,
-                            output.bassFlux
-                        )
-                    }
+                    engine.ingest(UnsafeBufferPointer(rebasing: buffer[..<sampleCount]),
+                        endingAt: endTime, now: now)
                 }
             }
 
-            let now = Foundation.ProcessInfo.processInfo.systemUptime
-            guard now - self.lastPublishTime >= 0.03 else { return }
-            self.lastPublishTime = now
-
-            let hadAnalysisFrame = self.pendingBands != nil
-            if let pendingBands = self.pendingBands {
-                self.lastBands = pendingBands
-            } else {
-                // A source can temporarily stop delivering tap samples. Keep
-                // advancing the presentation clock and let stale bars settle.
-                self.lastBands = self.lastBands.map { $0 * 0.82 }
-            }
-
-            onUpdate(Update(
-                timestamp: now,
-                bands: self.lastBands,
-                bassLevel: hadAnalysisFrame ? self.pendingBassLevel : 0,
-                bassFlux: hadAnalysisFrame ? self.pendingBassFlux : 0,
-                audioLevel: hadAnalysisFrame ? self.pendingAudioLevel : 0,
-                hasSignal: hadAnalysisFrame && self.pendingHasSignal,
-                minimumFluxBeforeOnset: hadAnalysisFrame
-                    ? self.pendingMinimumFluxBeforeOnset
-                    : 0,
-                minimumFluxAfterOnset: hadAnalysisFrame
-                    ? self.pendingMinimumFluxAfterOnset
-                    : 0
-            ))
-            self.pendingBands = nil
-            self.pendingBassLevel = 0
-            self.pendingBassFlux = 0
-            self.pendingAudioLevel = 0
-            self.pendingOnsetScore = -1
-            self.pendingMinimumBassFluxSeen = 1
-            self.pendingMinimumFluxBeforeOnset = 1
-            self.pendingMinimumFluxAfterOnset = 1
-            self.pendingHasSignal = false
+            // New accents bypass the 30Hz spectrum throttle. The envelope carries
+            // its original host timestamp; main-actor stalls cannot delay its peak.
+            let hasNewAccent = engine.envelope != lastPublishedEnvelope
+            guard hasNewAccent || now - lastPublishTime >= 1.0 / 30 else { return }
+            lastPublishTime = now
+            lastPublishedEnvelope = engine.envelope
+            let bandGain = Float(max(0, 1 - max(now - lastSampleTime - 0.1, 0) / 0.3))
+            onUpdate(Update(bands: engine.bands.map { $0 * bandGain }, appearance: engine.appearance))
         }
         self.timer = timer
         timer.resume()
@@ -738,11 +140,11 @@ nonisolated private final class MusicAudioUpdateRelay: @unchecked Sendable {
 @MainActor
 final class MusicAudioAnalyzer: ObservableObject {
     private struct Visualization: Equatable {
-        let glowIntensity: Float
+        let appearance: MusicGlowAppearance
         let bands: [Float]
 
         static let empty = Visualization(
-            glowIntensity: 0,
+            appearance: MusicGlowAppearance(),
             bands: [0, 0, 0, 0]
         )
     }
@@ -759,6 +161,7 @@ final class MusicAudioAnalyzer: ObservableObject {
     @Published private(set) var activationState: ActivationState = .idle
     @Published private(set) var isRunning = false
     @Published private var visualization = Visualization.empty
+    @Published private var fadeOut: MusicGlowFadeOut?
 
     private let worker = MusicAudioAnalysisWorker()
     private var currentBundleIdentifier: String?
@@ -769,15 +172,17 @@ final class MusicAudioAnalyzer: ObservableObject {
     private var isExplicitActivationInFlight = false
     private var pendingTrackIdentifier: String?
     private var pendingTrackResetTask: Task<Void, Never>?
+    private var pendingFadeOutTask: Task<Void, Never>?
     private var requestedGeneration = 0
-    private var glowEnvelope = MusicGlowEnvelope()
-    private var lastGlowUpdateTime: TimeInterval?
 
     private init() {}
 
-    var glowIntensity: Float {
-        visualization.glowIntensity
+    var glowOpacity: Double {
+        let now = Foundation.ProcessInfo.processInfo.systemUptime
+        return fadeOut?.opacity(at: now) ?? visualization.appearance.opacity(at: now)
     }
+
+    var isFadingOut: Bool { fadeOut != nil }
 
     var realSpectrumLevels: [Float]? {
         isRunning ? visualization.bands : nil
@@ -806,18 +211,21 @@ final class MusicAudioAnalyzer: ObservableObject {
         title: String,
         artist: String
     ) {
+        // The caller's analysis gate also includes playback, so handle pause
+        // first. Stop capture immediately; only the rendered light keeps a tail.
+        guard isPlaying else {
+            guard !isExplicitActivationInFlight else { return }
+            if isRunning || isStartingCapture {
+                stop(fadeGlow: true)
+            }
+            return
+        }
         guard enabled else {
             // AppStorage remains false until an explicit permission request
             // succeeds. Playback metadata arriving meanwhile must not cancel
             // that request and invalidate its generation.
             guard !isExplicitActivationInFlight else { return }
-            if isRunning || isStartingCapture {
-                stop()
-            }
-            return
-        }
-        guard isPlaying else {
-            if isRunning || isStartingCapture {
+            if isRunning || isStartingCapture || isFadingOut {
                 stop()
             }
             return
@@ -846,8 +254,26 @@ final class MusicAudioAnalyzer: ObservableObject {
         }
     }
 
-    func stop() {
+    func stop(fadeGlow: Bool = false) {
+        let opacity = glowOpacity
+        clearFadeOut()
         requestedGeneration += 1
+        let generation = requestedGeneration
+        if fadeGlow, opacity > 0 {
+            fadeOut = MusicGlowFadeOut(startTime: Foundation.ProcessInfo.processInfo.systemUptime,
+                startOpacity: opacity)
+            pendingFadeOutTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(MusicGlowFadeOut.duration))
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled,
+                      generation == self.requestedGeneration else { return }
+                self.fadeOut = nil
+                self.pendingFadeOutTask = nil
+            }
+        }
         pendingTrackResetTask?.cancel()
         pendingTrackResetTask = nil
         pendingTrackIdentifier = nil
@@ -857,8 +283,6 @@ final class MusicAudioAnalyzer: ObservableObject {
         isExplicitActivationInFlight = false
         isRunning = false
         visualization = .empty
-        glowEnvelope.reset()
-        lastGlowUpdateTime = nil
         currentBundleIdentifier = nil
         currentTrackIdentifier = nil
         if activationState == .active || activationState == .requesting {
@@ -867,11 +291,18 @@ final class MusicAudioAnalyzer: ObservableObject {
         worker.stop()
     }
 
+    private func clearFadeOut() {
+        pendingFadeOutTask?.cancel()
+        pendingFadeOutTask = nil
+        fadeOut = nil
+    }
+
     private func startCapture(
         bundleIdentifier: String?,
         trackIdentifier: String?,
         completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void
     ) {
+        clearFadeOut()
         requestedGeneration += 1
         let generation = requestedGeneration
         pendingTrackResetTask?.cancel()
@@ -881,14 +312,10 @@ final class MusicAudioAnalyzer: ObservableObject {
         startingBundleIdentifier = bundleIdentifier
         startingTrackIdentifier = trackIdentifier
 
-        // A track/source change starts from the familiar breathing fallback.
-        // This also covers sources that successfully create an audio tap but
-        // do not immediately deliver samples; the previous track's envelope
-        // must never remain frozen on screen.
+        // A new source starts dark until its first measured audio. No old
+        // pulse or synthetic breathing is carried into the new capture session.
         isRunning = false
         visualization = .empty
-        glowEnvelope.reset()
-        lastGlowUpdateTime = nil
         currentBundleIdentifier = nil
         currentTrackIdentifier = nil
 
@@ -929,21 +356,14 @@ final class MusicAudioAnalyzer: ObservableObject {
     }
 
     private func apply(_ update: MusicAudioAnalysisWorker.Update) {
-        let elapsed = lastGlowUpdateTime.map { update.timestamp - $0 } ?? (1.0 / 30.0)
-        lastGlowUpdateTime = update.timestamp
-        let glowIntensity = glowEnvelope.advance(
-            bassLevel: update.bassLevel,
-            bassFlux: update.bassFlux,
-            audioLevel: update.audioLevel,
-            hasSignal: update.hasSignal,
-            minimumFluxBeforeOnset: update.minimumFluxBeforeOnset,
-            minimumFluxAfterOnset: update.minimumFluxAfterOnset,
-            deltaTime: elapsed
-        )
-        visualization = Visualization(
-            glowIntensity: glowIntensity,
-            bands: update.bands
-        )
+        let envelope = update.appearance.envelope
+        if envelope.timestamp.isFinite,
+           envelope.timestamp != visualization.appearance.envelope.timestamp {
+            let age = Foundation.ProcessInfo.processInfo.systemUptime - envelope.timestamp
+            DebugLog.shared.write(String(format: "[music-glow] accent age_ms=%.1f peak=%.3f release_ms=%.0f",
+                age * 1_000, envelope.peak, envelope.releaseDuration * 1_000))
+        }
+        visualization = Visualization(appearance: update.appearance, bands: update.bands)
     }
 
     private func scheduleTrackResetIfNeeded(to trackIdentifier: String?) {
@@ -975,7 +395,7 @@ final class MusicAudioAnalyzer: ObservableObject {
             self.currentTrackIdentifier = trackIdentifier
             self.pendingTrackIdentifier = nil
             self.pendingTrackResetTask = nil
-            self.glowEnvelope.resetRhythm(suppressOnsetsFor: 0.25)
+            self.worker.resetAnalysis()
         }
     }
 

@@ -3,6 +3,7 @@
 #import <CoreAudio/CoreAudio.h>
 #import <CoreAudio/CATapDescription.h>
 #import <CoreAudio/AudioHardwareTapping.h>
+#import <CoreAudio/HostTime.h>
 
 #include <array>
 #include <atomic>
@@ -19,6 +20,7 @@ NSString *const NookAudioCaptureErrorDomain = @"com.oaimgo.nook.audio-capture";
 
 struct CaptureState {
     std::array<float, kRingCapacity> samples {};
+    std::array<double, kRingCapacity> sampleTimes {};
     std::atomic<size_t> readIndex { 0 };
     std::atomic<size_t> writeIndex { 0 };
     std::atomic<bool> running { false };
@@ -32,22 +34,31 @@ struct CaptureState {
         writeIndex.store(0, std::memory_order_relaxed);
     }
 
-    void push(float sample) noexcept {
+    void push(float sample, double endTime) noexcept {
         const size_t write = writeIndex.load(std::memory_order_relaxed);
         const size_t next = (write + 1) & kRingMask;
         if (next == readIndex.load(std::memory_order_acquire)) {
             return;
         }
         samples[write] = sample;
+        sampleTimes[write] = endTime;
         writeIndex.store(next, std::memory_order_release);
     }
 
-    size_t read(float *destination, size_t capacity) noexcept {
+    size_t read(float *destination, size_t capacity, double *endTime) noexcept {
         size_t read = readIndex.load(std::memory_order_relaxed);
         const size_t write = writeIndex.load(std::memory_order_acquire);
+        // After a scheduling stall, discard the old prefix. A delayed beat
+        // must not be replayed seconds after the sound; the consumer detects
+        // the timestamp discontinuity and rebuilds its analysis window.
+        const size_t available = (write - read) & kRingMask;
+        if (available > capacity) {
+            read = (write - capacity) & kRingMask;
+        }
         size_t count = 0;
         while (read != write && count < capacity) {
             destination[count++] = samples[read];
+            *endTime = sampleTimes[read];
             read = (read + 1) & kRingMask;
         }
         readIndex.store(read, std::memory_order_release);
@@ -205,7 +216,7 @@ OSStatus AudioIOProc(
     AudioObjectID,
     const AudioTimeStamp *,
     const AudioBufferList *inputData,
-    const AudioTimeStamp *,
+    const AudioTimeStamp *inputTime,
     AudioBufferList *,
     const AudioTimeStamp *,
     void *clientData
@@ -215,7 +226,13 @@ OSStatus AudioIOProc(
         return kAudioHardwareNoError;
     }
 
-    for (UInt32 bufferIndex = 0; bufferIndex < inputData->mNumberBuffers; ++bufferIndex) {
+    const UInt64 hostTime = inputTime != nullptr && (inputTime->mFlags & kAudioTimeStampHostTimeValid)
+        ? inputTime->mHostTime : AudioGetCurrentHostTime();
+    const double startTime = static_cast<double>(AudioConvertHostTimeToNanos(hostTime)) * 1e-9;
+    const double sampleDuration = 1.0 / state->format.mSampleRate;
+    // The requested tap is a mono mixdown. Do not concatenate extra buffers
+    // into the time axis if HAL supplies more than one stream.
+    for (UInt32 bufferIndex = 0; bufferIndex < MIN(inputData->mNumberBuffers, 1u); ++bufferIndex) {
         const AudioBuffer &buffer = inputData->mBuffers[bufferIndex];
         if (buffer.mData == nullptr || buffer.mDataByteSize == 0) {
             continue;
@@ -229,7 +246,7 @@ OSStatus AudioIOProc(
             for (UInt32 channel = 0; channel < channels; ++channel) {
                 mono += source[frame * channels + channel];
             }
-            state->push(mono / static_cast<float>(channels));
+            state->push(mono / static_cast<float>(channels), startTime + (frame + 1) * sampleDuration);
         }
     }
 
@@ -397,11 +414,11 @@ OSStatus AudioIOProc(
     _state->resetBuffer();
 }
 
-- (NSUInteger)readSamplesIntoBuffer:(float *)buffer capacity:(NSUInteger)capacity {
-    if (buffer == nullptr || capacity == 0) {
+- (NSUInteger)readSamplesIntoBuffer:(float *)buffer capacity:(NSUInteger)capacity endingAtHostTime:(double *)endTime {
+    if (buffer == nullptr || capacity == 0 || endTime == nullptr) {
         return 0;
     }
-    return _state->read(buffer, capacity);
+    return _state->read(buffer, capacity, endTime);
 }
 
 @end
