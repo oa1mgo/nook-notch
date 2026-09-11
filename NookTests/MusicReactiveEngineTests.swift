@@ -124,6 +124,7 @@ final class MusicReactiveEngineTests: XCTestCase {
         let events = analyze(silence, engine: engine)
         XCTAssertTrue(events.isEmpty)
         XCTAssertEqual(engine.envelope.value(at: 5), 0)
+        XCTAssertEqual(engine.appearance.opacity(at: 5), 0)
         XCTAssertTrue(engine.bands.allSatisfy { $0 == 0 })
     }
 
@@ -136,6 +137,7 @@ final class MusicReactiveEngineTests: XCTestCase {
         }
         XCTAssertTrue(events.isEmpty)
         XCTAssertEqual(engine.envelope.value(at: 2), 0)
+        XCTAssertEqual(engine.appearance.opacity(at: 2), 0)
         let resumed = analyze(percussion(times: [0.4], duration: 1), engine: engine, offset: 2)
         assertMatches(resumed, times: [2.4])
     }
@@ -144,8 +146,10 @@ final class MusicReactiveEngineTests: XCTestCase {
         let engine = try XCTUnwrap(MusicReactiveEngine(sampleRate: rate))
         _ = analyze(percussion(times: [0.3], duration: 0.45), engine: engine)
         let before = engine.envelope.value(at: 0.45)
+        let appearanceBefore = engine.appearance
         engine.resetAnalysis()
         XCTAssertEqual(engine.envelope.value(at: 0.45), before)
+        XCTAssertEqual(engine.appearance, appearanceBefore)
         let events = analyze(percussion(times: [0.4, 0.9], duration: 1.4, amplitude: 0.02), engine: engine, offset: 1)
         assertMatches(events, times: [1.4, 1.9])
     }
@@ -162,6 +166,20 @@ final class MusicReactiveEngineTests: XCTestCase {
         XCTAssertEqual(envelope.releaseDuration, 0.65, accuracy: 0.000_1)
         XCTAssertGreaterThan(envelope.value(at: 12.4), 0)
         XCTAssertEqual(envelope.value(at: 12.71), 0)
+    }
+
+    func testSustainedPCMProducesBaseWithoutBeatsAndSilenceExtinguishesIt() throws {
+        let engine = try XCTUnwrap(MusicReactiveEngine(sampleRate: rate))
+        let tone = (0..<Int(rate * 3)).map { index -> Float in
+            let time = Double(index) / rate
+            return Float(0.2 * min(time / 0.5, 1) * sin(2 * .pi * 220 * time))
+        }
+        let events = analyze(tone, engine: engine)
+        XCTAssertTrue(events.filter { $0.timestamp > 0.8 }.isEmpty)
+        XCTAssertEqual(engine.appearance.opacity(at: 3),
+            MusicGlowAppearance.maximumOpacity * MusicGlowAppearance.ambientFraction, accuracy: 0.000_1)
+        _ = analyze([Float](repeating: 0, count: Int(rate * 2)), engine: engine, offset: 3)
+        XCTAssertEqual(engine.appearance.opacity(at: 5), 0)
     }
 
     func testMissedUIFramesDoNotRestartEnvelopeOrExtendIt() {

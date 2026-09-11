@@ -17,7 +17,7 @@ nonisolated struct MusicGlowEnvelope: Equatable, Sendable {
         timestamp = accent.timestamp
         peak = max(startValue, min(max(accent.strength, 0), 1))
         // Preserve the long 650ms tail for sparse material. Dense music needs
-        // darkness before the next real hit, not overlapping full-bright crests.
+        // a return to the ambient floor, not overlapping full-bright crests.
         releaseDuration = accent.interval.map { min(max($0 * 0.9 - Self.attackDuration, 0.22), 0.65) } ?? 0.65
     }
 
@@ -32,7 +32,8 @@ nonisolated struct MusicGlowEnvelope: Equatable, Sendable {
         }
         let progress = Float((age - Self.attackDuration) / releaseDuration)
         // Immediate, smooth release instead of a bright hold followed by a
-        // slow-start fade. Finite support guarantees a genuinely dark rest.
+        // slow-start fade. Finite support guarantees no lingering accent above
+        // the separate ambient floor.
         return peak * (1 - progress) * (1 - progress)
     }
 

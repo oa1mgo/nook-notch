@@ -527,7 +527,8 @@ struct NotchView: View {
             isAudioReactiveEnabled: musicAudioReactiveGlowEnabled,
             isPlaying: musicManager.playbackState.isPlaying,
             isAnalyzerRunning: musicAudioAnalyzer.isRunning,
-            canPresentGlow: viewModel.status == .closed && !vibeGlowVisible
+            canPresentGlow: viewModel.status == .closed && !vibeGlowVisible,
+            isFadingOut: musicAudioAnalyzer.isFadingOut
         )
     }
 
@@ -587,12 +588,9 @@ struct NotchView: View {
                 : 0
         }
 
-        // Sample the audio-timestamped gesture at display cadence. The approved
-        // glow geometry, color, blur and visibility mapping stay the same.
-        let intensity = Double(min(max(musicAudioAnalyzer.glowIntensity, 0), 1))
-        let visibleIntensity = min(max((intensity - 0.12) / 0.88, 0), 1)
-        let easedVisibility = visibleIntensity * visibleIntensity * (3 - 2 * visibleIntensity)
-        return easedVisibility * 0.95
+        // The appearance composes the ambient floor after the accent visibility
+        // curve. Geometry, album colors, blur, and peak opacity stay unchanged.
+        return musicAudioAnalyzer.glowOpacity
     }
 
     @ViewBuilder

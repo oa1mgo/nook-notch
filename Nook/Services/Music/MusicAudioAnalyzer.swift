@@ -4,7 +4,7 @@ import Foundation
 nonisolated private final class MusicAudioAnalysisWorker: @unchecked Sendable {
     struct Update: Sendable {
         let bands: [Float]
-        let envelope: MusicGlowEnvelope
+        let appearance: MusicGlowAppearance
     }
 
     enum StartResult: @unchecked Sendable {
@@ -90,7 +90,7 @@ nonisolated private final class MusicAudioAnalysisWorker: @unchecked Sendable {
             lastPublishTime = now
             lastPublishedEnvelope = engine.envelope
             let bandGain = Float(max(0, 1 - max(now - lastSampleTime - 0.1, 0) / 0.3))
-            onUpdate(Update(bands: engine.bands.map { $0 * bandGain }, envelope: engine.envelope))
+            onUpdate(Update(bands: engine.bands.map { $0 * bandGain }, appearance: engine.appearance))
         }
         self.timer = timer
         timer.resume()
@@ -140,11 +140,11 @@ nonisolated private final class MusicAudioUpdateRelay: @unchecked Sendable {
 @MainActor
 final class MusicAudioAnalyzer: ObservableObject {
     private struct Visualization: Equatable {
-        let envelope: MusicGlowEnvelope
+        let appearance: MusicGlowAppearance
         let bands: [Float]
 
         static let empty = Visualization(
-            envelope: MusicGlowEnvelope(),
+            appearance: MusicGlowAppearance(),
             bands: [0, 0, 0, 0]
         )
     }
@@ -161,6 +161,7 @@ final class MusicAudioAnalyzer: ObservableObject {
     @Published private(set) var activationState: ActivationState = .idle
     @Published private(set) var isRunning = false
     @Published private var visualization = Visualization.empty
+    @Published private var fadeOut: MusicGlowFadeOut?
 
     private let worker = MusicAudioAnalysisWorker()
     private var currentBundleIdentifier: String?
@@ -171,13 +172,17 @@ final class MusicAudioAnalyzer: ObservableObject {
     private var isExplicitActivationInFlight = false
     private var pendingTrackIdentifier: String?
     private var pendingTrackResetTask: Task<Void, Never>?
+    private var pendingFadeOutTask: Task<Void, Never>?
     private var requestedGeneration = 0
 
     private init() {}
 
-    var glowIntensity: Float {
-        visualization.envelope.value(at: Foundation.ProcessInfo.processInfo.systemUptime)
+    var glowOpacity: Double {
+        let now = Foundation.ProcessInfo.processInfo.systemUptime
+        return fadeOut?.opacity(at: now) ?? visualization.appearance.opacity(at: now)
     }
+
+    var isFadingOut: Bool { fadeOut != nil }
 
     var realSpectrumLevels: [Float]? {
         isRunning ? visualization.bands : nil
@@ -206,18 +211,21 @@ final class MusicAudioAnalyzer: ObservableObject {
         title: String,
         artist: String
     ) {
+        // The caller's analysis gate also includes playback, so handle pause
+        // first. Stop capture immediately; only the rendered light keeps a tail.
+        guard isPlaying else {
+            guard !isExplicitActivationInFlight else { return }
+            if isRunning || isStartingCapture {
+                stop(fadeGlow: true)
+            }
+            return
+        }
         guard enabled else {
             // AppStorage remains false until an explicit permission request
             // succeeds. Playback metadata arriving meanwhile must not cancel
             // that request and invalidate its generation.
             guard !isExplicitActivationInFlight else { return }
-            if isRunning || isStartingCapture {
-                stop()
-            }
-            return
-        }
-        guard isPlaying else {
-            if isRunning || isStartingCapture {
+            if isRunning || isStartingCapture || isFadingOut {
                 stop()
             }
             return
@@ -246,8 +254,26 @@ final class MusicAudioAnalyzer: ObservableObject {
         }
     }
 
-    func stop() {
+    func stop(fadeGlow: Bool = false) {
+        let opacity = glowOpacity
+        clearFadeOut()
         requestedGeneration += 1
+        let generation = requestedGeneration
+        if fadeGlow, opacity > 0 {
+            fadeOut = MusicGlowFadeOut(startTime: Foundation.ProcessInfo.processInfo.systemUptime,
+                startOpacity: opacity)
+            pendingFadeOutTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(MusicGlowFadeOut.duration))
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled,
+                      generation == self.requestedGeneration else { return }
+                self.fadeOut = nil
+                self.pendingFadeOutTask = nil
+            }
+        }
         pendingTrackResetTask?.cancel()
         pendingTrackResetTask = nil
         pendingTrackIdentifier = nil
@@ -265,11 +291,18 @@ final class MusicAudioAnalyzer: ObservableObject {
         worker.stop()
     }
 
+    private func clearFadeOut() {
+        pendingFadeOutTask?.cancel()
+        pendingFadeOutTask = nil
+        fadeOut = nil
+    }
+
     private func startCapture(
         bundleIdentifier: String?,
         trackIdentifier: String?,
         completion: @escaping @MainActor @Sendable (Result<Void, Error>) -> Void
     ) {
+        clearFadeOut()
         requestedGeneration += 1
         let generation = requestedGeneration
         pendingTrackResetTask?.cancel()
@@ -279,7 +312,7 @@ final class MusicAudioAnalyzer: ObservableObject {
         startingBundleIdentifier = bundleIdentifier
         startingTrackIdentifier = trackIdentifier
 
-        // A new source starts dark until its first measured transient. No old
+        // A new source starts dark until its first measured audio. No old
         // pulse or synthetic breathing is carried into the new capture session.
         isRunning = false
         visualization = .empty
@@ -323,13 +356,14 @@ final class MusicAudioAnalyzer: ObservableObject {
     }
 
     private func apply(_ update: MusicAudioAnalysisWorker.Update) {
-        if update.envelope.timestamp.isFinite,
-           update.envelope.timestamp != visualization.envelope.timestamp {
-            let age = Foundation.ProcessInfo.processInfo.systemUptime - update.envelope.timestamp
+        let envelope = update.appearance.envelope
+        if envelope.timestamp.isFinite,
+           envelope.timestamp != visualization.appearance.envelope.timestamp {
+            let age = Foundation.ProcessInfo.processInfo.systemUptime - envelope.timestamp
             DebugLog.shared.write(String(format: "[music-glow] accent age_ms=%.1f peak=%.3f release_ms=%.0f",
-                age * 1_000, update.envelope.peak, update.envelope.releaseDuration * 1_000))
+                age * 1_000, envelope.peak, envelope.releaseDuration * 1_000))
         }
-        visualization = Visualization(envelope: update.envelope, bands: update.bands)
+        visualization = Visualization(appearance: update.appearance, bands: update.bands)
     }
 
     private func scheduleTrackResetIfNeeded(to trackIdentifier: String?) {

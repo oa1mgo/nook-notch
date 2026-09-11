@@ -16,6 +16,7 @@ struct EvaluateMusicGlow {
             var total: Int64 = 0
             var accents: [[String: Any]] = []
             var levels: [[Double]] = []
+            var opacity: [[Double]] = []
             #if LEGACY_COMPARISON
             let legacy = LegacyMusicReviewEngine(sampleRate: rate)
             #endif
@@ -31,14 +32,19 @@ struct EvaluateMusicGlow {
                 #if LEGACY_COMPARISON
                 legacy.ingest(UnsafeBufferPointer(start: channels[0], count: Int(buffer.frameLength)), at: time)
                 levels.append([time, Double(engine.envelope.value(at: time)), Double(legacy.value)])
+                opacity.append([time, engine.appearance.opacity(at: time),
+                    MusicGlowAppearance.accentOpacity(engine.envelope.value(at: time)),
+                    MusicGlowAppearance.accentOpacity(legacy.value)])
                 #else
                 levels.append([time, Double(engine.envelope.value(at: time))])
+                opacity.append([time, engine.appearance.opacity(at: time),
+                    MusicGlowAppearance.accentOpacity(engine.envelope.value(at: time))])
                 #endif
             }
             let elapsed = ProcessInfo.processInfo.systemUptime - start
             reports.append(["file": URL(fileURLWithPath: path).lastPathComponent,
                 "duration": Double(total) / rate, "processingSeconds": elapsed,
-                "accents": accents, "envelope": levels])
+                "accents": accents, "envelope": levels, "opacity": opacity])
         }
         let data = try JSONSerialization.data(withJSONObject: reports, options: [.sortedKeys])
         FileHandle.standardOutput.write(data)

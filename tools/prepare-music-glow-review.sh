@@ -43,6 +43,7 @@ xcrun swiftc -O -D LEGACY_COMPARISON -parse-as-library \
   Nook/Services/Music/MusicSignalProcessor.swift \
   Nook/Services/Music/MusicTransientDetector.swift \
   Nook/Services/Music/MusicGlowEnvelope.swift \
+  Nook/Services/Music/MusicGlowAppearance.swift \
   Nook/Services/Music/MusicReactiveEngine.swift \
   "$OUTPUT_DIR/LegacyMusicSignalProcessor.swift" \
   "$OUTPUT_DIR/LegacyMusicGlowEnvelope.swift" \

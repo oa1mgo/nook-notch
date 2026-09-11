@@ -8,26 +8,28 @@
 </style>
 <main>
 <div class="tag">NOOK / AUDIO LAB</div>
-<h1>同一首歌，两种闪动。</h1>
-<p>听重拍落下时，哪一边的光更贴合。两边沿用同一亮度映射；此页为离线算法对照，非系统采集延迟测试。</p>
+<h1>重拍提亮，回落到底色。</h1>
+<p>默认对比同一击打检测与动画，只改变是否保留 18% 底光。此页为离线外观对照，非系统采集延迟测试。</p>
 <div class="controls"><label>片段 <select id="track" aria-label="音乐片段"></select></label><audio id="audio" controls preload="metadata"></audio><button id="restart">从头播放</button></div>
+<label>左侧参考 <select id="reference" aria-label="左侧参考"><option value="2">重写版 · 无底光</option><option value="3">1.4.0 · BPM 筛拍 / 固定呼吸</option></select></label>
 <div id="status" class="status" role="status">正在加载分析结果…</div>
 <div class="comparison">
-<section class="card"><div class="label"><strong>1.4.0</strong><span>BPM 筛拍 / 固定呼吸</span></div><div class="stage"><div class="notch"><div class="glow" id="oldGlow"></div></div></div><canvas class="wave" id="oldWave"></canvas></section>
-<section class="card"><div class="label"><strong>重写版</strong><span>击打时刻 / 分层强弱</span></div><div class="stage"><div class="notch"><div class="glow" id="newGlow"></div></div></div><canvas class="wave" id="newWave"></canvas></section>
+<section class="card"><div class="label"><strong id="referenceName">无底光</strong><span id="referenceDetail">重拍过后回到全暗</span></div><div class="stage"><div class="notch"><div class="glow" id="oldGlow"></div></div></div><canvas class="wave" id="oldWave"></canvas></section>
+<section class="card"><div class="label"><strong>18% 底光</strong><span>同一重拍 / 回落到底色</span></div><div class="stage"><div class="notch"><div class="glow" id="newGlow"></div></div></div><canvas class="wave" id="newWave"></canvas></section>
 </div>
-<p class="hint">暂停时画面也暂停。下方曲线为最近 6 秒的光亮变化；强拍应清晰抬起，余辉应在下一拍前退下。</p>
+<p class="hint">暂停时画面也暂停，方便比较同一帧。下方曲线为最近 6 秒的实际显示亮度；右侧有声音时保留底色，重拍从底色上抬起，峰值不变。Nook 中暂停会整体淡出。</p>
 <p class="legend">建议依次听：① 鼓贝斯的重拍与碎拍　② 民谣的人声和拨弦　③ 三拍子的强弱关系　④ 古典的变速和停顿　⑤ 爵士的切分。</p>
-<details><summary>样本出处与验证边界</summary><p>样本来自 <a href="https://librosa.org/doc/latest/recordings.html">librosa 的公开示例录音</a>。本地测试用途，未打包进 Nook 或公开发布。Choice：Admiral Bob / CC BY-NC；Let's Go Fishin'：Karissa Hobbs / CC BY；Sweet Waltz：Setuniman / CC BY-NC；Hungarian Dance #5：US Army Strings / Public Domain；Vibe Ace：Kevin MacLeod / CC BY。页面左侧按 1.4.0 的算法和约 30 Hz 聚合重放，不模拟 macOS 调度抖动。听感是否自然仍需人判断；检测次数不是准确率。</p></details>
+<details><summary>样本出处与验证边界</summary><p>样本来自 <a href="https://librosa.org/doc/latest/recordings.html">librosa 的公开示例录音</a>。本地测试用途，未打包进 Nook 或公开发布。Choice：Admiral Bob / CC BY-NC；Let's Go Fishin'：Karissa Hobbs / CC BY；Sweet Waltz：Setuniman / CC BY-NC；Hungarian Dance #5：US Army Strings / Public Domain；Vibe Ace：Kevin MacLeod / CC BY。默认只比较底光；可选的 1.4.0 参考按旧算法和约 30 Hz 聚合重放。所有亮度由 Swift 生产代码计算，不模拟 macOS 调度抖动。听感是否自然仍需人判断；检测次数不是准确率。</p></details>
 </main>
 <script>
 const audio=document.querySelector('#audio'),select=document.querySelector('#track'),status=document.querySelector('#status');
 const names={'choice.wav':'鼓贝斯 · Choice','fishin.wav':"民谣 / 人声 · Let’s Go Fishin’",'waltz.wav':'三拍子 · Sweet Waltz','brahms.wav':'古典 / 变速 · Hungarian Dance #5','jazz.wav':'爵士 · Vibe Ace'};
 let tracks=[],track=null;
-function visibility(intensity){const x=Math.max(0,Math.min(1,(intensity-.12)/.88));return x*x*(3-2*x)*.95;}
-function pointAt(time){let low=0,high=track.envelope.length-1;while(low<high){const middle=Math.ceil((low+high)/2);if(track.envelope[middle][0]<=time)low=middle;else high=middle-1;}return track.envelope[low];}
-function graph(id,column,time){const c=document.getElementById(id),width=c.clientWidth,height=c.clientHeight,dpr=devicePixelRatio||1;if(c.width!==Math.round(width*dpr)||c.height!==Math.round(height*dpr)){c.width=Math.round(width*dpr);c.height=Math.round(height*dpr);}const ctx=c.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,width,height);ctx.strokeStyle='#30394a';ctx.beginPath();ctx.moveTo(0,height-5);ctx.lineTo(width,height-5);ctx.stroke();ctx.strokeStyle=column===1?'#a6dfd3':'#baabe3';ctx.lineWidth=1.6;ctx.beginPath();let began=false;for(const row of track.envelope){if(row[0]<time-6||row[0]>time)continue;const x=(row[0]-(time-6))/6*width,y=height-5-visibility(row[column]||0)*(height-12);if(began)ctx.lineTo(x,y);else{ctx.moveTo(x,y);began=true;}}ctx.stroke();}
-function draw(){if(track){const time=audio.currentTime,row=pointAt(time);const valid=time>=row[0];document.querySelector('#oldGlow').style.opacity=valid?visibility(row[2]||0):0;document.querySelector('#newGlow').style.opacity=valid?visibility(row[1]):0;graph('oldWave',2,time);graph('newWave',1,time);}requestAnimationFrame(draw);}
+const reference=document.querySelector('#reference');
+reference.addEventListener('change',()=>{const legacy=reference.value==='3';document.querySelector('#referenceName').textContent=legacy?'1.4.0':'无底光';document.querySelector('#referenceDetail').textContent=legacy?'BPM 筛拍 / 固定呼吸':'重拍过后回到全暗';});
+function pointAt(time){let low=0,high=track.opacity.length-1;while(low<high){const middle=Math.ceil((low+high)/2);if(track.opacity[middle][0]<=time)low=middle;else high=middle-1;}return track.opacity[low];}
+function graph(id,column,time){const c=document.getElementById(id),width=c.clientWidth,height=c.clientHeight,dpr=devicePixelRatio||1;if(c.width!==Math.round(width*dpr)||c.height!==Math.round(height*dpr)){c.width=Math.round(width*dpr);c.height=Math.round(height*dpr);}const ctx=c.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,width,height);ctx.strokeStyle='#30394a';ctx.beginPath();ctx.moveTo(0,height-5);ctx.lineTo(width,height-5);ctx.stroke();ctx.strokeStyle=column===1?'#a6dfd3':'#baabe3';ctx.lineWidth=1.6;ctx.beginPath();let began=false;for(const row of track.opacity){if(row[0]<time-6||row[0]>time)continue;const x=(row[0]-(time-6))/6*width,y=height-5-(row[column]||0)*(height-12);if(began)ctx.lineTo(x,y);else{ctx.moveTo(x,y);began=true;}}ctx.stroke();}
+function draw(){if(track){const time=audio.currentTime,row=pointAt(time),column=Number(reference.value);const valid=time>=row[0];document.querySelector('#oldGlow').style.opacity=valid?(row[column]||0):0;document.querySelector('#newGlow').style.opacity=valid?row[1]:0;graph('oldWave',column,time);graph('newWave',1,time);}requestAnimationFrame(draw);}
 select.addEventListener('change',()=>{audio.pause();track=tracks[Number(select.value)];audio.src='../build/MusicGlowEvaluation/'+track.file;audio.load();status.textContent=names[track.file]+' · '+track.duration.toFixed(1)+' 秒 · 点击播放，或拖动进度条比较片段';});
 document.querySelector('#restart').addEventListener('click',()=>{audio.currentTime=0;audio.play().catch(e=>status.textContent=e.message);});
 audio.addEventListener('error',()=>status.textContent='音频加载失败，请先按方案文档生成 WAV 样本。');

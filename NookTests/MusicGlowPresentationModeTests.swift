@@ -56,6 +56,24 @@ final class MusicGlowPresentationModeTests: XCTestCase {
         )
     }
 
+    func testPauseKeepsOnlyReactiveFadeVisibleWithoutCapturingAudio() {
+        XCTAssertEqual(MusicGlowPresentationMode.resolve(
+            isEdgeGlowEnabled: true, isAudioReactiveEnabled: true,
+            isPlaying: false, isAnalyzerRunning: false, canPresentGlow: true,
+            isFadingOut: true), .reactive)
+        XCTAssertFalse(shouldAnalyze(edge: true, beta: true, playing: false))
+        XCTAssertEqual(resolve(edge: true, beta: true, playing: false, analyzer: false), .hidden)
+    }
+
+    func testFadeStillRespectsBothSwitchesAndCompetingPresentation() {
+        for (edge, beta, canPresent) in [(false, true, true), (true, false, true), (true, true, false)] {
+            XCTAssertEqual(MusicGlowPresentationMode.resolve(
+                isEdgeGlowEnabled: edge, isAudioReactiveEnabled: beta,
+                isPlaying: false, isAnalyzerRunning: false, canPresentGlow: canPresent,
+                isFadingOut: true), .hidden)
+        }
+    }
+
     private func resolve(
         edge: Bool,
         beta: Bool,
