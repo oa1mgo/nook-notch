@@ -1,5 +1,16 @@
 # Release Notes
 
+## 1.4.1
+
+What's New
+
+  - Redesigned Installer — introduces a compact drag-to-install window with Nook on the left, a working Applications shortcut on the right, clear instructions, and a Retina-ready background.
+  - More Responsive Music Glow (Beta) — replaces tempo-lock and fixed-stride gating with multi-band audio transient detection and timestamped animations. Active audio analysis no longer adds periodic flashes unrelated to the music.
+  - Ambient Music Light — keeps a low album-colored base beneath accents so the glow brightens and settles back naturally. Pausing fades the light out and stops capture; sustained silence also extinguishes it.
+  - Existing Controls Preserved — regular Music Edge Glow keeps its permission-free breathing effect, while real-audio response remains behind the separate Beta Features opt-in. Glow size, colors, and maximum brightness are unchanged.
+  - Safer Packaging — validates the Applications link, Finder layout, disk-image integrity, and packaged app signature before publishing. English and Chinese READMEs now include installation instructions and the new window screenshot.
+  - Release Version — bumps Nook to version 1.4.1. Audio-reactive behavior remains experimental; Bluetooth output delay is not automatically compensated.
+
 ## 1.4.0
 
 What's New
