@@ -68,7 +68,7 @@ struct QuestionPanelView: View {
     // MARK: - Header
 
     private var headerBar: some View {
-        HStack {
+        HStack(spacing: 8) {
             // Back chevron — pushes the question view onto the stack
             // intentionally (so it has its own back affordance), but if
             // the user wants to back out without answering they can.
@@ -84,23 +84,61 @@ struct QuestionPanelView: View {
             .buttonStyle(.plain)
             .help("Back to sessions")
 
-            Spacer()
+            // Title (header or provider name) — sits next to the chevron
+            // so the bar reads like an iOS navigation bar:
+            //   ‹ Header … projectName    ‹/› [pager]
+            Text(pendingQuestions.indices.contains(currentIndex)
+                 ? (pendingQuestions[currentIndex].header ?? session.provider.rawValue.uppercased())
+                 : session.provider.rawValue.uppercased())
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.orange)
+                .lineLimit(1)
+                .layoutPriority(1)
 
-            // Multi-question pager dots
+            Spacer(minLength: 4)
+
+            // Project directory name (right side, on the same row as
+            // the header label) — orientation without a second line.
+            if replyProvider.supportsInlineAnswer {
+                Text(session.projectName)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+
+            // Multi-question pager arrows + counter on the far right.
             if pendingQuestions.count > 1 {
-                HStack(spacing: 4) {
-                    ForEach(0..<pendingQuestions.count, id: \.self) { i in
-                        Capsule().fill(i == currentIndex ? Color.orange : Color.white.opacity(0.18))
-                            .frame(width: 8, height: 3)
-                    }
-                    Text("\(currentIndex + 1)/\(pendingQuestions.count)")
-                        .font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
+                Button { if currentIndex > 0 { currentIndex -= 1 } } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(currentIndex == 0 ? 0.15 : 0.6))
+                        .frame(width: 16, height: 22)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .disabled(currentIndex == 0)
+                .help("Previous question")
+
+                Text("\(currentIndex + 1)/\(pendingQuestions.count)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .fixedSize()
+
+                Button { if currentIndex < pendingQuestions.count - 1 { currentIndex += 1 } } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(currentIndex == pendingQuestions.count - 1 ? 0.15 : 0.6))
+                        .frame(width: 16, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(currentIndex == pendingQuestions.count - 1)
+                .help("Next question")
             }
         }
         .padding(.horizontal, 12)
         .padding(.top, 12)
-        .padding(.bottom, 6)
+        .padding(.bottom, 8)
     }
 
     // MARK: - Single
@@ -116,27 +154,16 @@ struct QuestionPanelView: View {
         .padding(.vertical, 14)
     }
 
-    // MARK: - Multi (swiper) — top padding matches single; content indented for ‹ ›
+    // MARK: - Multi (no extra body chrome — header has the ‹/› pager)
 
     private var multiQuestionSwiper: some View {
-        HStack(spacing: 4) {
-            Button { if currentIndex > 0 { currentIndex -= 1 } } label: {
-                Text("‹").font(.system(size: 20)).foregroundColor(.white.opacity(currentIndex == 0 ? 0.15 : 0.5))
-            }
-            .buttonStyle(.plain).disabled(currentIndex == 0)
-
-            VStack(alignment: .leading, spacing: 12) {
-                questionTitle(pendingQuestions[currentIndex])
-                optionsList(questionIndex: currentIndex)
-                Divider().background(Color.white.opacity(0.08))
-                bottomActionRow
-            }
-            .frame(maxWidth: .infinity)
-
-            Button { if currentIndex < pendingQuestions.count - 1 { currentIndex += 1 } } label: {
-                Text("›").font(.system(size: 20)).foregroundColor(.white.opacity(currentIndex == pendingQuestions.count - 1 ? 0.15 : 0.5))
-            }
-            .buttonStyle(.plain).disabled(currentIndex == pendingQuestions.count - 1)
+        // Same body as the single-question card. The ‹/› pager + counter
+        // live in `headerBar` so we don't double up with body chrome.
+        VStack(alignment: .leading, spacing: 12) {
+            questionTitle(pendingQuestions[currentIndex])
+            optionsList(questionIndex: currentIndex)
+            Divider().background(Color.white.opacity(0.08))
+            bottomActionRow
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 14)
@@ -145,41 +172,22 @@ struct QuestionPanelView: View {
     // MARK: - Building blocks
 
     private func questionTitle(_ q: PendingQuestion) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Title row: header label (left) + project name (right) on the
-            // same line. The header was previously duplicated (top bar +
-            // here); consolidated here per user feedback.
-            HStack(alignment: .firstTextBaseline) {
-                if let header = q.header {
-                    Text(header)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.orange)
-                        .textCase(.uppercase)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                // Project directory name (last path component of cwd) —
-                // more useful than a truncated session ID for at-a-glance
-                // orientation when answering in the notch.
-                Text(session.projectName)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.white.opacity(0.5))
-                    .lineLimit(1)
-            }
-            // Question text + multi-select pill on the next line.
-            HStack(alignment: .top, spacing: 8) {
-                Text(q.questionText)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white)
-                    .fixedSize(horizontal: false, vertical: true)
-                if q.multiple {
-                    Text("可多选")
-                        .font(.system(size: 9, weight: .semibold))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.25))
-                        .foregroundColor(.orange)
-                        .clipShape(Capsule())
-                }
+        // Body title: just the question text + multi-select pill on the
+        // right. Header label (e.g. "phonics 系统细节") and project name
+        // moved up to `headerBar` (iOS-nav style: ‹ Header … projectName),
+        // so this section is the actual question being asked.
+        HStack(alignment: .top, spacing: 8) {
+            Text(q.questionText)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            if q.multiple {
+                Text("可多选")
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.25))
+                    .foregroundColor(.orange)
+                    .clipShape(Capsule())
             }
         }
     }
