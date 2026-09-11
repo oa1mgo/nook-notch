@@ -599,28 +599,33 @@ struct InstanceRow: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             } else {
                 HStack(spacing: 8) {
-                    // Focus icon (only for tmux instances with yabai)
+                    // Left side: Reply (bubble) + Focus (eye), only when applicable.
+                    // Reply (opencode ask_user_question / Claude interactive tool)
+                    // renders as a chat bubble — semantic for "answer the question".
+                    // Clicking it opens chat + pushes the question panel in one step,
+                    // saving the user a navigation hop.
+                    if let onReply, session.phase == .waitingForInput {
+                        IconButton(icon: "bubble.left.and.bubble.right.fill") {
+                            onReply()
+                        }
+                    }
                     if session.isInTmux && isYabaiAvailable {
                         IconButton(icon: "eye") {
                             onFocus()
                         }
                     }
 
-                    // Archive button - only for idle or completed sessions
+                    // Push the archive button to the far right regardless of
+                    // whether anything else is showing — fixed-position affordance
+                    // for muscle memory.
+                    Spacer(minLength: 0)
+
+                    // Right side: Archive (only when eligible — idle or
+                    // waitingForInput). Stays at the right edge so users
+                    // always know where to find it.
                     if session.phase == .idle || session.phase == .waitingForInput {
                         IconButton(icon: "archivebox") {
                             onArchive()
-                        }
-                    }
-
-                    // Reply button - only when the session is actually
-                    // waiting for an answer (opencode ask_user_question,
-                    // Claude Code interactive tool, etc.). Clicking it opens
-                    // the chat view AND pushes the question panel onto the
-                    // notch in one step — saving the user a navigation hop.
-                    if let onReply, session.phase == .waitingForInput {
-                        IconButton(icon: "arrowshape.turn.up.left.fill") {
-                            onReply()
                         }
                     }
                 }

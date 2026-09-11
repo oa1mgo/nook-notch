@@ -320,6 +320,7 @@ struct QuestionPanelView: View {
     }
 
     private func sendAnswers() {
+        DebugLog.shared.write("[question] sendAnswers() called canSend=\(canSend) isSending=\(isSending) pendingQuestions=\(pendingQuestions.count) selectedAnswers=\(selectedAnswers.mapValues { $0.count }) freeText='\(freeText)'")
         guard canSend, !isSending else { return }
         isSending = true
         errorMessage = nil
