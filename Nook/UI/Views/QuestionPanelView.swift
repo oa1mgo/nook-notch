@@ -69,18 +69,31 @@ struct QuestionPanelView: View {
 
     private var headerBar: some View {
         HStack {
-            HStack(spacing: 6) {
-                Circle().fill(Color.orange).frame(width: 18, height: 18)
-                    .overlay(Text("?").font(.system(size: 11, weight: .bold)).foregroundColor(.black))
-                Text("\(session.provider.rawValue.uppercased()) · QUESTION")
-                    .font(.system(size: 10, weight: .semibold))
+            // Left: the question's header label (max 30 chars per opencode
+            // SDK). This replaces the redundant "PROVIDER · QUESTION" tag —
+            // the user already knows they're in a question UI from the body.
+            // Falls back to the provider name only if no header is set.
+            if !pendingQuestions.isEmpty {
+                Text(pendingQuestions[currentIndex].header ?? session.provider.rawValue.uppercased())
+                    .font(.system(size: 10.5, weight: .semibold))
                     .foregroundColor(.orange)
+                    .textCase(.uppercase)
+                    .lineLimit(1)
             }
+
             Spacer()
+
+            // Right: project directory name (last path component of cwd)
+            // — more useful than a truncated session ID for at-a-glance
+            // orientation when answering in the notch.
             if replyProvider.supportsInlineAnswer {
-                Text("Session · \(String(session.sessionId.prefix(6)))")
-                    .font(.system(size: 9)).foregroundColor(.white.opacity(0.4))
+                Text(session.projectName)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .lineLimit(1)
             }
+
+            // Multi-question pager dots
             if pendingQuestions.count > 1 {
                 HStack(spacing: 4) {
                     ForEach(0..<pendingQuestions.count, id: \.self) { i in
@@ -104,10 +117,7 @@ struct QuestionPanelView: View {
             questionTitle(pendingQuestions[currentIndex])
             optionsList(questionIndex: currentIndex)
             Divider().background(Color.white.opacity(0.08))
-            if pendingQuestions[currentIndex].custom {
-                freeFormInput
-            }
-            sendBar
+            bottomActionRow
         }
         .padding(16)
     }
@@ -125,10 +135,7 @@ struct QuestionPanelView: View {
                 questionTitle(pendingQuestions[currentIndex])
                 optionsList(questionIndex: currentIndex)
                 Divider().background(Color.white.opacity(0.08))
-                if pendingQuestions[currentIndex].custom {
-                    freeFormInput
-                }
-                sendBar
+                bottomActionRow
             }
             .frame(maxWidth: .infinity)
 
@@ -202,27 +209,37 @@ struct QuestionPanelView: View {
             .textFieldStyle(.plain).font(.system(size: 11))
             .padding(8).background(Color.white.opacity(0.06))
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            .onSubmit { if canSend { sendAnswers() } }
     }
 
-    /// Send bar — single source of truth for "submit my answers".
+    /// Bottom action row: free-text input (if allowed) and Send button share
+    /// the same row so the panel doesn't grow vertically with two stacked
+    /// bars. When custom input isn't allowed, only the Send button renders.
+    private var bottomActionRow: some View {
+        HStack(spacing: 8) {
+            if pendingQuestions[currentIndex].custom {
+                freeFormInput
+            }
+            sendButton
+        }
+    }
+
+    /// Send button — single source of truth for "submit my answers".
     /// Disabled until every question has at least one answer (selection OR
     /// custom text). Same white-pill capsule as the permission Allow button
     /// for visual consistency across the app.
-    private var sendBar: some View {
-        HStack {
-            Spacer()
-            Button { sendAnswers() } label: {
-                Text("Send").font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(canSend ? 0.92 : 0.35))
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(!canSend || isSending)
-            .help("Send your answer to the agent")
+    private var sendButton: some View {
+        Button { sendAnswers() } label: {
+            Text("Send").font(.system(size: 11, weight: .medium))
+                .foregroundColor(.black)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(canSend ? 0.92 : 0.35))
+                .clipShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .disabled(!canSend || isSending)
+        .help("Send your answer to the agent")
     }
 
     private var canSend: Bool {
