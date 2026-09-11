@@ -256,11 +256,13 @@ struct SessionListView: View {
         sessionMonitor.archiveSession(sessionId: session.sessionId)
     }
 
-    /// Open the chat view for a session and push the question panel onto the
-    /// notch in one step. Used by the per-row reply button so the user can
-    /// jump straight into answering without navigating through chat first.
+    /// Skip chat and go straight to the question panel. Previously this
+    /// went through chat first (instances → chat → question) which
+    /// produced a visible "expand then shrink" animation as the panel
+    /// size resolved three times. Going direct (instances → question)
+    /// gives a single, smooth size transition matching the panel's
+    /// intended final dimensions.
     private func replyToQuestion(_ session: SessionState) {
-        openChat(session)
         viewModel.notchOpen(reason: .notification)
         viewModel.pushTo(.question(session))
     }

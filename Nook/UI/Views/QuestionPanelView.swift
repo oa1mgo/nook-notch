@@ -72,17 +72,9 @@ struct QuestionPanelView: View {
             // Back chevron — pushes the question view onto the stack
             // intentionally (so it has its own back affordance), but if
             // the user wants to back out without answering they can.
-            Button {
-                onClose()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.7))
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Back to sessions")
+            // Hover highlight matches the IconButton pattern used in the
+            // session list so the affordance feels native.
+            BackChevronButton(action: onClose)
 
             // Title (header or provider name) — sits next to the chevron
             // so the bar reads like an iOS navigation bar:
@@ -394,5 +386,31 @@ struct QuestionPanelView: View {
 
     private func letterLabel(for index: Int) -> String {
         String(UnicodeScalar(65 + index) ?? "A")
+    }
+}
+
+// MARK: - Back Chevron Button (hover-highlighted nav-bar back affordance)
+
+private struct BackChevronButton: View {
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            action()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(isHovered ? .white : .white.opacity(0.7))
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isHovered ? Color.white.opacity(0.12) : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Back to sessions")
     }
 }
