@@ -56,28 +56,15 @@ struct CompactQuestionActivityView: View {
             Spacer(minLength: 0)
 
             if musicManager.isVisible {
-                WaveIndicator(isPlaying: musicManager.playbackState.isPlaying)
-                    .frame(width: 36, height: 14)
+                Image(systemName: musicManager.playbackState.isPlaying ? "waveform" : "music.note")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.85))
+                    .frame(width: 16, height: 16)
             }
         }
         .padding(.horizontal, 7)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
-    }
-}
-
-struct WaveIndicator: View {
-    let isPlaying: Bool
-    private let heights: [CGFloat] = [6, 12, 8, 14, 5, 10, 7, 11]
-
-    var body: some View {
-        HStack(spacing: 1.5) {
-            ForEach(0..<heights.count, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color.white.opacity(0.6))
-                    .frame(width: 2, height: isPlaying ? heights[i] : 4)
-            }
-        }
     }
 }

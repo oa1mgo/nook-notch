@@ -525,6 +525,16 @@ struct ChatView: View {
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
             onGoToTerminal: { focusTerminal() },
+            // For opencode, the question is answered inside Nook's notch UI,
+            // not the terminal. If the user collapsed the notch, this lets
+            // them re-open it from the chat view rather than losing the
+            // question prompt entirely.
+            onOpenQuestionInNotch: session.provider == .opencode
+                ? {
+                    viewModel.notchOpen(reason: .notification)
+                    viewModel.pushTo(.question(session))
+                }
+                : nil,
             focusErrorMessage: focusErrorMessage
         )
     }
@@ -1190,11 +1200,15 @@ struct ToolCallView: View {
 
                 // Expand indicator (only for expandable tools).
                 // AskUserQuestion options are static (parsed from input),
-                // so always allow expanding regardless of status. Other
-                // tools hide the chevron while running/waitingForApproval
+                // so always allow expanding regardless of status.
+                // Subagent containers also keep the chevron visible while
+                // running — otherwise the user has no affordance to collapse
+                // a long-running task, and the list's visibility no longer
+                // reflects the chevron's rotation (see `showsSubagentToolsList`).
+                // Other tools hide the chevron while running/waitingForApproval
                 // because their result content isn't available yet.
                 let isAskQuestion = tool.kind == .askUserQuestion
-                if canExpand && (isAskQuestion || (tool.status != .running && tool.status != .waitingForApproval)) {
+                if canExpand && (isAskQuestion || tool.isSubagentContainer || (tool.status != .running && tool.status != .waitingForApproval)) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .medium))
                         .foregroundColor(secondaryTextColor.opacity(0.8))
@@ -1203,10 +1217,12 @@ struct ToolCallView: View {
                 }
             }
 
-            // Subagent tools list (for Task/Agent tools).
-            // Shows during execution regardless of expansion; after completion,
-            // visibility follows isExpanded so the user can collapse to save space.
-            if tool.isSubagentContainer && !tool.subagentTools.isEmpty && (isExpanded || tool.status == .running) {
+            // Subagent tools list (for Task/Agent tools). Visibility is a
+            // pure function of the user's `isExpanded` toggle — see
+            // `ToolCallItem.showsSubagentToolsList(isExpanded:)` for the
+            // rationale (previously force-shown while running, which made
+            // the fold action invisible and the row appear "stuck" expanded).
+            if tool.showsSubagentToolsList(isExpanded: isExpanded) {
                 SubagentToolsList(tools: tool.subagentTools, primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor)
                     .padding(.leading, 12)
                     .padding(.top, 2)
@@ -1522,6 +1538,12 @@ struct ChatInteractivePromptBar: View {
     let primaryTextColor: Color
     let secondaryTextColor: Color
     let onGoToTerminal: () -> Void
+    /// For opencode, the question is answered inside Nook's notch UI rather
+    /// than the terminal. When non-nil, the button label becomes "Answer in
+    /// Nook" and the click re-opens the notch with the question panel —
+    /// useful when the user collapsed the notch and lost access to the
+    /// question prompt.
+    let onOpenQuestionInNotch: (() -> Void)?
     /// Error message shown when Terminal focus failed on the last click.
     /// Cleared on next click. nil = no error.
     let focusErrorMessage: String?
@@ -1540,7 +1562,7 @@ struct ChatInteractivePromptBar: View {
                     .font(.system(size: 11))
                     .foregroundColor(secondaryTextColor)
                     .lineLimit(1)
-                if !canFocusTerminal {
+                if onOpenQuestionInNotch == nil && !canFocusTerminal {
                     Text(hintSubtitle)
                         .font(.system(size: 10))
                         .foregroundColor(secondaryTextColor.opacity(0.7))
@@ -1562,47 +1584,73 @@ struct ChatInteractivePromptBar: View {
 
             Spacer()
 
-            // Terminal button on right (similar to Allow button).
-            //
-            // Visual style and click both follow `canFocusTerminal` rather
-            // than `isInTmux` alone — non-tmux sessions can still have the
-            // click do something useful (focus the terminal app via
-            // NSWorkspace) and we don't want the button to look broken when
-            // the user IS in a session we can focus.
-            //
-            // When `canFocusTerminal` is false, the button is still rendered
-            // (for layout consistency with the in-tmux path) but clicking
-            // is a no-op and a `.help()` tooltip explains the workaround
-            // (start the agent inside tmux). The `interactivePromptSubtitle`
-            // on the left also gains a hint line in that case so the user
-            // sees the explanation without having to hover.
-            Button {
-                if canFocusTerminal {
-                    onGoToTerminal()
+            // Action button on right. For opencode the question is answered
+            // inside Nook's notch, so the button re-opens the notch with
+            // the question panel. For other providers it falls back to the
+            // existing "focus the terminal app" flow.
+            if let openNotch = onOpenQuestionInNotch {
+                Button {
+                    openNotch()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Answer in Nook")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color.orange)
+                    .clipShape(Capsule())
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 11, weight: .medium))
-                    Text("Terminal")
-                        .font(.system(size: 13, weight: .medium))
+                .buttonStyle(.plain)
+                .help("Open the question panel in Nook's notch")
+                .opacity(showButton ? 1 : 0)
+                .scaleEffect(showButton ? 1 : 0.8)
+            } else {
+                // Terminal button on right (similar to Allow button).
+                //
+                // Visual style and click both follow `canFocusTerminal` rather
+                // than `isInTmux` alone — non-tmux sessions can still have the
+                // click do something useful (focus the terminal app via
+                // NSWorkspace) and we don't want the button to look broken when
+                // the user IS in a session we can focus.
+                //
+                // When `canFocusTerminal` is false, the button is still rendered
+                // (for layout consistency with the in-tmux path) but clicking
+                // is a no-op and a `.help()` tooltip explains the workaround
+                // (start the agent inside tmux). The `interactivePromptSubtitle`
+                // on the left also gains a hint line in that case so the user
+                // sees the explanation without having to hover.
+                Button {
+                    if canFocusTerminal {
+                        onGoToTerminal()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Terminal")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundColor(canFocusTerminal ? Color.white : secondaryTextColor)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    // Use a fixed dark background regardless of theme — adaptive
+                    // background mode sets `primaryTextColor` to a dark color
+                    // (e.g. black on light theme), which would make the button
+                    // invisible with the previous black-on-primaryTextColor scheme.
+                    .background(canFocusTerminal ? Color.black.opacity(0.85) : secondaryTextColor.opacity(0.16))
+                    .clipShape(Capsule())
                 }
-                .foregroundColor(canFocusTerminal ? Color.white : secondaryTextColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                // Use a fixed dark background regardless of theme — adaptive
-                // background mode sets `primaryTextColor` to a dark color
-                // (e.g. black on light theme), which would make the button
-                // invisible with the previous black-on-primaryTextColor scheme.
-                .background(canFocusTerminal ? Color.black.opacity(0.85) : secondaryTextColor.opacity(0.16))
-                .clipShape(Capsule())
+                .buttonStyle(.plain)
+                .help(canFocusTerminal
+                      ? "Focus the terminal window running \(providerName)"
+                      : "Start \(providerName) inside tmux to focus the terminal from here")
+                .opacity(showButton ? 1 : 0)
+                .scaleEffect(showButton ? 1 : 0.8)
             }
-            .buttonStyle(.plain)
-            .help(canFocusTerminal
-                  ? "Focus the terminal window running \(providerName)"
-                  : "Start \(providerName) inside tmux to focus the terminal from here")
-            .opacity(showButton ? 1 : 0)
-            .scaleEffect(showButton ? 1 : 0.8)
         }
         .frame(minHeight: 44)  // Consistent height with other bars
         .padding(.horizontal, 16)
