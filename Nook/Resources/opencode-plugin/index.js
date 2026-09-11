@@ -133,14 +133,16 @@ async function handleCommand(rawLine, input) {
         logDebug("question.reply FAILED: no client._client.post available");
         return;
       }
-      // opencode question reply route (schema v1: question.ts). Body: { answers }
-      // NOTE: URL verified against the permission.reply pattern (which uses
-      // "/permission/{requestID}/reply" against the same heyApiClient base).
-      // CONFIRM exact path at end-to-end test (Task 19); if the heyApi client
-      // base already prefixes /api/session/:id, adjust to match.
+      // opencode question reply route. Body: { answers: Array<Array<string>> }
+      // URL verified against SDK gen/types.gen.d.ts: QuestionReplyData uses
+      // url "/question/{requestID}/reply" with path { requestID } only —
+      // NO session prefix (matches permission.reply pattern).
+      // Earlier code used "/session/{sessionID}/question/{requestID}/reply"
+      // which returned the opencode SPA HTML page; opencode's internal state
+      // machine then timed out and fired question.rejected.
       const res = await heyApiClient.post({
-        url: "/session/{sessionID}/question/{requestID}/reply",
-        path: { sessionID: sessionId, requestID: requestId },
+        url: "/question/{requestID}/reply",
+        path: { requestID: requestId },
         body: { answers },
       });
       logDebug(`question.reply OK res=${JSON.stringify(res)}`);
