@@ -98,4 +98,57 @@ final class MusicGlowAppearanceTests: XCTestCase {
         XCTAssertEqual(MusicGlowAppearance.accentOpacity(1), 0.95)
         XCTAssertEqual(MusicGlowAppearance.accentOpacity(.nan), 0)
     }
+
+    func testSlowTailKeepsApprovedPeakAndFloorWhileExtendingVisibleFalloff() {
+        var appearance = slowAppearance()
+        let time = appearance.envelope.timestamp
+        XCTAssertEqual(appearance.opacity(at: time + 0.05), MusicGlowAppearance.maximumOpacity, accuracy: 0.000_1)
+        for age in stride(from: 0.1, through: 1.7, by: 0.01) {
+            appearance.observeSignal(at: time + age)
+        }
+        XCTAssertGreaterThan(appearance.opacity(at: time + 0.9), base + 0.1)
+        XCTAssertEqual(appearance.opacity(at: time + 1.6), base, accuracy: 0.000_1)
+    }
+
+    func testSilenceExpiresEvenLongestAccentAndCannotEmitAnotherFlash() {
+        let appearance = slowAppearance()
+        let time = appearance.envelope.timestamp
+        XCTAssertGreaterThan(appearance.opacity(at: time + 0.9), base)
+        // The floor uses its existing 800ms grace + 500ms fade. The last
+        // genuine accent may finish its finite tail, but never renews itself.
+        XCTAssertGreaterThan(appearance.envelope.value(at: time + 1.31), 0)
+        XCTAssertEqual(appearance.opacity(at: time + 1.56), 0)
+        XCTAssertEqual(appearance.opacity(at: time + 4), 0)
+    }
+
+    func testPauseDuringLongTailUsesExistingFiniteFadeInsteadOfSlowPace() {
+        let appearance = slowAppearance()
+        let time = appearance.envelope.timestamp + 0.7
+        let opacity = appearance.opacity(at: time)
+        XCTAssertGreaterThan(opacity, base)
+        let fade = MusicGlowFadeOut(startTime: time, startOpacity: opacity)
+        XCTAssertEqual(fade.opacity(at: time), opacity)
+        XCTAssertEqual(fade.opacity(at: time + 0.46), 0)
+    }
+
+    func testSignalResumingDuringLongTailCannotJumpItsBrightness() {
+        var appearance = slowAppearance()
+        let time = appearance.envelope.timestamp + 1.05
+        let opacity = appearance.opacity(at: time)
+        let envelope = appearance.envelope
+        appearance.observeSignal(at: time)
+        XCTAssertEqual(appearance.opacity(at: time), opacity, accuracy: 0.000_1)
+        XCTAssertEqual(appearance.envelope, envelope)
+    }
+
+    private func slowAppearance() -> MusicGlowAppearance {
+        var appearance = MusicGlowAppearance()
+        for index in 0..<9 {
+            let time = 10 + Double(index) * 2.2
+            appearance.observeSignal(at: time - 0.5)
+            appearance.observeSignal(at: time)
+            appearance.trigger(.init(timestamp: time, strength: 1, interval: 2.2))
+        }
+        return appearance
+    }
 }

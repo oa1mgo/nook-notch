@@ -2,16 +2,18 @@
 
 ## Installer layout
 
-The installer uses a compact 600 × 360 Finder icon-view window: Nook on the left,
-an actual symbolic link to `/Applications` on the right, and a drag arrow between
-them. Sidebar, toolbar, tabs, path bar, and status bar are hidden. Only the two
-installation items are visible; supporting artwork and Finder metadata are hidden.
+The installer uses a compact **480 × 280** Finder icon-view window: Nook on the
+left and an actual symbolic link to `/Applications` on the right. Finder draws
+its native background, scalable icons, and readable labels; there is no bitmap,
+decorative arrow, or rasterized instruction text. Sidebar, toolbar, tabs, path
+bar, and status bar are configured hidden. Only the two installation items are
+visible. Drag Nook onto Applications, then open it from the Applications folder.
 
-`tools/dmg/layout.json` is the shared source of truth for the window and icon
-coordinates. `render-background.swift` creates 1x and 2x backgrounds using AppKit
-at build time; the background does not contain fake app or folder icons. Finder
-draws the real interactive items. No background-image or Python dependency is
-added to the Nook application.
+`tools/dmg/layout.json` is the shared source of truth for the point-sized window
+and icon coordinates. `background: None` produces `backgroundType: 0` with no
+image alias. The old renderer, image validator, and raster tests have been
+removed; Retina bitmap/DPI selection is no longer part of packaging. There is no
+background-image or Python dependency in the Nook application.
 
 The old release workflow passed the app directly to `hdiutil create`, without an
 Applications link or saved Finder layout. The release workflow now calls the same
@@ -48,26 +50,25 @@ checksum, and the mounted read-only result:
 - Visible items are exactly `Nook.app` and `Applications`.
 - The Applications item is a symlink to `/Applications`, not an empty folder.
 - App bundle metadata and code-signature verification survive packaging.
-- The Retina background is present and referenced in Finder metadata.
-- Both PNG sources and the packaged TIFF contain matching 1x/2x artwork at
-  600 × 360 logical points (600 × 360 / 1200 × 720 pixels). The validator compares
-  their pixels at a common logical size, allowing normal font antialiasing.
+- No `.background*` artwork exists on the volume, and Finder metadata selects
+  the native background without any stale image alias.
 - Finder window dimensions, hidden chrome, icon sizes, and both positions match
-  the layout; automatic icon rearrangement is disabled.
+  the layout; automatic icon rearrangement is disabled. Icon labels are below
+  the icons at the configured font size, and both scroll offsets are zero.
 
 The image is detached after validation. Mount the final DMG to visually inspect
-the Finder window, check the icon labels and arrow alignment, and open its
+the Finder window, check the native icon labels and spacing, and open its
 Applications shortcut. Do not overwrite an installed app just to test the layout.
 
 Do not use dmgbuild's `hide_extensions` on `Nook.app`: it attaches FinderInfo to
 the app and fails strict signature validation. Preserve the signed bundle rather
 than rewriting its attributes for a cosmetic filename change.
 
-The packaging unit tests reject missing/wrong Applications links, missing artwork,
-incorrect icon positions, and output overwrites. The real AppKit rendering tests
-also cover matching PNG/TIFF representations, missing Retina data, and duplicate
-representations. Release CI runs all 11 tests and the mounted-image checks before
-uploading the DMG.
+The 16 packaging unit tests reject missing/wrong Applications links, unexpected
+files, background artwork/directories, picture/color metadata, stale image
+aliases, incorrect positions/labels, oversized windows, visible toolbars,
+unsupported grids, nonzero scroll offsets, rearrangement, and output overwrites.
+Release CI runs these tests and validates the actual mounted DMG before upload.
 
 ## Retina scaling fix (2026-09-14)
 
@@ -78,37 +79,40 @@ then manually scaled its graphics context by the representation's pixel scale.
 cropping the title, arrow, and footer. The PNG/TIFF dimensions and DPI were still
 correct, so the previous presence-only background check missed the defect.
 
-The renderer now only flips logical coordinates; AppKit owns the backing-scale
-transform. The existing 1x PNG is byte-for-byte unchanged, and 2x matches its
-layout. `validate-background.swift` checks dimensions, logical size/DPI, both
-representations, and mean RGB difference after normalizing resolution. The old
-renderer fails the new PNG and TIFF regression tests (difference 0.0254); the
-fixed images pass (0.0026, allowed < 0.008). Validation runs before packaging and
-again on the actual mounted TIFF.
+The first 1.4.2 package removed that redundant transform. Its 1x/2x raster
+comparison passed (mean difference 0.0026, threshold 0.008), as did the local
+standard-density Finder check. Nevertheless the user still saw enlarged artwork
+on another display. Those tests did not prove Finder's presentation on that
+display, and the precise remaining cause was not reproduced locally.
 
-Local validation: 11 tests pass, and a freshly built DMG passes checksum, bundle,
-signature-integrity, Applications-symlink, Finder-metadata, and artwork checks.
-Double-clicking the DMG on the attached 1920 × 1080 standard-density display
-opens the intended 600 × 360 Finder window; its Applications shortcut opens the
-real folder. Retina is verified through actual 2x raster/packaged-image data;
-physical Retina and mixed-monitor drag checks were not available on this host.
-Display settings were not changed, and no installed app was overwritten.
+**Superseded in republished 1.4.2, build 2:** the user approved a simpler window.
+Remove the entire image-background path instead of making another DPI adjustment.
+The new DMG passes all 16 packaging tests, checksum, bundle/signature-integrity,
+Applications-link, native-background, and Finder-metadata checks. Freshly
+double-clicking it shows the two items in the intended 480 × 280 window. The
+actual window screenshot is `readme/img_nook_installer_native.jpg`. Physical
+Retina/mixed-monitor hardware is still unavailable; no display settings or
+installed applications were changed during validation.
 
 Finder's disk-image window is a saved **point-sized icon layout**, not a responsive
 web page. Opening the volume inside an already-open Finder window can inherit that
 window's toolbar and dimensions; use a fresh DMG open for first-install layout
 checks. This fix does not claim to control arbitrary user-resized Finder windows.
-The generated preview is `build/DMGDisplayValidation/Nook-display-fix.dmg` (ignored),
-not a replacement for the already-published 1.4.1 asset.
+The validated local replacement is `build/Release142Replacement/Nook-1.4.2.dmg`
+(ignored). The GitHub workflow builds and verifies its own artifact from the
+updated main commit before publishing it.
 
 ## Distribution boundary
 
-This only changes the installer presentation and packaging checks. It does not
-change app entitlements, configure Developer ID signing/notarization, bypass
-Gatekeeper, bump the app version, or create a release tag. Local ad-hoc signatures
+The installer change does not change app entitlements, configure Developer ID
+signing/notarization, or bypass Gatekeeper. Local ad-hoc signatures
 can pass integrity validation without being trusted Developer ID distribution
-signatures. A new release must still follow the existing version/tag workflow;
-already-published DMGs are not modified by this change.
+signatures. At the user's explicit request, the old GitHub 1.4.2 release/asset is
+replaced after validating the new package, and `release/1.4.2` is moved to the
+new main commit. The app marketing version stays 1.4.2; `CFBundleVersion` becomes
+2 in both app configurations to distinguish the rebuild. This release also
+includes the [adaptive Music Glow tail](specs/2026-09-14-music-glow-adaptive-release.md).
+People who downloaded the earlier installer need to download it again.
 
 The pinned packaging-only dependencies and hashes live in
 `tools/dmg/requirements.txt`. [dmgbuild](https://github.com/dmgbuild/dmgbuild)

@@ -149,7 +149,11 @@ final class MusicReactiveEngineTests: XCTestCase {
         let appearanceBefore = engine.appearance
         engine.resetAnalysis()
         XCTAssertEqual(engine.envelope.value(at: 0.45), before)
-        XCTAssertEqual(engine.appearance, appearanceBefore)
+        // Analysis context is cleared, but every point of the in-flight visual
+        // gesture must remain unchanged (not only the first frame after reset).
+        for time in stride(from: 0.45, through: 2, by: 0.01) {
+            XCTAssertEqual(engine.appearance.opacity(at: time), appearanceBefore.opacity(at: time))
+        }
         let events = analyze(percussion(times: [0.4, 0.9], duration: 1.4, amplitude: 0.02), engine: engine, offset: 1)
         assertMatches(events, times: [1.4, 1.9])
     }
@@ -162,10 +166,49 @@ final class MusicReactiveEngineTests: XCTestCase {
         XCTAssertLessThan(envelope.value(at: 10.2), 0.5)
         XCTAssertEqual(envelope.value(at: 10.46), 0)
         XCTAssertEqual(envelope.value(at: 11), 0)
-        envelope.trigger(.init(timestamp: 12, strength: 1, interval: 1.5))
-        XCTAssertEqual(envelope.releaseDuration, 0.65, accuracy: 0.000_1)
-        XCTAssertGreaterThan(envelope.value(at: 12.4), 0)
-        XCTAssertEqual(envelope.value(at: 12.71), 0)
+    }
+
+    func testPCMSlowPassageLengthensTailAndTrackResetForgetsPace() throws {
+        let engine = try XCTUnwrap(MusicReactiveEngine(sampleRate: rate))
+        let times = (0..<9).map { 0.4 + Double($0) * 1.5 }
+        let events = analyze(percussion(times: times, duration: times.last! + 0.1), engine: engine)
+        assertMatches(events, times: times)
+        XCTAssertGreaterThan(engine.envelope.releaseDuration, 1.2, "Accent strengths: \(events.map(\.strength))")
+        let previous = engine.appearance
+        engine.resetAnalysis()
+        for age in stride(from: 0.1, through: 1.6, by: 0.01) {
+            let time = events.last!.timestamp + age
+            XCTAssertEqual(engine.appearance.opacity(at: time), previous.opacity(at: time))
+        }
+        let next = analyze(percussion(times: [0.2], duration: 0.3), engine: engine, offset: times.last! + 0.1)
+        XCTAssertEqual(next.count, 1)
+        XCTAssertEqual(engine.envelope.releaseDuration, 0.65, accuracy: 0.000_1)
+    }
+
+    func testPCMTempoChangesAdjustTailWithoutChangingAccentTiming() throws {
+        let engine = try XCTUnwrap(MusicReactiveEngine(sampleRate: rate))
+        let fast = (0..<8).map { 0.4 + Double($0) * 0.375 }
+        let slow = (1...7).map { fast.last! + Double($0) * 1.5 }
+        let resumedFast = (1...8).map { slow.last! + Double($0) * 0.375 }
+        let times = fast + slow + resumedFast
+        let samples = percussion(times: times, duration: times.last! + 1)
+        var events: [MusicTransientDetector.Accent] = []
+        var durations: [TimeInterval] = []
+        for index in stride(from: 0, to: samples.count, by: 512) {
+            let end = min(index + 512, samples.count)
+            let time = Double(end) / rate
+            samples.withUnsafeBufferPointer {
+                engine.ingest(UnsafeBufferPointer(rebasing: $0[index..<end]), endingAt: time, now: time) {
+                    events.append($0)
+                    durations.append(engine.envelope.releaseDuration)
+                }
+            }
+        }
+        assertMatches(events, times: times)
+        guard durations.count == times.count else { return }
+        XCTAssertLessThan(durations[fast.count - 1], 0.3)
+        XCTAssertGreaterThan(durations[fast.count + slow.count - 1], 1.2, "Accent strengths: \(events.map(\.strength))")
+        XCTAssertLessThan(durations[fast.count + slow.count], 0.3)
     }
 
     func testSustainedPCMProducesBaseWithoutBeatsAndSilenceExtinguishesIt() throws {
