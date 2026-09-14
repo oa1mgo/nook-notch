@@ -49,6 +49,9 @@ checksum, and the mounted read-only result:
 - The Applications item is a symlink to `/Applications`, not an empty folder.
 - App bundle metadata and code-signature verification survive packaging.
 - The Retina background is present and referenced in Finder metadata.
+- Both PNG sources and the packaged TIFF contain matching 1x/2x artwork at
+  600 × 360 logical points (600 × 360 / 1200 × 720 pixels). The validator compares
+  their pixels at a common logical size, allowing normal font antialiasing.
 - Finder window dimensions, hidden chrome, icon sizes, and both positions match
   the layout; automatic icon rearrangement is disabled.
 
@@ -61,8 +64,42 @@ the app and fails strict signature validation. Preserve the signed bundle rather
 than rewriting its attributes for a cosmetic filename change.
 
 The packaging unit tests reject missing/wrong Applications links, missing artwork,
-incorrect icon positions, and output overwrites. Release CI runs these tests and
-the mounted-image checks before uploading the DMG.
+incorrect icon positions, and output overwrites. The real AppKit rendering tests
+also cover matching PNG/TIFF representations, missing Retina data, and duplicate
+representations. Release CI runs all 11 tests and the mounted-image checks before
+uploading the DMG.
+
+## Retina scaling fix (2026-09-14)
+
+The 1.4.1 renderer assigned the bitmap a logical `size` of 600 × 360 points and
+then manually scaled its graphics context by the representation's pixel scale.
+`NSGraphicsContext(bitmapImageRep:)` already accounts for that logical size: on a
+2x representation, the extra transform made artwork effectively 4x, shifting and
+cropping the title, arrow, and footer. The PNG/TIFF dimensions and DPI were still
+correct, so the previous presence-only background check missed the defect.
+
+The renderer now only flips logical coordinates; AppKit owns the backing-scale
+transform. The existing 1x PNG is byte-for-byte unchanged, and 2x matches its
+layout. `validate-background.swift` checks dimensions, logical size/DPI, both
+representations, and mean RGB difference after normalizing resolution. The old
+renderer fails the new PNG and TIFF regression tests (difference 0.0254); the
+fixed images pass (0.0026, allowed < 0.008). Validation runs before packaging and
+again on the actual mounted TIFF.
+
+Local validation: 11 tests pass, and a freshly built DMG passes checksum, bundle,
+signature-integrity, Applications-symlink, Finder-metadata, and artwork checks.
+Double-clicking the DMG on the attached 1920 × 1080 standard-density display
+opens the intended 600 × 360 Finder window; its Applications shortcut opens the
+real folder. Retina is verified through actual 2x raster/packaged-image data;
+physical Retina and mixed-monitor drag checks were not available on this host.
+Display settings were not changed, and no installed app was overwritten.
+
+Finder's disk-image window is a saved **point-sized icon layout**, not a responsive
+web page. Opening the volume inside an already-open Finder window can inherit that
+window's toolbar and dimensions; use a fresh DMG open for first-install layout
+checks. This fix does not claim to control arbitrary user-resized Finder windows.
+The generated preview is `build/DMGDisplayValidation/Nook-display-fix.dmg` (ignored),
+not a replacement for the already-published 1.4.1 asset.
 
 ## Distribution boundary
 

@@ -1,5 +1,7 @@
 # Music Glow: audio-timestamped transients
 
+> This records the 1.4.1 design. The [2026-09-14 accent refinement](2026-09-14-music-glow-accent-refinement.md) updates detection, prominence, and replacement rules; the capture, appearance, and animation contracts below remain unchanged.
+
 ## Why 1.4.0 needed a new engine
 
 The old path was `40–160 Hz flux → UI aggregation → BPM lock → 2/4-beat stride → 1.15s cooldown → fixed 50/80/650ms pulse`. Those gates systematically discarded audible attacks. Before a lock, or when irregular music lost the lock, a three-second oscillator generated light unrelated to the music. Onsets and their order were reduced to one maximum per UI update; processing was therefore affected by UI scheduling.

@@ -69,6 +69,10 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def verify_background(*images):
+    run("/usr/bin/xcrun", "swift", ASSETS / "validate-background.swift", ASSETS / "layout.json", *images)
+
+
 def verify_mounted(mount, settings, source_info):
     require(sorted(path.name for path in mount.iterdir() if not path.name.startswith("."))
             == ["Applications", "Nook.app"], "DMG must show only Nook and Applications")
@@ -77,6 +81,7 @@ def verify_mounted(mount, settings, source_info):
             "Applications must be a real drop target pointing to /Applications")
     require(read_bundle(mount / "Nook.app") == source_info, "Packaged bundle metadata changed")
     require((mount / ".background.tiff").is_file(), "Missing Retina installer background")
+    verify_background(mount / ".background.tiff")
     with DSStore.open(str(mount / ".DS_Store"), "r") as store:
         window = store["."]["bwsp"]
         (x, y), (width, height) = settings["window_rect"]
@@ -103,6 +108,7 @@ def build(app, output):
         staging = Path(temporary)
         print("Rendering installer background (1x and 2x)…", flush=True)
         run("/usr/bin/xcrun", "swift", ASSETS / "render-background.swift", ASSETS / "layout.json", staging)
+        verify_background(staging / "background.png", staging / "background@2x.png")
         settings = image_settings(app, staging / "background.png")
         image = staging / "Nook.dmg"
         print("Building drag-to-install DMG…", flush=True)

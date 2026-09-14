@@ -1,8 +1,9 @@
 # Progress
 
-> Last updated: 2026-09-11 (1.4.1 release preparation)
+> Last updated: 2026-09-14 (1.4.2 release preparation)
 
 ## 🎯 Current Focus
+- **1.4.2 release preparation** — User approved publishing Music Glow accent refinement and the Retina installer fix together. Version/release notes updated; 76 app tests, 11 packaging tests, Release build, bundle version/signature, and mounted DMG checks pass. Ready for main integration and release tagging. [Music evidence](docs/specs/2026-09-14-music-glow-accent-refinement.md), [installer evidence](docs/packaging.md#retina-scaling-fix-2026-09-14).
 <!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复 + Shortcuts 页面 panel 底部空白修复**（两个 1.3.2 follow-up）：
 
   ### A. Picker 子项无 sub desc 时高度/垂直对齐
@@ -38,6 +39,9 @@
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
 
 ## ✅ Recently Completed
+- **2026-09-14 Nook 1.4.2 release preparation** — Packages the approved Music Glow refinement and Retina installer alignment fix; bumps both app configurations to 1.4.2 and adds release notes. All 87 app/packaging tests and local Release DMG validation pass; signing and permission policies remain unchanged.
+- **2026-09-14 DMG Retina artwork alignment** — Reproduced double-scaling in the 2x background (correct DPI but cropped/misaligned content); removed the redundant transform, leaving 1x artwork byte-identical. Added real 1x/2x PNG/TIFF validation to packaging and CI; 11 tests, mounted DMG/signature checks, and actual 1x Finder/Applications-link checks pass. Physical Retina hardware not available; no release created. [Details](docs/packaging.md#retina-scaling-fix-2026-09-14).
+- **2026-09-14 Music Glow accent detection** — Independent frequency-range references, whole-mix attack prominence, sharpness checks, and actual-energy pickup replacement address four reproduced failure modes. Nine new PCM regressions; full suite 76/76, Debug/Release builds and Debug launch passed. Five-style offline comparison and performance evidence: [spec](docs/specs/2026-09-14-music-glow-accent-refinement.md). Ambient light, UI, permission policy, and version remain unchanged.
 - **2026-09-11 Nook 1.4.1 release preparation** — Bundles the redesigned drag-to-install DMG and the already-merged transient/ambient Music Glow improvements; adds release notes and bumps both app configurations to 1.4.1. Full macOS suite: 67 tests, 0 failures; 7 packaging tests, Release build, bundle-version check, and mounted DMG/signature validation passed. Signing policy is unchanged. Installer reproduction: [packaging](docs/packaging.md).
 - **2026-09-11 DMG installer redesign** — Replaced bare-app disk-image packaging with a compact 600 × 360 Finder layout, a real Applications drop target, Retina background, and shared layout coordinates. Release CI now runs 7 packaging tests and mounted-image/signature checks; local Release build, DMG validation, and actual Finder/Applications-link inspection passed. English/Chinese READMEs include the installer screenshot. Packaging only; no release tag or signing-policy changes. Reproduction and the FinderInfo signature pitfall: [packaging](docs/packaging.md).
 - **2026-09-11 Music Glow README and merge verification** — Updated English/Chinese READMEs with regular versus Beta glow behavior, the opt-in permission flow, ambient light, real music bars, local-only audio processing, and evaluation notes. Re-ran all 67 macOS tests and Debug build/launch successfully before main integration; version remains 1.4.0, with no new release tag.

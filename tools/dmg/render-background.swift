@@ -40,7 +40,9 @@ for scale in [1, 2] {
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = context
     let transform = NSAffineTransform()
-    transform.scaleX(by: CGFloat(scale), yBy: CGFloat(scale))
+    // bitmap.size already gives this context a points-to-pixels transform (2x
+    // for Retina). Scaling again produces 4x, shifting/cropping the 2x artwork.
+    // Only flip the logical point coordinate system to match Finder's icons.
     transform.translateX(by: 0, yBy: layout.height)
     transform.scaleX(by: 1, yBy: -1)
     transform.concat()
