@@ -1,5 +1,16 @@
 # Release Notes
 
+## 1.4.2
+
+What's New
+
+  - Refined Music Accents (Beta) — evaluates frequency ranges independently so quieter pickups are less likely to block following heavy hits, and alternating low- and mid-frequency accents remain eligible.
+  - Better Strong/Weak Separation — considers each attack's importance in the whole mix, reduces over-bright responses to minor accompaniment, and rejects tested smooth bass modulation and fading-tail artifacts.
+  - Familiar Glow Preserved — keeps the album-colored ambient base, glow appearance, 50ms attack, and existing release animation. Real-audio response remains opt-in; the regular permission-free Music Edge Glow is unchanged.
+  - Retina Installer Fix — removes duplicate scaling from the high-resolution installer background, correcting enlarged, cropped, or misplaced text and arrows while preserving the standard-density layout and Applications drop target.
+  - Stronger Regression Checks — adds mixed-audio regressions and actual 1x/2x PNG/TIFF alignment checks to the packaging workflow.
+  - Release Version — bumps Nook to version 1.4.2. Audio-reactive behavior remains experimental; Bluetooth output delay is not automatically compensated.
+
 ## 1.4.1
 
 What's New

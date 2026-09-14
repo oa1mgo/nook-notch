@@ -34,12 +34,18 @@ class InstallerTests(unittest.TestCase):
         mock = patch.object(build, "read_bundle", return_value=self.bundle)
         mock.start()
         self.addCleanup(mock.stop)
+        # Actual image rendering and multi-resolution validation are exercised
+        # by test_background.py; this suite isolates Finder/bundle metadata.
+        background = patch.object(build, "verify_background")
+        self.background_validator = background.start()
+        self.addCleanup(background.stop)
 
     def verify(self):
         build.verify_mounted(self.mount, self.settings, self.bundle)
 
     def testValidLayout(self):
         self.verify()
+        self.background_validator.assert_called_once_with(self.mount / ".background.tiff")
         _, (width, height) = self.settings["window_rect"]
         radius = self.settings["icon_size"] / 2
         for x, y in self.settings["icon_locations"].values():

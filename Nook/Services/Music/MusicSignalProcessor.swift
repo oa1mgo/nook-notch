@@ -11,6 +11,12 @@ nonisolated final class MusicSignalProcessor {
         let bands: [Float]
         /// Per-band transient energy relative to recent energy, before display smoothing.
         let onsetBands: [Float]
+        /// Unwhitened spectral rise, for comparing attacks across instruments.
+        let onsetEnergies: [Float]
+        /// Attack energy relative to the whole mix; empty bands cannot self-amplify.
+        let onsetImpacts: [Float]
+        /// Fraction of band energy newly arriving per reference 10.67ms hop.
+        let onsetContrasts: [Float]
         /// Unsmooth low-frequency strength used only by Music Glow.
         let bassLevel: Float
         /// Positive low-frequency rise, independent from the display bars.
@@ -36,6 +42,7 @@ nonisolated final class MusicSignalProcessor {
     private var processedSampleCount: Int64 = 0
 
     private var smoothedLevel: Float = 0
+    private var mixPeak: Float = 0
     private var smoothedBands = [Float](repeating: 0, count: 4)
     private var bandPeaks = [Float](repeating: 0.000_01, count: 4)
     private var previousBassMagnitudes: [Float]
@@ -75,6 +82,7 @@ nonisolated final class MusicSignalProcessor {
         windowFill = 0
         processedSampleCount = 0
         smoothedLevel = 0
+        mixPeak = 0
         smoothedBands = [Float](repeating: 0, count: 4)
         bandPeaks = [Float](repeating: 0.000_01, count: 4)
         previousBassMagnitudes = [Float](repeating: 0, count: halfSize)
@@ -157,7 +165,14 @@ nonisolated final class MusicSignalProcessor {
         var bassLevel: Float = 0
         var bassFlux: Float = 0
         var onsetBands = [Float](repeating: 0, count: 4)
+        var onsetEnergies = [Float](repeating: 0, count: 4)
+        var onsetImpacts = [Float](repeating: 0, count: 4)
+        var onsetContrasts = [Float](repeating: 0, count: 4)
         let frameDuration = Float(Double(hopSize) / sampleRate)
+        mixPeak = max(rms, mixPeak * expf(-frameDuration / 0.8))
+        // A dying reverb tail must not become important just because the rest
+        // of the mix has become quiet. Reset with the track/capture history.
+        let mixReference = max(rms, max(mixPeak * 0.35, 0.000_01))
         for (index, range) in bandRanges.enumerated() {
             let lower = max(
                 1,
@@ -207,8 +222,14 @@ nonisolated final class MusicSignalProcessor {
                     let rise = max(magnitudes[bin] - previous, 0)
                     novelty += rise * rise
                 }
-                onsetBands[index] = min(sqrtf(novelty / Float(upper - lower + 1))
+                let rise = sqrtf(novelty)
+                let bandEnergy = energy * sqrtf(Float(upper - lower + 1))
+                onsetBands[index] = min(rise / sqrtf(Float(upper - lower + 1))
                     / max(bandPeaks[index], 0.000_01), 1)
+                onsetEnergies[index] = rise
+                onsetImpacts[index] = min(rise / mixReference, 1)
+                onsetContrasts[index] = min(rise / max(bandEnergy, 0.000_01)
+                    * (512.0 / 48_000.0) / frameDuration, 1)
             }
             smoothedBands[index] = smooth(
                 current: smoothedBands[index],
@@ -227,6 +248,9 @@ nonisolated final class MusicSignalProcessor {
             level: smoothedLevel,
             bands: smoothedBands,
             onsetBands: onsetBands,
+            onsetEnergies: onsetEnergies,
+            onsetImpacts: onsetImpacts,
+            onsetContrasts: onsetContrasts,
             bassLevel: bassLevel,
             bassFlux: bassFlux,
             hasSignal: rms > 0.000_5

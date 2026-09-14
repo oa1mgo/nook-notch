@@ -200,6 +200,138 @@ final class MusicReactiveEngineTests: XCTestCase {
         XCTAssertTrue(events.allSatisfy { $0.strength.isFinite })
     }
 
+    func testQuietDifferentInstrumentPickupDoesNotStealKick() throws {
+        let kicks = (0..<8).map { 0.6 + Double($0) * 0.75 }
+        var samples = percussion(times: kicks, duration: 7)
+        add(&samples, percussion(times: kicks.map { $0 - 0.16 }, duration: 7,
+            frequency: 350, amplitude: 0.045, decay: 0.035))
+        let events = try analyze(samples)
+        for time in kicks {
+            XCTAssertTrue(events.contains { $0.timestamp >= time && $0.timestamp - time < 0.07 },
+                "Different-instrument pickup stole kick at \(time): \(events)")
+        }
+    }
+
+    func testKickAndSnareKeepIndependentStrengthReferences() throws {
+        let kicks = (0..<8).map { 0.4 + Double($0) * 0.6 }
+        let snares = kicks.map { $0 + 0.3 }
+        var samples = percussion(times: kicks, duration: 6)
+        add(&samples, percussion(times: snares, duration: 6,
+            frequency: 1_100, amplitude: 0.18, decay: 0.035))
+        assertMatches(try analyze(samples), times: (kicks + snares).sorted())
+    }
+
+    func testQuietNewBandOnSustainedBassDoesNotBecomeFullAccent() throws {
+        var samples = sustainedBass(duration: 6, amplitude: 0.22)
+        let decorations = (0..<8).map { 1.0 + Double($0) * 0.5 }
+        add(&samples, percussion(times: decorations, duration: 6,
+            frequency: 350, amplitude: 0.025, decay: 0.035))
+        let events = try analyze(samples).filter { $0.timestamp > 0.8 }
+        XCTAssertTrue(events.allSatisfy { $0.strength < 0.45 }, "Quiet decoration was promoted: \(events)")
+    }
+
+    func testAudibleKicksRemainDetectableOverSustainedBass() throws {
+        let kicks = (0..<8).map { 1.0 + Double($0) * 0.5 }
+        var samples = sustainedBass(duration: 6, amplitude: 0.22)
+        add(&samples, percussion(times: kicks, duration: 6, frequency: 90, amplitude: 0.18))
+        assertMatches(try analyze(samples).filter { $0.timestamp > 0.8 }, times: kicks)
+    }
+
+    func testSmoothBassTremoloDoesNotMasqueradeAsPercussion() throws {
+        let samples = (0..<Int(rate * 6)).map { index -> Float in
+            let time = Double(index) / rate
+            let amplitude = 0.18 + 0.08 * sin(2 * .pi * 3 * time)
+            return Float(amplitude * min(time / 0.5, 1) * sin(2 * .pi * 90 * time))
+        }
+        let events = try analyze(samples).filter { $0.timestamp > 0.8 }
+        XCTAssertTrue(events.isEmpty, "Smooth bass modulation generated \(events)")
+    }
+
+    func testKickSnareAndHatsInSustainedMixPreserveMainAttacks() throws {
+        let kicks = (0..<8).map { 0.8 + Double($0) * 0.6 }
+        let snares = kicks.map { $0 + 0.3 }
+        var samples = sustainedBass(duration: 6, amplitude: 0.10)
+        add(&samples, sweptKicks(times: kicks, duration: 6))
+        add(&samples, snareHits(times: snares, duration: 6))
+        let hats = (0..<32).map { 0.8 + Double($0) * 0.15 }
+        add(&samples, percussion(times: hats, duration: 6,
+            frequency: 6_000, amplitude: 0.10, decay: 0.012))
+        assertMatches(try analyze(samples).filter { $0.timestamp > 0.7 }, times: (kicks + snares).sorted())
+    }
+
+    func testLongPitchSweptKicksDoNotRetriggerOnTheirTails() throws {
+        let kicks = (0..<8).map { 0.4 + Double($0) * 0.75 }
+        assertMatches(try analyze(sweptKicks(times: kicks, duration: 7)), times: kicks)
+    }
+
+    func testPickupReplacementIsStableAcrossFFTAlignments() throws {
+        for offset in [0.0, 0.003, 0.007] {
+            let kicks = (0..<5).map { 0.6 + offset + Double($0) * 0.65 }
+            var samples = percussion(times: kicks, duration: 4)
+            add(&samples, percussion(times: kicks.map { $0 - 0.16 }, duration: 4,
+                frequency: 350, amplitude: 0.045, decay: 0.035))
+            let events = try analyze(samples, chunks: [137, 512, 1_024])
+            for time in kicks {
+                XCTAssertTrue(events.contains { $0.timestamp >= time && $0.timestamp - time < 0.07 },
+                    "Missing kick at \(time), alignment \(offset): \(events)")
+            }
+        }
+    }
+
+    func testMelodicPitchGlidesDoNotBecomeRepeatedDrumHits() throws {
+        var phase = 0.0
+        let samples = (0..<Int(rate * 6)).map { index -> Float in
+            let time = Double(index) / rate
+            let frequency = 220 + 75 * sin(2 * .pi * 0.7 * time)
+            phase += 2 * .pi * frequency / rate
+            return Float(0.18 * min(time / 0.5, 1) * sin(phase))
+        }
+        XCTAssertTrue(try analyze(samples).filter { $0.timestamp > 0.8 }.isEmpty)
+    }
+
+    private func sweptKicks(times: [Double], duration: Double) -> [Float] {
+        var samples = [Float](repeating: 0, count: Int(duration * rate))
+        for start in times {
+            var phase = 0.0
+            for index in 0..<Int(rate * 0.6) {
+                let target = Int(start * rate) + index
+                guard target < samples.count else { break }
+                let age = Double(index) / rate
+                phase += 2 * .pi * (48 + 105 * exp(-age / 0.032)) / rate
+                let tailFade = min((0.6 - age) / 0.04, 1)
+                samples[target] += Float(0.4 * exp(-age / 0.12) * sin(phase) * tailFade)
+            }
+        }
+        return samples
+    }
+
+    private func snareHits(times: [Double], duration: Double) -> [Float] {
+        var samples = [Float](repeating: 0, count: Int(duration * rate))
+        var seed: UInt64 = 0x4e6f6f6b
+        for start in times {
+            var filteredNoise = 0.0
+            for index in 0..<Int(rate * 0.24) {
+                let target = Int(start * rate) + index
+                guard target < samples.count else { break }
+                seed = seed &* 6_364_136_223_846_793_005 &+ 1
+                let noise = Double(seed >> 32) / Double(UInt32.max) * 2 - 1
+                filteredNoise += (noise - filteredNoise) * 0.3
+                let age = Double(index) / rate
+                let tailFade = min((0.24 - age) / 0.02, 1)
+                samples[target] += Float((filteredNoise * 0.65 + sin(2 * .pi * 185 * age) * 0.16)
+                    * exp(-age / 0.045) * tailFade)
+            }
+        }
+        return samples
+    }
+
+    private func sustainedBass(duration: Double, amplitude: Double) -> [Float] {
+        (0..<Int(rate * duration)).map { index -> Float in
+            let time = Double(index) / rate
+            return Float(amplitude * min(time / 0.5, 1) * sin(2 * .pi * 70 * time))
+        }
+    }
+
     private func assertMatches(_ events: [MusicTransientDetector.Accent], times: [Double], context: String = "", file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(events.count, times.count, "\(context): \(events.map(\.timestamp))", file: file, line: line)
         for time in times {
