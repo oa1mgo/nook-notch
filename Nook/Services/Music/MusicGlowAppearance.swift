@@ -30,6 +30,8 @@ nonisolated struct MusicGlowAppearance: Equatable, Sendable {
         envelope.trigger(accent)
     }
 
+    mutating func resetPacing() { envelope.resetPacing() }
+
     func opacity(at time: TimeInterval) -> Double {
         let base = Self.ambientFraction * ambientGain(at: time)
         let accent = Self.accentVisibility(envelope.value(at: time))

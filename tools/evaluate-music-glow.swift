@@ -27,7 +27,8 @@ struct EvaluateMusicGlow {
                 total += Int64(buffer.frameLength)
                 let time = Double(total) / rate
                 engine.ingest(UnsafeBufferPointer(start: channels[0], count: Int(buffer.frameLength)), endingAt: time, now: time) {
-                    accents.append(["time": $0.timestamp, "strength": $0.strength, "interval": $0.interval ?? 0])
+                    accents.append(["time": $0.timestamp, "strength": $0.strength, "interval": $0.interval ?? 0,
+                        "release": engine.envelope.releaseDuration])
                 }
                 #if LEGACY_COMPARISON
                 legacy.ingest(UnsafeBufferPointer(start: channels[0], count: Int(buffer.frameLength)), at: time)

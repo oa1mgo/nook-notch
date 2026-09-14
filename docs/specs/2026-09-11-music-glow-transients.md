@@ -1,6 +1,6 @@
 # Music Glow: audio-timestamped transients
 
-> This records the 1.4.1 design. The [2026-09-14 accent refinement](2026-09-14-music-glow-accent-refinement.md) updates detection, prominence, and replacement rules; the capture, appearance, and animation contracts below remain unchanged.
+> This records the 1.4.1 design. The [2026-09-14 accent refinement](2026-09-14-music-glow-accent-refinement.md) updates detection, prominence, and replacement rules. The subsequent [adaptive release](2026-09-14-music-glow-adaptive-release.md) supersedes the release curve/duration below; capture, approved styling, ambient light, and pause behavior remain unchanged.
 
 ## Why 1.4.0 needed a new engine
 

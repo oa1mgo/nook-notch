@@ -1,9 +1,9 @@
 # Progress
 
-> Last updated: 2026-09-14 (1.4.2 release preparation)
+> Last updated: 2026-09-14 (1.4.2 native-installer replacement)
 
 ## 🎯 Current Focus
-- **1.4.2 release preparation** — User approved publishing Music Glow accent refinement and the Retina installer fix together. Version/release notes updated; 76 app tests, 11 packaging tests, Release build, bundle version/signature, and mounted DMG checks pass. Ready for main integration and release tagging. [Music evidence](docs/specs/2026-09-14-music-glow-accent-refinement.md), [installer evidence](docs/packaging.md#retina-scaling-fix-2026-09-14).
+- **1.4.2 replacement approved** — User requested replacing the problematic installer and republishing 1.4.2 with current code. Native 480 × 280 two-icon DMG removes all background artwork; includes adaptive Music Glow tails and build number 2. 99 app / 16 packaging tests, Release build, mounted-image validation, and fresh Finder-window check pass. Ready to merge `feature/music-glow-adaptive-release` into main and replace the release/tag. [Packaging](docs/packaging.md), [music evidence](docs/specs/2026-09-14-music-glow-adaptive-release.md).
 <!-- 2026-07-08 **picker 子项无 sub desc 时高度/垂直对齐修复 + Shortcuts 页面 panel 底部空白修复**（两个 1.3.2 follow-up）：
 
   ### A. Picker 子项无 sub desc 时高度/垂直对齐
@@ -39,6 +39,9 @@
 | customIcon type | 2026-06-23 用户决议延后 | AnyView? → `some View` 或 generic MenuRow<Icon: View>。brandIcon 的 switch-case 需要 type-erase 仍然是最大阻力。详见 Context Notes |
 
 ## ✅ Recently Completed
+- **2026-09-14 Native installer replacement** — Removed the bitmap renderer/validator, switched to Finder-native background and point-sized icons, shrank the window to 480 × 280, added 16 packaging checks, and updated both READMEs with an actual window screenshot. Builds 1.4.2 (2); user explicitly authorized replacing the old GitHub release with this and the adaptive Music Glow code. [Details](docs/packaging.md).
+- **2026-09-14 Music Glow adaptive release** — Added bounded local pacing, softened sparse-passage falloff, fast-transition recovery, and track-reset isolation without changing the detector or ambient/pause appearance. 23 new tests (99 total); [curve measurements, recording comparisons, and limits](docs/specs/2026-09-14-music-glow-adaptive-release.md).
+- **2026-09-14 Nook 1.4.2 published** — PR #16 merged to main and `release/1.4.2` published with the validated DMG. [Release](https://github.com/oa1mgo/nook-notch/releases/tag/release/1.4.2).
 - **2026-09-14 Nook 1.4.2 release preparation** — Packages the approved Music Glow refinement and Retina installer alignment fix; bumps both app configurations to 1.4.2 and adds release notes. All 87 app/packaging tests and local Release DMG validation pass; signing and permission policies remain unchanged.
 - **2026-09-14 DMG Retina artwork alignment** — Reproduced double-scaling in the 2x background (correct DPI but cropped/misaligned content); removed the redundant transform, leaving 1x artwork byte-identical. Added real 1x/2x PNG/TIFF validation to packaging and CI; 11 tests, mounted DMG/signature checks, and actual 1x Finder/Applications-link checks pass. Physical Retina hardware not available; no release created. [Details](docs/packaging.md#retina-scaling-fix-2026-09-14).
 - **2026-09-14 Music Glow accent detection** — Independent frequency-range references, whole-mix attack prominence, sharpness checks, and actual-energy pickup replacement address four reproduced failure modes. Nine new PCM regressions; full suite 76/76, Debug/Release builds and Debug launch passed. Five-style offline comparison and performance evidence: [spec](docs/specs/2026-09-14-music-glow-accent-refinement.md). Ambient light, UI, permission policy, and version remain unchanged.

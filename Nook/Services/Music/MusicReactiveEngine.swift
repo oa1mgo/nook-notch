@@ -24,6 +24,7 @@ nonisolated final class MusicReactiveEngine {
         detector.reset()
         sampleCount = 0
         previousEndTime = nil
+        appearance.resetPacing()
         // Keep the current appearance continuous. Ambient light still expires
         // without new audible samples; resetting metadata never emits light.
     }

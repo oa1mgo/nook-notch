@@ -1,5 +1,7 @@
 # Music Glow: distinguish an attack from its importance
 
+> Follow-up: [adaptive release](2026-09-14-music-glow-adaptive-release.md) adjusts slow-passage tails without changing the detection rules documented here.
+
 ## Feedback and scope
 
 After 1.4.1, the user still heard missed heavy accents and saw flashes in unconvincing places, varying by song. Keep the approved glow geometry, album colors, 18% ambient floor, 50ms attack, and interval-dependent release. Change only worker-side analysis and event selection. No extra permissions, recording, model download, BPM lock, or synthetic pulses. The permission-free outer Music Glow is unchanged.

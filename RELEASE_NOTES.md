@@ -6,10 +6,10 @@ What's New
 
   - Refined Music Accents (Beta) — evaluates frequency ranges independently so quieter pickups are less likely to block following heavy hits, and alternating low- and mid-frequency accents remain eligible.
   - Better Strong/Weak Separation — considers each attack's importance in the whole mix, reduces over-bright responses to minor accompaniment, and rejects tested smooth bass modulation and fading-tail artifacts.
-  - Familiar Glow Preserved — keeps the album-colored ambient base, glow appearance, 50ms attack, and existing release animation. Real-audio response remains opt-in; the regular permission-free Music Edge Glow is unchanged.
-  - Retina Installer Fix — removes duplicate scaling from the high-resolution installer background, correcting enlarged, cropped, or misplaced text and arrows while preserving the standard-density layout and Applications drop target.
-  - Stronger Regression Checks — adds mixed-audio regressions and actual 1x/2x PNG/TIFF alignment checks to the packaging workflow.
-  - Release Version — bumps Nook to version 1.4.2. Audio-reactive behavior remains experimental; Bluetooth output delay is not automatically compensated.
+  - Gentler Slow-Passage Tails — gradually lengthens visible falloff when repeated sparse accents support it, while keeping the 50ms rise, immediate decline, album-colored ambient base, and existing glow appearance. Dense music remains responsive; real-audio response stays opt-in.
+  - Simple Native Installer — replaces the custom image-based installer with a compact 480 × 280 Finder window and real Nook / Applications icons. No background image, Retina bitmap selection, or scaled decorative text remains.
+  - Stronger Regression Checks — 99 app tests and 16 packaging tests cover music timing, fast/slow transitions, pause/reset behavior, native Finder layout, and the Applications drop target. Packaged app signatures and disk images are verified before publication.
+  - Republished 1.4.2 (Build 2) — replaces the earlier 1.4.2 installer and includes the latest Music Glow improvements. Download this DMG again if you have the original 1.4.2 package. The regular permission-free glow is unchanged; audio-reactive behavior remains experimental and Bluetooth output delay is not automatically compensated.
 
 ## 1.4.1
 

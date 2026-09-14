@@ -66,6 +66,7 @@ Turn on `Settings` → `Music Edge Glow` for artwork-colored light around the co
 For real audio response, also open `Settings` → `Beta Features...` (below Accessibility) and enable `Audio-Reactive Music Glow`. This Beta option is off by default; enabling it requests macOS system-audio recording permission.
 
 - Audible attacks brighten the glow above a low, persistent album-colored base, then settle back to that base. There is no fixed-frequency fallback while audio analysis is active.
+- Confirmed sparse passages get a gentler, longer tail; dense music stays responsive, with the same quick 50ms rise.
 - Music without strong attacks keeps the base light. Pausing fades the glow out and stops capture; sustained silence also extinguishes it.
 - The compact notch's four music bars show analyzed audio levels while Beta capture is running; otherwise, they retain their simulated animation.
 - Audio is analyzed locally in memory, not saved to recordings or uploaded. This uses system playback audio, not microphone input.
@@ -75,7 +76,7 @@ Turning off Beta restores the regular permission-free breathing effect. Beat res
 ## Install
 
 <p align="center">
-  <img src="./readme/img_nook_installer.jpg" alt="Nook installer with the app and Applications drag target" width="600" />
+  <img src="./readme/img_nook_installer_native.jpg" alt="Compact native Nook installer with the app and Applications drag target" width="480" />
 </p>
 
 1. Download and open the latest Nook `.dmg` from [Releases](https://github.com/oa1mgo/nook-notch/releases/latest).
@@ -83,6 +84,8 @@ Turning off Beta restores the regular permission-free breathing effect. Beat res
 3. Open `Nook` from `Applications`.
 
 Once copying finishes, you can eject the Nook disk image.
+
+The installer uses Finder's native background, icons, and labels, without a background image to scale. The republished 1.4.2 is build 2; download it again if you have the earlier installer.
 
 If macOS blocks the first launch, open `System Settings` -> `Privacy & Security`, allow Nook to run, then open it again.
 

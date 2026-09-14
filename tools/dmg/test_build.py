@@ -13,10 +13,9 @@ class InstallerTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="nook-dmg-test-")
         self.addCleanup(self.temporary.cleanup)
         self.mount = Path(self.temporary.name)
-        self.settings = build.image_settings(self.mount / "source/Nook.app", self.mount / "background.png")
+        self.settings = build.image_settings(self.mount / "source/Nook.app")
         (self.mount / "Nook.app").mkdir()
         (self.mount / "Applications").symlink_to("/Applications")
-        (self.mount / ".background.tiff").touch()
         (x, y), (width, height) = self.settings["window_rect"]
         with DSStore.open(str(self.mount / ".DS_Store"), "w+") as store:
             store["."]["bwsp"] = {
@@ -26,7 +25,10 @@ class InstallerTests(unittest.TestCase):
             }
             store["."]["icvp"] = {
                 "iconSize": self.settings["icon_size"], "arrangeBy": "none",
-                "backgroundType": 2, "backgroundImageAlias": b"fixture",
+                "backgroundType": 0,
+                "textSize": self.settings["text_size"], "labelOnBottom": True,
+                "scrollPositionX": 0, "scrollPositionY": 0,
+                "gridSpacing": self.settings["grid_spacing"],
             }
             for name, position in self.settings["icon_locations"].items():
                 store[name]["Iloc"] = position
@@ -34,18 +36,13 @@ class InstallerTests(unittest.TestCase):
         mock = patch.object(build, "read_bundle", return_value=self.bundle)
         mock.start()
         self.addCleanup(mock.stop)
-        # Actual image rendering and multi-resolution validation are exercised
-        # by test_background.py; this suite isolates Finder/bundle metadata.
-        background = patch.object(build, "verify_background")
-        self.background_validator = background.start()
-        self.addCleanup(background.stop)
 
     def verify(self):
         build.verify_mounted(self.mount, self.settings, self.bundle)
 
     def testValidLayout(self):
         self.verify()
-        self.background_validator.assert_called_once_with(self.mount / ".background.tiff")
+        self.assertIsNone(self.settings["background"])
         _, (width, height) = self.settings["window_rect"]
         radius = self.settings["icon_size"] / 2
         for x, y in self.settings["icon_locations"].values():
@@ -71,10 +68,76 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "real drop target"):
             self.verify()
 
-    def testMissingRetinaBackgroundIsRejected(self):
-        (self.mount / ".background.tiff").unlink()
-        with self.assertRaisesRegex(ValueError, "Retina"):
+    def testRasterBackgroundIsRejectedEvenIfNotReferenced(self):
+        (self.mount / ".background.tiff").touch()
+        with self.assertRaisesRegex(ValueError, "background artwork"):
             self.verify()
+
+    def testBackgroundDirectoryIsRejected(self):
+        (self.mount / ".background").mkdir()
+        with self.assertRaisesRegex(ValueError, "background artwork"):
+            self.verify()
+
+    def testPictureOrColorBackgroundMetadataIsRejected(self):
+        for kind in [1, 2]:
+            with self.subTest(kind=kind):
+                self.set_icon_options(backgroundType=kind)
+                with self.assertRaisesRegex(ValueError, "native background"):
+                    self.verify()
+
+    def testStaleImageAliasIsRejectedEvenWithNativeBackground(self):
+        self.set_icon_options(backgroundImageAlias=b"old-image")
+        with self.assertRaisesRegex(ValueError, "native background"):
+            self.verify()
+
+    def testScrollOffsetIsRejected(self):
+        for axis in ["scrollPositionX", "scrollPositionY"]:
+            with self.subTest(axis=axis):
+                self.set_icon_options(**({"scrollPositionX": 0, "scrollPositionY": 0} | {axis: 100}))
+                with self.assertRaisesRegex(ValueError, "scroll offset"):
+                    self.verify()
+
+    def testUnreadableLabelsAreRejected(self):
+        self.set_icon_options(textSize=8)
+        with self.assertRaisesRegex(ValueError, "native icon labels"):
+            self.verify()
+        self.set_icon_options(textSize=self.settings["text_size"], labelOnBottom=False)
+        with self.assertRaisesRegex(ValueError, "native icon labels"):
+            self.verify()
+
+    def testAutomaticArrangementIsRejected(self):
+        self.set_icon_options(arrangeBy="name")
+        with self.assertRaisesRegex(ValueError, "rearrange"):
+            self.verify()
+
+    def testUnsupportedGridIsRejected(self):
+        self.set_icon_options(gridSpacing=100)
+        with self.assertRaisesRegex(ValueError, "icon grid"):
+            self.verify()
+
+    def testUnexpectedVisibleFileIsRejected(self):
+        (self.mount / "background.png").touch()
+        with self.assertRaisesRegex(ValueError, "only Nook and Applications"):
+            self.verify()
+
+    def testLargeWindowOrVisibleToolbarIsRejected(self):
+        for changes in [{"WindowBounds": "{{200, 160}, {960, 560}}"}, {"ShowToolbar": True}]:
+            with self.subTest(changes=changes):
+                with DSStore.open(str(self.mount / ".DS_Store"), "r+") as store:
+                    window = store["."]["bwsp"]
+                    original = dict(window)
+                    window.update(changes)
+                    store["."]["bwsp"] = window
+                with self.assertRaisesRegex(ValueError, "window bounds|Finder chrome"):
+                    self.verify()
+                with DSStore.open(str(self.mount / ".DS_Store"), "r+") as store:
+                    store["."]["bwsp"] = original
+
+    def set_icon_options(self, **changes):
+        with DSStore.open(str(self.mount / ".DS_Store"), "r+") as store:
+            icons = store["."]["icvp"]
+            icons.update(changes)
+            store["."]["icvp"] = icons
 
     def testMissingIconPositionIsRejected(self):
         with DSStore.open(str(self.mount / ".DS_Store"), "r+") as store:

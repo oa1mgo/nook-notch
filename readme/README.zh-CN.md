@@ -66,6 +66,7 @@ Nook 会把不同 agent 的本地事件整理成统一的会话时间线。
 如果希望光晕响应真实音频，还需进入 `Settings` → `Beta Features...`（位于 Accessibility 下方），开启 `Audio-Reactive Music Glow`。该 Beta 选项默认关闭，主动开启时会申请 macOS 系统音频录制权限。
 
 - 音频中的明显击打会让光晕从低亮的专辑配色底光上提亮，再回落到底光；音频分析运行时不会用固定频率补闪。
+- 连续确认重音变疏后，尾光会更柔和、适当延长；密集段保持灵敏，亮起仍为 50ms。
 - 没有明显击打的音乐段落保持底光。暂停播放时光晕淡出并停止采集，持续静音也会让光晕熄灭。
 - Beta 采集运行时，小 notch 的四条音柱展示真实音频分析结果；其余情况保留模拟动画。
 - 音频仅在本机内存中实时分析，不保存录音、不上传；采集的是系统播放音频，不是麦克风输入。
@@ -75,7 +76,7 @@ Nook 会把不同 agent 的本地事件整理成统一的会话时间线。
 ## 安装
 
 <p align="center">
-  <img src="./img_nook_installer.jpg" alt="Nook 安装窗口：将左侧 App 拖入右侧 Applications" width="600" />
+  <img src="./img_nook_installer_native.jpg" alt="简洁原生安装窗口：将左侧 Nook 拖入右侧 Applications" width="480" />
 </p>
 
 1. 从 [Releases](https://github.com/oa1mgo/nook-notch/releases/latest) 下载并打开最新 Nook `.dmg`。
@@ -83,6 +84,8 @@ Nook 会把不同 agent 的本地事件整理成统一的会话时间线。
 3. 从 `Applications` 打开 `Nook`。
 
 复制完成后即可推出 Nook 磁盘映像。
+
+安装窗口采用 Finder 原生背景、图标和文字，不再使用会被放大的背景图。重发的 1.4.2 为构建号 2；如果已下载旧安装包，请重新下载。
 
 如果 macOS 首次启动时拦截，可以到 `系统设置` -> `隐私与安全性` 中允许 Nook 运行，然后重新打开。
 

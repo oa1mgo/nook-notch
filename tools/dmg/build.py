@@ -31,7 +31,7 @@ def read_bundle(app):
     return info
 
 
-def image_settings(app, background):
+def image_settings(app):
     layout = json.loads((ASSETS / "layout.json").read_text())
     return {
         "format": "UDZO",
@@ -39,7 +39,9 @@ def image_settings(app, background):
         "files": [(str(app), "Nook.app")],
         "symlinks": {"Applications": "/Applications"},
         "icon": str(app / "Contents/Resources/AppIcon.icns"),
-        "background": str(background),
+        # Let Finder draw its native background and scale its own icons/text.
+        # No raster artwork, DPI selection, or image alias is involved.
+        "background": None,
         # Do not set hide_extensions: dmgbuild adds FinderInfo to the app,
         # which makes strict code-signature verification reject the bundle.
         "window_rect": ((200, 160), (layout["width"], layout["height"])),
@@ -49,6 +51,8 @@ def image_settings(app, background):
         },
         "icon_size": layout["iconSize"],
         "text_size": layout["textSize"],
+        "label_pos": "bottom",
+        "scroll_position": (0, 0),
         "default_view": "icon-view",
         "include_icon_view_settings": True,
         "include_list_view_settings": False,
@@ -69,10 +73,6 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def verify_background(*images):
-    run("/usr/bin/xcrun", "swift", ASSETS / "validate-background.swift", ASSETS / "layout.json", *images)
-
-
 def verify_mounted(mount, settings, source_info):
     require(sorted(path.name for path in mount.iterdir() if not path.name.startswith("."))
             == ["Applications", "Nook.app"], "DMG must show only Nook and Applications")
@@ -80,8 +80,8 @@ def verify_mounted(mount, settings, source_info):
     require(applications.is_symlink() and os.readlink(applications) == "/Applications",
             "Applications must be a real drop target pointing to /Applications")
     require(read_bundle(mount / "Nook.app") == source_info, "Packaged bundle metadata changed")
-    require((mount / ".background.tiff").is_file(), "Missing Retina installer background")
-    verify_background(mount / ".background.tiff")
+    require(not any(path.name.startswith(".background") for path in mount.iterdir()),
+            "Installer must not contain background artwork")
     with DSStore.open(str(mount / ".DS_Store"), "r") as store:
         window = store["."]["bwsp"]
         (x, y), (width, height) = settings["window_rect"]
@@ -91,9 +91,15 @@ def verify_mounted(mount, settings, source_info):
             require(not window[key], f"Unexpected Finder chrome: {key}")
         icons = store["."]["icvp"]
         require(icons["iconSize"] == settings["icon_size"], "Incorrect icon size")
+        require(icons["textSize"] == settings["text_size"] and icons["labelOnBottom"],
+                "Incorrect native icon labels")
         require(icons["arrangeBy"] == "none", "Finder must not rearrange the installer")
-        require(icons["backgroundType"] == 2 and icons["backgroundImageAlias"],
-                "Finder background is not linked to the mounted volume")
+        require(icons["backgroundType"] == 0 and not icons.get("backgroundImageAlias"),
+                "Installer must use Finder's native background without an image alias")
+        require(icons["scrollPositionX"] == 0 and icons["scrollPositionY"] == 0,
+                "Installer must open without a scroll offset")
+        require(icons["gridSpacing"] == settings["grid_spacing"] < 100,
+                "Invalid Finder icon grid")
         for name, position in settings["icon_locations"].items():
             require(store[name]["Iloc"] == position, f"Incorrect icon position: {name}")
 
@@ -106,10 +112,7 @@ def build(app, output):
     # Only our temporary staging files are removed; never clean a caller directory.
     with tempfile.TemporaryDirectory(prefix="nook-dmg-", dir=output.parent) as temporary:
         staging = Path(temporary)
-        print("Rendering installer background (1x and 2x)…", flush=True)
-        run("/usr/bin/xcrun", "swift", ASSETS / "render-background.swift", ASSETS / "layout.json", staging)
-        verify_background(staging / "background.png", staging / "background@2x.png")
-        settings = image_settings(app, staging / "background.png")
+        settings = image_settings(app)
         image = staging / "Nook.dmg"
         print("Building drag-to-install DMG…", flush=True)
         dmgbuild.build_dmg(str(image), "Nook", settings=settings)
