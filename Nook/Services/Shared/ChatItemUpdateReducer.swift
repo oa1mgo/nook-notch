@@ -8,12 +8,27 @@
 import Foundation
 
 enum ChatItemUpdateReducer {
+    /// Apply a history batch without sorting/copying a growing history once per
+    /// row. Content-only, just like apply(); lifecycle remains the caller's job.
+    nonisolated static func applyBatch(
+        _ updates: [ChatItemUpdate],
+        items: inout [ChatHistoryItem],
+        orderings: inout [String: BlockOrdering],
+        now: Date = Date()
+    ) {
+        for update in updates {
+            apply(update, items: &items, orderings: &orderings, now: now, sortItems: false)
+        }
+        items = ChatItemSorter.sorted(items, orderings: orderings)
+    }
+
     @discardableResult
     nonisolated static func apply(
         _ update: ChatItemUpdate,
         items: inout [ChatHistoryItem],
         orderings: inout [String: BlockOrdering],
-        now: Date = Date()
+        now: Date = Date(),
+        sortItems: Bool = true
     ) -> Bool {
         if case .thinking(let text) = update.block,
            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -35,7 +50,9 @@ enum ChatItemUpdateReducer {
             orderings.removeValue(forKey: update.id)
         }
 
-        items = ChatItemSorter.sorted(items, orderings: orderings)
+        if sortItems {
+            items = ChatItemSorter.sorted(items, orderings: orderings)
+        }
         return true
     }
 

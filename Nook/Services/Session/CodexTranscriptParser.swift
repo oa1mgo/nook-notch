@@ -12,49 +12,81 @@ struct CodexTranscriptParseResult: Sendable {
     let endOffset: UInt64
 }
 
+/// Offsets belong to files, not sessions: Desktop can rotate one session into
+/// several rollout files. Never apply an old file's offset to its successor.
+struct CodexTranscriptCursor: Sendable {
+    struct FilePosition: Sendable {
+        let identity: UInt64
+        let offset: UInt64
+
+        nonisolated init(identity: UInt64, offset: UInt64) {
+            self.identity = identity
+            self.offset = offset
+        }
+    }
+    var files: [String: FilePosition] = [:]
+
+    nonisolated init() {}
+}
+
+struct CodexTranscriptSyncResult: Sendable {
+    let updates: [ChatItemUpdate]
+    let cursor: CodexTranscriptCursor
+
+    nonisolated init(updates: [ChatItemUpdate], cursor: CodexTranscriptCursor) {
+        self.updates = updates
+        self.cursor = cursor
+    }
+}
+
 enum CodexTranscriptParser {
-    nonisolated static func loadUpdates(sessionId: String, after lowerBound: Date? = nil) async -> [ChatItemUpdate] {
-        await loadUpdateResult(sessionId: sessionId, after: lowerBound).updates
+    nonisolated static var sessionsDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions", isDirectory: true)
     }
 
-    nonisolated static func loadUpdateResult(
+    nonisolated static func loadUpdates(sessionId: String, after lowerBound: Date? = nil) async -> [ChatItemUpdate] {
+        await loadSessionUpdates(sessionId: sessionId, after: lowerBound).updates
+    }
+
+    nonisolated static func loadSessionUpdates(
         sessionId: String,
         after lowerBound: Date? = nil,
-        fromOffset: UInt64 = 0
-    ) async -> CodexTranscriptParseResult {
-        await Task.detached(priority: .userInitiated) {
-            guard let url = transcriptURL(for: sessionId) else {
-                return CodexTranscriptParseResult(updates: [], endOffset: fromOffset)
+        cursor: CodexTranscriptCursor = CodexTranscriptCursor(),
+        root: URL = sessionsDirectory
+    ) async -> CodexTranscriptSyncResult {
+        let task = Task.detached(priority: .userInitiated) {
+            var next = cursor
+            var updates: [ChatItemUpdate] = []
+            for url in transcriptURLs(for: sessionId, root: root) {
+                guard !Task.isCancelled else { break }
+                let path = url.resolvingSymlinksInPath().path
+                let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+                let identity = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+                let previous = cursor.files[path]
+                let offset = previous?.identity == identity ? previous?.offset ?? 0 : 0
+                let result = parseTranscriptUpdates(
+                    at: url, sessionId: sessionId, after: lowerBound, fromOffset: offset
+                )
+                next.files[path] = .init(identity: identity, offset: result.endOffset)
+                updates.append(contentsOf: result.updates)
             }
-            return parseTranscriptUpdates(
-                at: url,
-                sessionId: sessionId,
-                after: lowerBound,
-                fromOffset: fromOffset
-            )
-        }.value
+            return CodexTranscriptSyncResult(updates: updates, cursor: next)
+        }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     nonisolated static func loadHistory(sessionId: String) async -> [ChatHistoryItem] {
         history(from: await loadUpdates(sessionId: sessionId))
     }
 
-    nonisolated static func isSubagentSession(sessionId: String) -> Bool {
-        guard let url = transcriptURL(for: sessionId),
-              let handle = try? FileHandle(forReadingFrom: url) else {
-            return false
-        }
-
-        defer { try? handle.close() }
-
-        guard let lineData = try? handle.read(upToCount: 8192),
-              let firstLine = String(data: lineData, encoding: .utf8)?
-                .split(whereSeparator: \.isNewline)
-                .first,
-              let jsonData = firstLine.data(using: .utf8),
-              let raw = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              raw["type"] as? String == "session_meta",
-              let payload = raw["payload"] as? [String: Any] else {
+    nonisolated static func isSubagentSession(sessionId: String, root: URL = sessionsDirectory) -> Bool {
+        guard let url = transcriptURLs(for: sessionId, root: root).last,
+              let payload = sessionMetadata(at: url) else {
             return false
         }
 
@@ -62,10 +94,8 @@ enum CodexTranscriptParser {
             return true
         }
 
-        if payload["forked_from_id"] as? String != nil {
-            return true
-        }
-
+        // A user-created fork is still a direct conversation. Only explicit
+        // agent metadata identifies a subagent; forked_from_id alone does not.
         if let source = payload["source"] as? [String: Any],
            source["subagent"] != nil {
             return true
@@ -74,27 +104,46 @@ enum CodexTranscriptParser {
         return false
     }
 
-    private nonisolated static func transcriptURL(for sessionId: String) -> URL? {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/sessions", isDirectory: true)
-
+    nonisolated static func transcriptURLs(for sessionId: String, root: URL = sessionsDirectory) -> [URL] {
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return nil
+            return []
         }
 
+        var urls: [URL] = []
         for case let url as URL in enumerator {
             guard url.lastPathComponent.contains(sessionId),
-                  url.pathExtension == "jsonl" else {
+                  url.pathExtension == "jsonl",
+                  sessionMetadata(at: url)?["id"] as? String == sessionId else {
                 continue
             }
-            return url
+            urls.append(url)
         }
 
-        return nil
+        // Rollout names carry their creation timestamp. Metadata identity above
+        // prevents matching a different session/fork with a similar filename.
+        return urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private nonisolated static func sessionMetadata(at url: URL) -> [String: Any]? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var data = Data()
+        // session_meta includes instructions and routinely exceeds 8 KB.
+        while data.count < 4 * 1024 * 1024 {
+            guard let chunk = try? handle.read(upToCount: 16 * 1024), !chunk.isEmpty else { break }
+            data.append(chunk)
+            if let newline = data.firstIndex(of: 10) {
+                data = Data(data[..<newline])
+                break
+            }
+        }
+        guard let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              raw["type"] as? String == "session_meta" else { return nil }
+        return raw["payload"] as? [String: Any]
     }
 
     nonisolated static func parseTranscriptUpdates(
@@ -129,23 +178,22 @@ enum CodexTranscriptParser {
         var updates: [ChatItemUpdate] = []
         var committedOffset = startOffset
         var lineStartIndex = data.startIndex
-        var lineIndex = 0
 
         while lineStartIndex < data.endIndex,
               let newlineIndex = data[lineStartIndex..<data.endIndex].firstIndex(of: 10) {
+            guard !Task.isCancelled else { break }
             var lineData = Data(data[lineStartIndex..<newlineIndex])
             if lineData.last == 13 {
                 lineData = Data(lineData.dropLast())
             }
             let lineOffset = startOffset + UInt64(data.distance(from: data.startIndex, to: lineStartIndex))
-            let stableLineIndex = startOffset == 0
-                ? lineIndex
-                : Int(min(lineOffset, UInt64(Int.max)))
+            let stableLineIndex = Int(min(lineOffset, UInt64(Int.max)))
 
             parseTranscriptLine(
                 lineData,
                 sessionId: sessionId,
                 stableLineIndex: stableLineIndex,
+                sourceId: "\(url.lastPathComponent):\(lineOffset)",
                 lowerBound: lowerBound,
                 updates: &updates
             )
@@ -153,26 +201,24 @@ enum CodexTranscriptParser {
             let nextLineIndex = data.index(after: newlineIndex)
             committedOffset = startOffset + UInt64(data.distance(from: data.startIndex, to: nextLineIndex))
             lineStartIndex = nextLineIndex
-            lineIndex += 1
         }
 
-        if lineStartIndex < data.endIndex {
+        if !Task.isCancelled, lineStartIndex < data.endIndex {
             var lineData = Data(data[lineStartIndex..<data.endIndex])
             if lineData.last == 13 {
                 lineData = Data(lineData.dropLast())
             }
             let lineOffset = startOffset + UInt64(data.distance(from: data.startIndex, to: lineStartIndex))
-            let stableLineIndex = startOffset == 0
-                ? lineIndex
-                : Int(min(lineOffset, UInt64(Int.max)))
+            let stableLineIndex = Int(min(lineOffset, UInt64(Int.max)))
             if parseTranscriptLine(
                 lineData,
                 sessionId: sessionId,
                 stableLineIndex: stableLineIndex,
+                sourceId: "\(url.lastPathComponent):\(lineOffset)",
                 lowerBound: lowerBound,
                 updates: &updates
             ) {
-                committedOffset = fileSize
+                committedOffset = startOffset + UInt64(data.count)
             }
         }
 
@@ -184,6 +230,7 @@ enum CodexTranscriptParser {
         _ lineData: Data,
         sessionId: String,
         stableLineIndex: Int,
+        sourceId: String,
         lowerBound: Date?,
         updates: inout [ChatItemUpdate]
     ) -> Bool {
@@ -215,7 +262,22 @@ enum CodexTranscriptParser {
         // `response_item/message` rows with role=user are model input, not a
         // user-interface boundary. Current Codex can fold memories, environment
         // context, plugin recommendations, and the actual prompt into those rows.
-        // `event_msg/user_message` is the dedicated direct-interaction record.
+        // Desktop uses item_completed/UserMessage; CLI rollouts may still use
+        // user_message. Both are UI boundaries, unlike model-input messages.
+        if envelopeType == "event_msg", payloadType == "item_completed",
+           let item = payload["item"] as? [String: Any],
+           item["type"] as? String == "UserMessage" {
+            if let threadId = payload["thread_id"] as? String, threadId != sessionId { return true }
+            let text = extractMessageText(from: item["content"])
+            if let update = CodexChatItemAdapter.messageUpdate(
+                sessionId: sessionId, lineIndex: stableLineIndex, role: "user",
+                text: text, timestamp: timestamp,
+                messageId: item["id"] as? String ?? sourceId
+            ) {
+                updates.append(update)
+            }
+            return true
+        }
         if envelopeType == "event_msg", payloadType == "user_message" {
             let text = (payload["message"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -224,7 +286,8 @@ enum CodexTranscriptParser {
                 lineIndex: stableLineIndex,
                 role: "user",
                 text: text,
-                timestamp: timestamp
+                timestamp: timestamp,
+                messageId: payload["id"] as? String ?? sourceId
             ) {
                 updates.append(update)
             }
@@ -247,13 +310,14 @@ enum CodexTranscriptParser {
                 lineIndex: stableLineIndex,
                 role: role,
                 text: text,
-                timestamp: timestamp
+                timestamp: timestamp,
+                messageId: payload["id"] as? String ?? sourceId
             ) {
                 updates.append(update)
             }
 
         case "function_call", "custom_tool_call":
-            let callId = payload["call_id"] as? String
+            let callId = payload["call_id"] as? String ?? "codex-tool-\(sessionId)-\(sourceId)"
             let name = (payload["name"] as? String) ?? "Tool"
             let input = parseToolInput(payload: payload)
             updates.append(CodexChatItemAdapter.toolCallUpdate(
@@ -287,9 +351,7 @@ enum CodexTranscriptParser {
         var items: [ChatHistoryItem] = []
         var orderings: [String: BlockOrdering] = [:]
 
-        for update in updates {
-            ChatItemUpdateReducer.apply(update, items: &items, orderings: &orderings)
-        }
+        ChatItemUpdateReducer.applyBatch(updates, items: &items, orderings: &orderings)
 
         return items
     }
@@ -300,7 +362,7 @@ enum CodexTranscriptParser {
         let texts = content.compactMap { block -> String? in
             guard let type = block["type"] as? String else { return nil }
             switch type {
-            case "input_text", "output_text":
+            case "text", "input_text", "output_text":
                 return block["text"] as? String
             default:
                 return nil

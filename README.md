@@ -45,7 +45,7 @@ Nook turns the MacBook notch into a compact desktop control layer. The home view
 Nook normalizes local agent events into a shared session timeline.
 
 - Claude Code: hooks, transcript parsing, status tracking, interrupt detection, permission handling, and tmux-aware terminal focus.
-- Codex: hooks, transcript parsing, terminal approval state, compacting and subagent events, and stable completed-session history.
+- Codex: live direct-user and assistant messages, complete multi-file transcript history, terminal approval state, compacting/subagent events, and stable completed sessions. Injected memory and system context stay out of the conversation.
 - OpenCode: event-stream integration with live tool placeholders, user-input state, subagent tracking, and idle/completion transitions.
 - Cursor: session lifecycle, processing/compacting state, thought and response updates, tool calls, and session cleanup.
 
@@ -85,7 +85,7 @@ Turning off Beta restores the regular permission-free breathing effect. Beat res
 
 Once copying finishes, you can eject the Nook disk image.
 
-The installer uses Finder's native background, icons, and labels, without a background image to scale. The republished 1.4.2 is build 2; download it again if you have the earlier installer.
+The installer uses Finder's native background, icons, and labels, without a background image to scale.
 
 If macOS blocks the first launch, open `System Settings` -> `Privacy & Security`, allow Nook to run, then open it again.
 
