@@ -1,5 +1,16 @@
 # Release Notes
 
+## 1.4.3
+
+What's Fixed
+
+  - Restored Codex User Messages — recognizes Desktop's direct UserMessage events alongside the legacy user_message format. Real user input appears again; injected memory, environment context, and duplicate model-input records remain excluded.
+  - Complete Codex History — loads every matching rollout fragment, validates the actual session identity, and tracks each file independently. Stable message IDs prevent duplicate history on reload and overlapping fragments.
+  - Live Conversation Updates — refreshes transcript content after hooks and while a turn is active, including text-only replies and a bounded final-response catch-up after Stop. History refresh does not reactivate completed sessions or replay completion notifications.
+  - Safer Resets and Ordering — serializes concurrent reads, cancels stale results on clear/end, and orders transcript text and live tools by source timestamps.
+  - Xcode Compatibility — explicitly qualifies Markdown.Document to avoid the new SwiftUI.Document name collision in Xcode 27; rendering behavior is unchanged.
+  - Release Version — Nook 1.4.3 (build 3). Music Glow, audio permissions, native installer layout, and signing policy are unchanged.
+
 ## 1.4.2
 
 What's New

@@ -27,9 +27,14 @@ actor SessionStore {
     /// Pending file syncs (debounced)
     private var pendingSyncs: [String: Task<Void, Never>] = [:]
 
-    /// In-memory transcript lower bounds after Codex `/clear`. Codex transcript
-    /// format is not a stable API, so use it only for explicit history loads.
+    /// Content sync is separate from hook-driven lifecycle effects.
     private var codexTranscriptLowerBounds: [String: Date] = [:]
+    private var codexTranscriptCursors: [String: CodexTranscriptCursor] = [:]
+    private var codexSyncTasks: [String: Task<Void, Never>] = [:]
+    private var codexSyncTokens: [String: UUID] = [:]
+    private var codexSyncRequested: Set<String> = []
+    private var codexTranscriptRoot = CodexTranscriptParser.sessionsDirectory
+    private let codexTranscriptIdleGraceSeconds: TimeInterval = 10
 
     /// Codex can deliver trailing PostToolUse/PostCompact-style hooks after Stop.
     /// Keep a short tombstone so those late events cannot reactivate a completed
@@ -104,39 +109,51 @@ actor SessionStore {
 
         case .codexSessionStarted(let sessionId, let cwd, let source):
             processCodexSessionStart(sessionId: sessionId, cwd: cwd, source: source)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexPromptSubmitted(let sessionId, let cwd, let prompt):
             processCodexPromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexBashStarted(let sessionId, let cwd, let toolName, let toolUseId, let command):
             processCodexBashStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexBashFinished(let sessionId, let cwd, let toolName, let toolUseId, let command, let output, let isError):
             processCodexBashFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, command: command, output: output, isError: isError)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexToolStarted(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
             processCodexToolStarted(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexToolFinished(let sessionId, let cwd, let toolName, let toolUseId, let inputSummary, let output, let isError):
             processCodexToolFinished(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, inputSummary: inputSummary, output: output, isError: isError)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexPermissionRequested(let sessionId, let cwd, let toolName, let toolUseId, let input, let inputSummary):
             processCodexPermissionRequested(sessionId: sessionId, cwd: cwd, toolName: toolName, toolUseId: toolUseId, input: input, inputSummary: inputSummary)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexCompactingStarted(let sessionId, let cwd):
             processCodexCompactingStarted(sessionId: sessionId, cwd: cwd)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexCompactingFinished(let sessionId, let cwd):
             processCodexCompactingFinished(sessionId: sessionId, cwd: cwd)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexSubagentStarted(let sessionId, let cwd):
             processCodexSubagentStarted(sessionId: sessionId, cwd: cwd)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexSubagentStopped(let sessionId, let cwd):
             processCodexSubagentStopped(sessionId: sessionId, cwd: cwd)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .codexStopped(let sessionId, let cwd):
             processCodexStop(sessionId: sessionId, cwd: cwd)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .opencodeSessionStarted(let sessionId, let cwd):
             processOpencodeSessionStart(sessionId: sessionId, cwd: cwd)
@@ -334,7 +351,7 @@ actor SessionStore {
             return true
         }
 
-        if CodexTranscriptParser.isSubagentSession(sessionId: sessionId) {
+        if CodexTranscriptParser.isSubagentSession(sessionId: sessionId, root: codexTranscriptRoot) {
             ignoredCodexSessions.insert(sessionId)
             return true
         }
@@ -429,6 +446,8 @@ actor SessionStore {
             )
         }
         if normalizedSource == "clear" {
+            cancelCodexTranscriptSync(sessionId: sessionId)
+            codexTranscriptCursors.removeValue(forKey: sessionId)
             codexTranscriptLowerBounds[sessionId] = now
             resetCodexConversationState(&session)
         }
@@ -1974,7 +1993,8 @@ actor SessionStore {
 
     private func loadHistoryFromFile(sessionId: String, cwd: String) async {
         if sessions[sessionId]?.provider == .codex {
-            await syncCodexTranscript(sessionId: sessionId)
+            scheduleCodexTranscriptSync(sessionId: sessionId)
+            await codexSyncTasks[sessionId]?.value
             return
         }
         if sessions[sessionId]?.provider == .cursor {
@@ -2038,7 +2058,41 @@ actor SessionStore {
         }
     }
 
-    private func syncCodexTranscript(sessionId: String) async {
+    private func scheduleCodexTranscriptSync(sessionId: String) {
+        guard sessions[sessionId]?.provider == .codex,
+              !ignoredCodexSessions.contains(sessionId) else { return }
+        codexSyncRequested.insert(sessionId)
+        guard codexSyncTasks[sessionId] == nil else { return }
+        let token = UUID()
+        codexSyncTokens[sessionId] = token
+        codexSyncTasks[sessionId] = Task { [weak self, syncDebounceNs] in
+            try? await Task.sleep(nanoseconds: syncDebounceNs)
+            guard !Task.isCancelled else { return }
+            await self?.runCodexTranscriptSync(sessionId: sessionId, token: token)
+        }
+    }
+
+    private func runCodexTranscriptSync(sessionId: String, token: UUID) async {
+        // Single-flight per session. Hooks arriving during a read request one
+        // more pass; they neither cancel useful work nor race the file cursors.
+        while codexSyncTokens[sessionId] == token, !Task.isCancelled {
+            codexSyncRequested.remove(sessionId)
+            await syncCodexTranscript(sessionId: sessionId, token: token)
+            guard codexSyncRequested.contains(sessionId) else { break }
+            try? await Task.sleep(nanoseconds: syncDebounceNs)
+        }
+        guard codexSyncTokens[sessionId] == token else { return }
+        codexSyncTasks.removeValue(forKey: sessionId)
+        codexSyncTokens.removeValue(forKey: sessionId)
+    }
+
+    private func cancelCodexTranscriptSync(sessionId: String) {
+        codexSyncTasks.removeValue(forKey: sessionId)?.cancel()
+        codexSyncTokens.removeValue(forKey: sessionId)
+        codexSyncRequested.remove(sessionId)
+    }
+
+    private func syncCodexTranscript(sessionId: String, token: UUID) async {
         guard !shouldIgnoreCodexSession(sessionId) else { return }
         guard let session = sessions[sessionId], session.provider == .codex else {
             writeDebugLogAsync("[codex-transcript-sync] skipped missing-session session=\(sessionId)")
@@ -2046,27 +2100,32 @@ actor SessionStore {
         }
 
         let lowerBound = codexTranscriptLowerBounds[sessionId]
-        let startOffset = lowerBound == nil ? session.toolTracker.lastSyncOffset : 0
-        let result = await CodexTranscriptParser.loadUpdateResult(
+        let cursor = codexTranscriptCursors[sessionId] ?? CodexTranscriptCursor()
+        let result = await CodexTranscriptParser.loadSessionUpdates(
             sessionId: sessionId,
             after: lowerBound,
-            fromOffset: startOffset
+            cursor: cursor,
+            root: codexTranscriptRoot
         )
-        guard var currentSession = sessions[sessionId], currentSession.provider == .codex else {
+        guard codexSyncTokens[sessionId] == token, !Task.isCancelled,
+              var currentSession = sessions[sessionId], currentSession.provider == .codex else {
             writeDebugLogAsync("[codex-transcript-sync] dropped result missing-session session=\(sessionId)")
             return
         }
 
-        currentSession.toolTracker.lastSyncOffset = result.endOffset
+        codexTranscriptCursors[sessionId] = result.cursor
         currentSession.toolTracker.lastSyncTime = Date()
-        sessions[sessionId] = currentSession
-
-        guard !result.updates.isEmpty else { return }
-
-        DebugLog.shared.write("[codex-transcript-sync] session=\(sessionId) updates=\(result.updates.count) offset=\(startOffset)->\(result.endOffset)")
-        for update in result.updates {
-            applyChatItemUpdate(update, allowSessionCreation: false)
+        ChatItemUpdateReducer.applyBatch(
+            result.updates, items: &currentSession.chatItems, orderings: &blockOrderings
+        )
+        // History must not wake a completed turn or emit another notification.
+        // A late transcript-only tool also must not remain visibly running.
+        if currentSession.phase == .idle {
+            finishDanglingCodexTools(in: &currentSession)
         }
+        sessions[sessionId] = currentSession
+        guard !result.updates.isEmpty else { return }
+        DebugLog.shared.write("[codex-transcript-sync] session=\(sessionId) updates=\(result.updates.count) files=\(result.cursor.files.count)")
         publishState()
     }
 
@@ -2112,6 +2171,8 @@ actor SessionStore {
     private func cancelPendingSync(sessionId: String) {
         pendingSyncs[sessionId]?.cancel()
         pendingSyncs.removeValue(forKey: sessionId)
+        cancelCodexTranscriptSync(sessionId: sessionId)
+        codexTranscriptCursors.removeValue(forKey: sessionId)
     }
 
     // MARK: - Periodic Status Check
@@ -2165,6 +2226,7 @@ actor SessionStore {
                session.phase == .idle,
                now.timeIntervalSince(session.lastActivity) > codexIdleExpirationSeconds {
                 sessions.removeValue(forKey: sessionId)
+                cancelPendingSync(sessionId: sessionId)
                 codexTranscriptLowerBounds.removeValue(forKey: sessionId)
                 recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
                 pendingCodexStartupSessions.remove(sessionId)
@@ -2232,6 +2294,10 @@ actor SessionStore {
             }
 
             let needsSync: Bool
+            if session.provider == .codex,
+               session.phase.isActive || now.timeIntervalSince(session.lastActivity) < codexTranscriptIdleGraceSeconds {
+                scheduleCodexTranscriptSync(sessionId: sessionId)
+            }
             switch (session.provider, session.phase) {
             case (.claude, .processing), (.claude, .waitingForApproval):
                 needsSync = true
@@ -2298,6 +2364,12 @@ actor SessionStore {
         }
         sessions.removeAll()
         pendingSyncs.removeAll()
+        for task in codexSyncTasks.values { task.cancel() }
+        codexSyncTasks.removeAll()
+        codexSyncTokens.removeAll()
+        codexSyncRequested.removeAll()
+        codexTranscriptCursors.removeAll()
+        codexTranscriptRoot = CodexTranscriptParser.sessionsDirectory
         codexTranscriptLowerBounds.removeAll()
         recentlyStoppedCodexSessions.removeAll()
         pendingCodexStartupSessions.removeAll()
@@ -2315,6 +2387,14 @@ actor SessionStore {
 
     func recheckAllSessionsForTesting() {
         recheckAllSessions()
+    }
+
+    func setCodexTranscriptRootForTesting(_ root: URL) {
+        codexTranscriptRoot = root
+    }
+
+    func waitForCodexSyncForTesting(sessionId: String) async {
+        await codexSyncTasks[sessionId]?.value
     }
     #endif
 

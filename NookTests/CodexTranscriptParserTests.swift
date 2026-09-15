@@ -2,6 +2,113 @@ import XCTest
 @testable import Nook
 
 final class CodexTranscriptParserTests: XCTestCase {
+    func testDesktopUserMessageBoundaryExcludesModelContext() throws {
+        let url = try writeTemporaryJSONL("""
+        {"timestamp":"2026-09-15T09:33:27.702Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>private context</environment_context>"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["environments.environment_context"]}}}
+        {"timestamp":"2026-09-15T09:33:27.771Z","type":"response_item","payload":{"type":"message","id":"msg-user","role":"user","content":[{"type":"input_text","text":"修复消息展示"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}}}
+        {"timestamp":"2026-09-15T09:33:27.772Z","type":"event_msg","payload":{"type":"item_completed","thread_id":"session","turn_id":"turn","item":{"type":"UserMessage","id":"direct-user","client_id":"client","content":[{"type":"text","text":"修复消息展示","text_elements":[]}]}}}
+        {"timestamp":"2026-09-15T09:33:28.000Z","type":"response_item","payload":{"type":"message","id":"answer","role":"assistant","content":[{"type":"output_text","text":"收到"}]}}
+        """)
+        let updates = CodexTranscriptParser.parseTranscriptUpdates(at: url, sessionId: "session", after: nil)
+        XCTAssertEqual(updates.map(\.block), [.userPrompt("修复消息展示"), .assistantText("收到")])
+    }
+
+    func testDirectTextIsNotFilteredByItsContentsAndOtherThreadIsIgnored() throws {
+        let url = try writeTemporaryJSONL([
+            codexUserRow(id: "one", text: "<environment_context>用户在讨论这个标签</environment_context>"),
+            codexUserRow(id: "two", text: "same"),
+            codexUserRow(id: "three", text: "same"),
+            codexUserRow(id: "foreign", text: "other session", sessionId: "another")
+        ].joined(separator: "\n"))
+        let updates = CodexTranscriptParser.parseTranscriptUpdates(at: url, sessionId: "session", after: nil)
+        XCTAssertEqual(updates.count, 3)
+        XCTAssertEqual(Set(updates.map(\.id)).count, 3)
+        XCTAssertEqual(updates[1].block, updates[2].block)
+    }
+
+    func testFallbackMessageIDsStayStableAcrossFullAndIncrementalReads() throws {
+        let url = try writeTemporaryJSONL(codexAssistantRow(text: "first") + "\n")
+        let first = CodexTranscriptParser.parseTranscriptUpdates(at: url, sessionId: "session", after: nil, fromOffset: 0)
+        try appendCodexRows(codexAssistantRow(text: "second", second: 2), to: url)
+        let incremental = CodexTranscriptParser.parseTranscriptUpdates(at: url, sessionId: "session", after: nil, fromOffset: first.endOffset)
+        let full = CodexTranscriptParser.parseTranscriptUpdates(at: url, sessionId: "session", after: nil)
+        XCTAssertEqual(full.map(\.id), first.updates.map(\.id) + incremental.updates.map(\.id))
+    }
+
+    func testAllFragmentsLoadWithExactMetadataIdentityAndIndependentOffsets() async throws {
+        let root = try makeCodexTestDirectory()
+        let latest = try writeCodexFragment(in: root, name: "rollout-2026-09-15-session_suffix.jsonl", rows: [codexUserRow(id: "new", text: "new", second: 3)])
+        let old = try writeCodexFragment(in: root, name: "rollout-2026-09-01-session.jsonl", rows: [codexUserRow(id: "old", text: "old")])
+        _ = try writeCodexFragment(in: root, name: "rollout-2026-09-02-session_child.jsonl", sessionId: "other", rows: [codexUserRow(id: "wrong", text: "wrong")])
+        let first = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", root: root)
+        XCTAssertEqual(first.updates.map(\.block), [.userPrompt("old"), .userPrompt("new")])
+        XCTAssertEqual(first.cursor.files.count, 2)
+        let unchanged = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", cursor: first.cursor, root: root)
+        XCTAssertTrue(unchanged.updates.isEmpty)
+        try appendCodexRows(codexAssistantRow(text: "old fragment late write", second: 4), to: old)
+        try appendCodexRows(codexAssistantRow(text: "latest write", second: 5), to: latest)
+        let next = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", cursor: unchanged.cursor, root: root)
+        XCTAssertEqual(next.updates.count, 2)
+        XCTAssertEqual(Set(next.updates.map(\.id)).count, 2)
+    }
+
+    func testNewFragmentDoesNotReusePreviousOffsetOrFallbackIDs() async throws {
+        let root = try makeCodexTestDirectory()
+        _ = try writeCodexFragment(in: root, name: "rollout-01-session.jsonl", rows: [codexAssistantRow(text: "first")])
+        let first = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", root: root)
+        _ = try writeCodexFragment(in: root, name: "rollout-02-session_part.jsonl", rows: [codexAssistantRow(text: "other")])
+        let next = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", cursor: first.cursor, root: root)
+        XCTAssertEqual(next.updates.map(\.block), [.assistantText("other")])
+        XCTAssertNotEqual(first.updates.first?.id, next.updates.first?.id)
+    }
+
+    func testNativeMessageIDsDeduplicateOverlappingFragments() async throws {
+        let root = try makeCodexTestDirectory()
+        let rows = [codexUserRow(id: "same-id", text: "replayed"), codexAssistantRow(text: "answer", id: "answer-id")]
+        _ = try writeCodexFragment(in: root, name: "rollout-01-session.jsonl", rows: rows)
+        _ = try writeCodexFragment(in: root, name: "rollout-02-session_part.jsonl", rows: rows)
+        let result = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", root: root)
+        var items: [ChatHistoryItem] = []
+        var orderings: [String: BlockOrdering] = [:]
+        ChatItemUpdateReducer.applyBatch(result.updates, items: &items, orderings: &orderings)
+        XCTAssertEqual(items.map(\.type), [.user("replayed"), .assistant("answer")])
+    }
+
+    func testAtomicFileReplacementRestartsEvenWhenLarger() async throws {
+        let root = try makeCodexTestDirectory()
+        let url = try writeCodexFragment(in: root, name: "rollout-session.jsonl", rows: [codexUserRow(id: "one", text: "before")])
+        let first = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", root: root)
+        _ = try writeCodexFragment(in: root, name: url.lastPathComponent, rows: [codexUserRow(id: "two", text: String(repeating: "after", count: 200))])
+        let next = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", cursor: first.cursor, root: root)
+        XCTAssertEqual(next.updates.count, 1)
+        XCTAssertNotEqual(next.updates.first?.id, first.updates.first?.id)
+    }
+
+    func testLowerBoundAppliesToAllFragmentsAndSubsequentAppends() async throws {
+        let root = try makeCodexTestDirectory()
+        _ = try writeCodexFragment(in: root, name: "rollout-01-session.jsonl", rows: [codexUserRow(id: "old", text: "old")])
+        let latest = try writeCodexFragment(in: root, name: "rollout-02-session.jsonl", rows: [codexUserRow(id: "new", text: "new", second: 3)])
+        let bound = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-15T00:00:02Z"))
+        let first = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", after: bound, root: root)
+        XCTAssertEqual(first.updates.map(\.block), [.userPrompt("new")])
+        try appendCodexRows(codexUserRow(id: "late-old", text: "late old"), to: latest)
+        let next = await CodexTranscriptParser.loadSessionUpdates(sessionId: "session", after: bound, cursor: first.cursor, root: root)
+        XCTAssertTrue(next.updates.isEmpty)
+        let key = latest.resolvingSymlinksInPath().path
+        let beforeOffset = try XCTUnwrap(first.cursor.files[key]?.offset)
+        let afterOffset = try XCTUnwrap(next.cursor.files[key]?.offset)
+        XCTAssertGreaterThan(afterOffset, beforeOffset)
+    }
+
+    func testLargeMetadataAndUserForkAreNotMistakenForSubagents() throws {
+        let root = try makeCodexTestDirectory()
+        _ = try writeCodexFragment(in: root, name: "rollout-session.jsonl", rows: [], extraMetadata: ["forked_from_id": "parent", "instructions": String(repeating: "x", count: 20_000)])
+        XCTAssertEqual(CodexTranscriptParser.transcriptURLs(for: "session", root: root).count, 1)
+        XCTAssertFalse(CodexTranscriptParser.isSubagentSession(sessionId: "session", root: root))
+        _ = try writeCodexFragment(in: root, name: "rollout-agent.jsonl", sessionId: "agent", rows: [], extraMetadata: ["source": ["subagent": ["thread_spawn": ["parent_thread_id": "session"]]]])
+        XCTAssertTrue(CodexTranscriptParser.isSubagentSession(sessionId: "agent", root: root))
+    }
+
     func testLowerBoundSkipsOldAndInvalidTimestampRows() throws {
         let lowerBound = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-06-21T00:00:00Z"))
         let url = try writeTemporaryJSONL(

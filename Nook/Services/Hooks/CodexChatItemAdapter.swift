@@ -13,7 +13,8 @@ enum CodexChatItemAdapter {
         lineIndex: Int,
         role: String,
         text: String,
-        timestamp: Date
+        timestamp: Date,
+        messageId: String? = nil
     ) -> ChatItemUpdate? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -23,10 +24,12 @@ enum CodexChatItemAdapter {
             : .assistantText(trimmed)
 
         return ChatItemUpdate(
-            id: ChatItemIdFactory.codexBlockId(sessionId: sessionId, lineIndex: lineIndex),
+            id: messageId.map { "codex-message-\(sessionId)-\($0)" }
+                ?? ChatItemIdFactory.codexBlockId(sessionId: sessionId, lineIndex: lineIndex),
             sessionId: sessionId,
             block: block,
-            ordering: .appendOrder,
+            // History fragments and live hooks arrive out of display order.
+            ordering: .timestamp(timestamp),
             mutation: .insert,
             provider: .codex,
             messageTimestamp: timestamp
@@ -54,7 +57,7 @@ enum CodexChatItemAdapter {
                 structuredResult: nil,
                 subagentTools: []
             )),
-            ordering: .appendOrder,
+            ordering: .timestamp(timestamp),
             mutation: .insert,
             provider: .codex,
             messageTimestamp: timestamp
@@ -79,7 +82,7 @@ enum CodexChatItemAdapter {
                 structuredResult: nil,
                 subagentTools: []
             )),
-            ordering: .appendOrder,
+            ordering: .timestamp(timestamp),
             mutation: .updateStatus,
             provider: .codex,
             messageTimestamp: timestamp

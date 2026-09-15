@@ -45,7 +45,7 @@ Nook 会把 MacBook notch 变成一个轻量的桌面控制层。主页集中展
 Nook 会把不同 agent 的本地事件整理成统一的会话时间线。
 
 - Claude Code：hook、transcript 解析、状态追踪、中断检测、权限处理、tmux 终端聚焦。
-- Codex：hook、transcript 解析、terminal approval 状态、compacting/subagent 事件、完成会话保留。
+- Codex：实时展示用户直接输入和助手消息、完整读取分段历史、terminal approval 状态、compacting/subagent 事件、完成会话保留；不混入 memory 和系统注入上下文。
 - OpenCode：事件流接入、实时工具占位、用户输入状态、subagent 追踪、idle/完成状态转换。
 - Cursor：会话生命周期、processing/compacting 状态、thought/response 更新、工具调用和会话清理。
 
@@ -85,7 +85,7 @@ Nook 会把不同 agent 的本地事件整理成统一的会话时间线。
 
 复制完成后即可推出 Nook 磁盘映像。
 
-安装窗口采用 Finder 原生背景、图标和文字，不再使用会被放大的背景图。重发的 1.4.2 为构建号 2；如果已下载旧安装包，请重新下载。
+安装窗口采用 Finder 原生背景、图标和文字，不再使用会被放大的背景图。
 
 如果 macOS 首次启动时拦截，可以到 `系统设置` -> `隐私与安全性` 中允许 Nook 运行，然后重新打开。
 
