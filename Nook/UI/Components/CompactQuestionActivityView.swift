@@ -56,10 +56,16 @@ struct CompactQuestionActivityView: View {
             Spacer(minLength: 0)
 
             if musicManager.isVisible {
-                Image(systemName: musicManager.playbackState.isPlaying ? "waveform" : "music.note")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white.opacity(0.85))
-                    .frame(width: 16, height: 16)
+                // Reuse the animated audio spectrum from CompactMusicActivityView
+                // so the right-edge indicator on the question chip matches the
+                // music chip pixel-for-pixel (same NSView, same gradient +
+                // bar layers, same animation timing) rather than being a
+                // static SF Symbol.
+                CompactAudioSpectrumView(
+                    isPlaying: musicManager.playbackState.isPlaying,
+                    gradientColors: musicManager.artworkGradient
+                )
+                .frame(width: 16, height: 16)
             }
         }
         .padding(.horizontal, 7)

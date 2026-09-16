@@ -90,7 +90,10 @@ private struct CompactPlaybackIndicatorView: View {
     }
 }
 
-private struct CompactAudioSpectrumView: NSViewRepresentable {
+/// Reusable animated audio spectrum — exposed so other close-state chips
+/// (currently `CompactQuestionActivityView`) can render the same
+/// right-side indicator as `CompactMusicActivityView`.
+struct CompactAudioSpectrumView: NSViewRepresentable {
     let isPlaying: Bool
     let gradientColors: [NSColor]
 
@@ -107,7 +110,7 @@ private struct CompactAudioSpectrumView: NSViewRepresentable {
     }
 }
 
-private final class CompactAudioSpectrum: NSView {
+final class CompactAudioSpectrum: NSView {
     private let barWidth: CGFloat = 2
     private let barCount = 4
     private let totalHeight: CGFloat = 14
