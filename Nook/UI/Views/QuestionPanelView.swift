@@ -209,14 +209,15 @@ struct QuestionPanelView: View {
     private var freeFormInput: some View {
         // Match ChatView.inputBar style so the two text inputs feel like
         // siblings: same corner radius (20), same border stroke, same
-        // horizontal/vertical padding. Font is a bit smaller (11 vs 13)
-        // because the question panel is narrower than the chat panel.
+        // padding (h14 v10 — gives ~34pt total height to match the
+        // arrow.up.circle.fill button's natural height). Font is a bit
+        // smaller (11 vs 13) because the question panel is narrower.
         TextField("自定义回答...", text: $freeText)
             .textFieldStyle(.plain)
             .font(.system(size: 11))
             .foregroundColor(.white.opacity(0.9))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 20)
                     .fill(Color.white.opacity(0.08))
@@ -242,16 +243,14 @@ struct QuestionPanelView: View {
 
     /// Send button — single source of truth for "submit my answers".
     /// Disabled until every question has at least one answer (selection OR
-    /// custom text). Same white-pill capsule as the permission Allow button
-    /// for visual consistency across the app.
+    /// custom text). Uses the same arrow.up.circle.fill SF Symbol as
+    /// ChatView.inputBar's send button so the two input rows feel like
+    /// siblings across the app.
     private var sendButton: some View {
         Button { sendAnswers() } label: {
-            Text("Send").font(.system(size: 11, weight: .medium))
-                .foregroundColor(.black)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(Color.white.opacity(canSend ? 0.92 : 0.35))
-                .clipShape(Capsule())
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.system(size: 28))
+                .foregroundColor(canSend ? Color.white.opacity(0.94) : Color.white.opacity(0.35))
         }
         .buttonStyle(.plain)
         .disabled(!canSend || isSending)
