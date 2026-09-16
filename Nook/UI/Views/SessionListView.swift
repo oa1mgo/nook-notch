@@ -574,6 +574,12 @@ struct InstanceRow: View {
                     }
                 }
             }
+            // layoutPriority(1) so the title + status column claims its
+            // natural width first when reply/archive/focus buttons appear
+            // on the right; without this the action icons eat into the
+            // title's available space (especially with 2-3 buttons in
+            // waitingForInput + tmux+yabai rows).
+            .layoutPriority(1)
 
             Spacer(minLength: 0)
 

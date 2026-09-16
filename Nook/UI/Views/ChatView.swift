@@ -301,7 +301,15 @@ struct ChatView: View {
                 return "Message to \(name)... (⏎ send · ⌃F/⌃B scroll · ⌃G bottom)"
             }
         } else {
-            return "Open \(name) in tmux to enable messaging"
+            switch session.provider {
+            case .opencode:
+                // OpenCode has two ways to enable messaging: tmux (legacy)
+                // or the server API (started with --port). Surface both so
+                // users who don't tmux their agent know they have an option.
+                return "Run \(name) inside tmux or with --port to enable messaging"
+            case .claude, .codex, .cursor:
+                return "Open \(name) in tmux to enable messaging"
+            }
         }
     }
 
