@@ -776,20 +776,30 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         if let tool = props["tool"]?.value as? [String: Any],
            let messageId = tool["messageID"] as? String,
            !messageId.isEmpty {
-            lock.lock()
-            // If this message's text already streamed into the chat view (the
-            // model streams its text BEFORE invoking the question tool), the
-            // suppression alone can't undo what's on screen — emit a cancel
-            // so the streaming item is removed.
-            let wasStreamed = emittedTextMessages.contains(messageId)
-            suppressedTextMessages.insert(messageId)
-            lock.unlock()
-            if wasStreamed {
-                Self.logNotice("→ retract streamed question parent text session=\(sessionId) messageID=\(messageId)")
-                return [.assistantStreamingCancelled(sessionId: sessionId, messageId: messageId),
-                        .waitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: toolUseId, questions: questions, requestId: requestId)]
+            // For most tools the preceding assistant text is the tool's
+            // "prompt" and should be suppressed (it's meta-content the
+            // user already sees in the opencode TUI).  The question tool
+            // is different: the preceding text IS the assistant's actual
+            // response (e.g. a commit message, an analysis), and the
+            // question dialog shows its own question text separately.
+            // Suppressing the parent would erase useful context from the
+            // chat history.
+            let isQuestionTool = tool["name"] as? String == "question"
+                || tool["tool"] as? String == "question"
+            if !isQuestionTool {
+                lock.lock()
+                let wasStreamed = emittedTextMessages.contains(messageId)
+                suppressedTextMessages.insert(messageId)
+                lock.unlock()
+                if wasStreamed {
+                    Self.logNotice("→ retract streamed tool parent text session=\(sessionId) messageID=\(messageId)")
+                    return [.assistantStreamingCancelled(sessionId: sessionId, messageId: messageId),
+                            .waitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: toolUseId, questions: questions, requestId: requestId)]
+                }
+                Self.logNotice("→ suppressed tool parent text session=\(sessionId) messageID=\(messageId)")
+            } else {
+                Self.logNotice("→ question tool parent text KEPT session=\(sessionId) messageID=\(messageId)")
             }
-            Self.logNotice("→ suppressed question parent text session=\(sessionId) messageID=\(messageId)")
         }
         Self.logNotice("→ waitingForUserInput (question.asked) session=\(sessionId) cwd=\(cwd) requestID=\(requestId ?? "<nil>") questions=\(questions.count)")
         return [.waitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: toolUseId, questions: questions, requestId: requestId)]
