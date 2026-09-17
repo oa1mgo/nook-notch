@@ -622,7 +622,7 @@ struct InstanceRow: View {
                     // primary row actions group together. Archive always
                     // stays at the far-right edge.
                     if let onReply, session.phase == .waitingForInput {
-                        IconButton(icon: "bubble.left.and.bubble.right.fill") {
+                        IconButton(icon: "questionmark.bubble.fill") {
                             onReply()
                         }
                     }

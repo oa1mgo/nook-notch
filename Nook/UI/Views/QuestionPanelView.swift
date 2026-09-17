@@ -124,9 +124,19 @@ struct QuestionPanelView: View {
     // MARK: - Single
 
     private var singleQuestionCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             questionTitle(pendingQuestions[currentIndex])
-            optionsList(questionIndex: currentIndex)
+            // ScrollView so 1-10+ options all fit. Without this, panels
+            // with 6+ options overflow the panel height, and clicks on the
+            // bottom options register as outside-panel and close the notch
+            // (see the 2026-09-17 debug-log chase for the regression that
+            // motivated this). ScrollView takes the available space, then
+            // the Divider + bottomActionRow stay pinned at the bottom.
+            ScrollView(.vertical, showsIndicators: true) {
+                optionsList(questionIndex: currentIndex)
+            }
+            .frame(maxHeight: .infinity)
+            .scrollContentBackground(.hidden)
             Divider().background(Color.white.opacity(0.08))
             bottomActionRow
         }
@@ -175,20 +185,25 @@ struct QuestionPanelView: View {
     private func optionsList(questionIndex: Int) -> some View {
         let q = pendingQuestions[questionIndex]
         let selected = selectedAnswers[questionIndex] ?? []
-        return VStack(spacing: 5) {
+        return VStack(spacing: 4) {
             ForEach(Array(q.options.enumerated()), id: \.offset) { optIndex, option in
                 let isSelected = selected.contains(option.label)
                 Button { toggleOption(questionIndex: questionIndex, label: option.label) } label: {
                     HStack(spacing: 10) {
-                        Text(letterLabel(for: optIndex)).font(.system(size: 11, weight: .semibold))
-                            .frame(width: 22, height: 22)
+                        Text(letterLabel(for: optIndex)).font(.system(size: 10, weight: .semibold))
+                            .frame(width: 20, height: 20)
                             .background(isSelected ? Color.orange.opacity(0.35) : Color.white.opacity(0.12))
                             .clipShape(Circle())
-                        VStack(alignment: .leading) {
-                            Text(option.label).font(.system(size: 12, weight: .medium)).foregroundColor(.white)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(option.label)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
                             if let desc = option.description, !desc.isEmpty {
-                                Text(desc).font(.system(size: 10)).foregroundColor(.white.opacity(0.5))
-                                    .lineLimit(2)
+                                Text(desc)
+                                    .font(.system(size: 9.5))
+                                    .foregroundColor(.white.opacity(0.5))
+                                    .lineLimit(1)
                             }
                         }
                         Spacer()
@@ -196,7 +211,8 @@ struct QuestionPanelView: View {
                             Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundColor(.orange)
                         }
                     }
-                    .padding(10)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
                     .background(Color.white.opacity(isSelected ? 0.12 : 0.07))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
@@ -335,7 +351,6 @@ struct QuestionPanelView: View {
     }
 
     private func sendAnswers() {
-        DebugLog.shared.write("[question] sendAnswers() called canSend=\(canSend) isSending=\(isSending) pendingQuestions=\(pendingQuestions.count) selectedAnswers=\(selectedAnswers.mapValues { $0.count }) freeText='\(freeText)'")
         guard canSend, !isSending else { return }
         isSending = true
         errorMessage = nil

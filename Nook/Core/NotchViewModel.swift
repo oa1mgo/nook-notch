@@ -260,17 +260,18 @@ class NotchViewModel: ObservableObject {
                 height: instancesPageOpenedHeight
             )
         case .question:
-            // Header bar in QuestionPanelView (now slim: just back chevron
-            // + header label + project name + multi-question pager) plus
-            // single-question card body. Sized to fit without overflow so
-            // the panel doesn't visually snap on entry.
+            // Header bar in QuestionPanelView (back chevron + title + pager)
+            // plus single-question card body. Sized to fit a typical
+            // question comfortably: headerBar + title + up to 6 options +
+            // divider + bottom action row. Options beyond 6 still render
+            // correctly via the ScrollView wrapping optionsList.
             //
-            // Tallest case (4 options + multi-question header bar):
-            //   ~42pt headerBar + 14pt spacing + ~14pt title + 4 × ~56pt
-            //   options + 12pt divider + 48pt bottom row + 28pt padding
-            //   = ~362pt before the 24pt global header. Rounded up.
+            // Layout budget (with current QuestionPanelView sizing):
+            //   ~42pt headerBar + 12pt spacing + ~44pt title + 6 × ~44pt
+            //   options + 12pt divider + 34pt bottom row + 28pt padding
+            //   ≈ 416pt before the 24pt global header.
             let headerHeight = settingsPageHeaderHeight(for: geometry)
-            let contentHeight: CGFloat = 370
+            let contentHeight: CGFloat = 416
             let raw = contentHeight + headerHeight + 12
             let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(

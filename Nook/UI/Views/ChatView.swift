@@ -1601,7 +1601,7 @@ struct ChatInteractivePromptBar: View {
                     openNotch()
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                        Image(systemName: "questionmark.bubble.fill")
                             .font(.system(size: 11, weight: .medium))
                         Text("Answer in Nook")
                             .font(.system(size: 13, weight: .medium))
