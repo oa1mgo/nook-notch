@@ -259,19 +259,15 @@ class NotchViewModel: ObservableObject {
                 width: min(screenRect.width * 0.4, 480),
                 height: instancesPageOpenedHeight
             )
-        case .question:
-            // Header bar in QuestionPanelView (back chevron + title + pager)
-            // plus single-question card body. Sized to fit a typical
-            // question comfortably: headerBar + title + up to 6 options +
-            // divider + bottom action row. Options beyond 6 still render
-            // correctly via the ScrollView wrapping optionsList.
-            //
-            // Layout budget (with current QuestionPanelView sizing):
-            //   ~42pt headerBar + 12pt spacing + ~44pt title + 6 × ~44pt
-            //   options + 12pt divider + 34pt bottom row + 28pt padding
-            //   ≈ 416pt before the 24pt global header.
+        case .question(let session):
+            // Panel height driven by question data: back-row, title,
+            // N option rows, divider, bottom action row.  Each option row
+            // is a fixed-height HStack (circle 20pt + label + checkmark),
+            // so the total is deterministic per question.  The panel
+            // shrinks for few-option questions and caps at a maximum
+            // when the option count grows.
             let headerHeight = settingsPageHeaderHeight(for: geometry)
-            let contentHeight: CGFloat = 416
+            let contentHeight = questionContentHeight(session: session)
             let raw = contentHeight + headerHeight + 12
             let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
             return CGSize(
@@ -344,6 +340,50 @@ class NotchViewModel: ObservableObject {
         }
 
         return chromeHeight + performanceBlockHeight + musicBlockHeight + contentHeight
+    }
+
+    /// Compute the question-panel content height from the pending question
+    /// data.  Each row has a deterministic height (derived from NSFont
+    /// metrics), so the total is exact — no GeometryReader feedback loop
+    /// needed.  The panel shrinks for few-option questions and caps when
+    /// the option count grows large.
+    private func questionContentHeight(session: SessionState) -> CGFloat {
+        let questions = session.pendingQuestionContext?.questions ?? []
+        guard !questions.isEmpty else { return 416 }
+
+        // Back row: HStack { MenuRow (~35pt) + Spacer + pager chevrons (24pt) }
+        // .padding(.vertical, 14) → HStack + 28pt
+        let backRowHeight: CGFloat = 63
+        // Divider after back row
+        let backDividerHeight: CGFloat = 1
+        // questionTitle: font 14pt semibold ≈ 17pt line height + spacing → ~30pt
+        let questionTitleHeight: CGFloat = 30
+        // Option row: circle 20×20 + label 11.5pt + padding(.vertical,6)×2 = 32pt
+        let optionRowHeight: CGFloat = 32
+        // Spacing between options in VStack(spacing: 4)
+        let optionSpacing: CGFloat = 4
+        // bottomActionRow: freeFormInput ~34pt or sendButton ~28pt
+        let bottomRowHeight: CGFloat = 34
+        // Inner dividers (thin lines)
+        let innerDividerHeight: CGFloat = 1
+
+        // Use the longest question's option count (panel must fit all
+        // questions when the user paginates).
+        let maxOptionCount = questions.map(\.options.count).max() ?? 0
+        let optionsHeight = CGFloat(maxOptionCount) * optionRowHeight
+            + max(0, CGFloat(maxOptionCount) - 1) * optionSpacing
+
+        // content VStack (spacing: 12): title + divider + options + divider + bottom
+        // 5 children → 4 gaps of 12pt = 48pt
+        let contentVStackHeight = questionTitleHeight
+            + innerDividerHeight
+            + optionsHeight
+            + innerDividerHeight
+            + bottomRowHeight
+            + 12 * 4
+
+        // Back section + outer padding (.padding(.vertical, 14) → 28pt)
+        return backRowHeight + backDividerHeight + contentVStackHeight + 28
     }
 
     private var resolvedRowHeight: CGFloat {

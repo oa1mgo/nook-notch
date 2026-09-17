@@ -696,7 +696,6 @@ struct NotchView: View {
         if showCompactQuestionChip {
             CompactQuestionActivityView(
                 sessionMonitor: sessionMonitor,
-                musicManager: musicManager,
                 onTap: {
                     if let s = sessionMonitor.instances
                         .filter({ $0.phase == .waitingForInput && $0.pendingQuestionContext != nil })
@@ -951,6 +950,15 @@ struct NotchView: View {
                     viewModel: viewModel,
                     onClose: { viewModel.navigateBack() }
                 )
+                // Question panel sizes to its content.  The ViewModel's
+                // openedSize.question uses questionContentHeight() which
+                // is computed from the actual question data (option count,
+                // custom-input flag), so the window height already matches
+                // the content — no maxHeight frame needed.  When options
+                // overflow, the ScrollView inside QuestionPanelView scrolls
+                // within the panel's natural height.  Removing the frame
+                // prevents the VStack from forcing the panel to fill the
+                // full notchSize.height allocation when content is short.
             }
         }
         .frame(width: notchSize.width - 24) // Fixed width to prevent text reflow

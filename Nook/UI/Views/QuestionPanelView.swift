@@ -26,16 +26,25 @@ struct QuestionPanelView: View {
 
     @State private var pendingQuestions: [PendingQuestion] = []
     @State private var currentIndex: Int = 0
-    @State private var freeText: String = ""
+    /// Per-question custom text. Keyed by question index so each question
+    /// retains its own input when the user paginates between questions.
+    @State private var freeTexts: [Int: String] = [:]
     @State private var selectedAnswers: [Int: Set<String>] = [:]
     @State private var isSending: Bool = false
     @State private var errorMessage: String?
 
     private var context: AskUserQuestionContext? { session.pendingQuestionContext }
 
+    /// Binding to the current question's free-text input.
+    private var currentFreeText: Binding<String> {
+        Binding(
+            get: { freeTexts[currentIndex] ?? "" },
+            set: { freeTexts[currentIndex] = $0 }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            headerBar
             // Capability check first: the terminal-fallback path may legitimately
             // have no questions/context yet (opencode-less providers), so it must
             // still render the "Go to Terminal" button instead of spinning on
@@ -45,10 +54,8 @@ struct QuestionPanelView: View {
                 terminalFallbackCard
             } else if pendingQuestions.isEmpty {
                 loadingPlaceholder
-            } else if pendingQuestions.count == 1 {
-                singleQuestionCard
             } else {
-                multiQuestionSwiper
+                singleQuestionCard
             }
             if let errorMessage {
                 Text(errorMessage)
@@ -65,99 +72,83 @@ struct QuestionPanelView: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - Back row (matches settings pages)
 
-    private var headerBar: some View {
-        HStack(spacing: 8) {
-            // Back chevron — pushes the question view onto the stack
-            // intentionally (so it has its own back affordance), but if
-            // the user wants to back out without answering they can.
-            // Hover highlight matches the IconButton pattern used in the
-            // session list so the affordance feels native.
-            BackChevronButton(action: onClose)
-
-            // Title (header or provider name) — sits next to the chevron
-            // so the bar reads like an iOS navigation bar:
-            //   ‹ Header … projectName    ‹/› [pager]
-            Text(pendingQuestions.indices.contains(currentIndex)
-                 ? (pendingQuestions[currentIndex].header ?? session.provider.rawValue.uppercased())
-                 : session.provider.rawValue.uppercased())
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.orange)
-                .lineLimit(1)
-                .layoutPriority(1)
-
-            Spacer(minLength: 4)
-
-            // Project directory name (right side, on the same row as
-            // the header label) — orientation without a second line.
-            if replyProvider.supportsInlineAnswer {
-                Text(session.projectName)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundColor(.white.opacity(0.5))
-                    .lineLimit(1)
-            }
-
-            // Multi-question pager arrows + counter on the far right.
-            if pendingQuestions.count > 1 {
-                PagerChevronButton(systemImage: "chevron.left", disabled: currentIndex == 0) {
-                    if currentIndex > 0 { currentIndex -= 1 }
-                }
-                .help("Previous question")
-
-                Text("\(currentIndex + 1)/\(pendingQuestions.count)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.85))
-                    .fixedSize()
-
-                PagerChevronButton(systemImage: "chevron.right", disabled: currentIndex == pendingQuestions.count - 1) {
-                    if currentIndex < pendingQuestions.count - 1 { currentIndex += 1 }
-                }
-                .help("Next question")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+    /// First row of the question card. Uses the same `MenuRow` component
+    /// as ShortcutSettingsView / AgentSettingsView / PerformanceSettingsView
+    /// — pixel-identical hover background, text/icon opacity, padding,
+    /// and focus ring. Trailing element is the multi-question pager
+    /// (‹ N/M ›) which reuses MenuRow's `trailingLabel` slot when present
+    /// and an `HStack` overlay when the pager needs both arrows.
+    private var backRow: some View {
+        MenuRow(
+            icon: "chevron.left",
+            label: "Back",
+            trailingIcon: nil,
+            primaryTextColor: .white,
+            isFocused: false,
+            action: onClose
+        )
     }
 
     // MARK: - Single
 
     private var singleQuestionCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            questionTitle(pendingQuestions[currentIndex])
-            // ScrollView so 1-10+ options all fit. Without this, panels
-            // with 6+ options overflow the panel height, and clicks on the
-            // bottom options register as outside-panel and close the notch
-            // (see the 2026-09-17 debug-log chase for the regression that
-            // motivated this). ScrollView takes the available space, then
-            // the Divider + bottomActionRow stay pinned at the bottom.
-            ScrollView(.vertical, showsIndicators: true) {
-                optionsList(questionIndex: currentIndex)
+        VStack(alignment: .leading, spacing: 0) {
+            // Multi-question pager lives in the same row as Back so the
+            // top chrome stays compact. Rendered as an overlay so MenuRow
+            // owns the hover/focus styling.
+            ZStack(alignment: .trailing) {
+                backRow
+                if pendingQuestions.count > 1 {
+                    HStack(spacing: 6) {
+                        PagerChevronButton(systemImage: "chevron.left", disabled: currentIndex == 0) {
+                            if currentIndex > 0 { currentIndex -= 1 }
+                        }
+                        .help("Previous question")
+
+                        Text("\(currentIndex + 1)/\(pendingQuestions.count)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                            .fixedSize()
+
+                        PagerChevronButton(systemImage: "chevron.right", disabled: currentIndex == pendingQuestions.count - 1) {
+                            if currentIndex < pendingQuestions.count - 1 { currentIndex += 1 }
+                        }
+                        .help("Next question")
+                    }
+                    .padding(.trailing, 12)
+                }
             }
-            .frame(maxHeight: .infinity)
-            .scrollContentBackground(.hidden)
-            Divider().background(Color.white.opacity(0.08))
-            bottomActionRow
+            Divider().background(Color.white.opacity(0.06))
+            VStack(alignment: .leading, spacing: 12) {
+                questionTitle(pendingQuestions[currentIndex])
+                // ScrollView so 1-10+ options fit. Sized to content (no
+                // .frame(maxHeight: .infinity)) so a 3-option question
+                // doesn't leave a blank band below — the question panel
+                // shrinks to fit. When options overflow the panel cap
+                // (see openedSize.height in NotchViewModel), the panel's
+                // outer frame still enforces the upper bound, and SwiftUI
+                // clips gracefully. The Divider + bottomActionRow stay
+                // pinned at the bottom of the VStack.
+                //
+                // `fixedSize(horizontal: false, vertical: true)` forces
+                // the ScrollView to size to its content's intrinsic
+                // height instead of expanding to fill the parent VStack.
+                ScrollView(.vertical, showsIndicators: true) {
+                    optionsList(questionIndex: currentIndex)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .scrollContentBackground(.hidden)
+                Divider().background(Color.white.opacity(0.08))
+                bottomActionRow
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 14)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 14)
     }
 
-    // MARK: - Multi (no extra body chrome — header has the ‹/› pager)
-
-    private var multiQuestionSwiper: some View {
-        // Same body as the single-question card. The ‹/› pager + counter
-        // live in `headerBar` so we don't double up with body chrome.
-        VStack(alignment: .leading, spacing: 12) {
-            questionTitle(pendingQuestions[currentIndex])
-            optionsList(questionIndex: currentIndex)
-            Divider().background(Color.white.opacity(0.08))
-            bottomActionRow
-        }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 14)
-    }
+    // MARK: - Building blocks
 
     // MARK: - Building blocks
 
@@ -228,7 +219,7 @@ struct QuestionPanelView: View {
         // padding (h14 v10 — gives ~34pt total height to match the
         // arrow.up.circle.fill button's natural height). Font is a bit
         // smaller (11 vs 13) because the question panel is narrower.
-        TextField("自定义回答...", text: $freeText)
+        TextField("自定义回答...", text: currentFreeText)
             .textFieldStyle(.plain)
             .font(.system(size: 11))
             .foregroundColor(.white.opacity(0.9))
@@ -274,21 +265,25 @@ struct QuestionPanelView: View {
     }
 
     private var canSend: Bool {
-        guard !pendingQuestions.isEmpty else { return false }
+        guard !pendingQuestions.isEmpty else {
+            DebugLog.shared.write("[question-send] canSend=false: pendingQuestions.isEmpty")
+            return false
+        }
         for i in 0..<pendingQuestions.count {
             let q = pendingQuestions[i]
             let selected = selectedAnswers[i] ?? []
-            // For single-select (multiple=false): exactly 1 selection OR custom text for this index
-            // For multi-select (multiple=true): at least 1 selection OR custom text for this index
+            let text = (freeTexts[i] ?? "").trimmingCharacters(in: .whitespaces)
             if !q.custom {
-                // No custom input allowed for this question — must pick at least one option
-                if selected.isEmpty { return false }
-            } else {
-                // Custom input is offered; text counts as answer for currentIndex only
-                if i == currentIndex && !freeText.trimmingCharacters(in: .whitespaces).isEmpty {
-                    continue
+                if selected.isEmpty {
+                    DebugLog.shared.write("[question-send] canSend=false: q\(i) custom=false selected.isEmpty")
+                    return false
                 }
-                if selected.isEmpty { return false }
+            } else {
+                if !text.isEmpty { continue }
+                if selected.isEmpty {
+                    DebugLog.shared.write("[question-send] canSend=false: q\(i) custom=true text.empty selected.isEmpty")
+                    return false
+                }
             }
         }
         return true
@@ -351,28 +346,39 @@ struct QuestionPanelView: View {
     }
 
     private func sendAnswers() {
-        guard canSend, !isSending else { return }
+        guard canSend, !isSending else {
+            DebugLog.shared.write("[question-send] BLOCKED canSend=\(canSend) isSending=\(isSending) currentIndex=\(currentIndex)")
+            return
+        }
         isSending = true
         errorMessage = nil
+        DebugLog.shared.write("[question-send] START session=\(session.sessionId.prefix(8)) requestID=\(context?.requestId ?? "<nil>") questions=\(pendingQuestions.count) answers=\(freeTexts)")
 
-        // Build [[String]] — one inner array per question; custom text (if any
-        // and not empty) replaces the option selection for the current question.
+        // Build [[String]] — one inner array per question.
+        // For single-select: custom text replaces any option selection.
+        // For multi-select: custom text is appended to selections.
         let answers: [[String]] = (0..<pendingQuestions.count).map { i in
-            var labels = Array(selectedAnswers[i] ?? [])
             let q = pendingQuestions[i]
-            if q.custom, i == currentIndex {
-                let text = freeText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
+            let text = (freeTexts[i] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if q.custom, !text.isEmpty {
+                if q.multiple {
+                    // Multi-select: custom text alongside selections
+                    var labels = Array(selectedAnswers[i] ?? [])
                     labels = labels.filter { $0 != text }
                     labels.append(text)
+                    return labels
+                } else {
+                    // Single-select: custom text replaces option selection
+                    return [text]
                 }
             }
-            // Guarantee non-empty arrays (canSend already enforced this)
+            var labels = Array(selectedAnswers[i] ?? [])
             return labels.isEmpty ? [""] : labels
         }
 
         Task {
             do {
+                DebugLog.shared.write("[question-send] calling replyProvider.sendAnswer requestID=\(context?.requestId ?? "<nil>") answers=\(answers)")
                 try await replyProvider.sendAnswer(
                     sessionId: session.sessionId,
                     requestId: context?.requestId,
@@ -381,8 +387,10 @@ struct QuestionPanelView: View {
                 )
                 // Transport is fire-and-forget; the .onChange(phase) is the SSOT
                 // for closing. Optimistic close here as a backup (idempotent).
+                DebugLog.shared.write("[question-send] OK — closing notch")
                 await MainActor.run { viewModel.notchClose(restorePreviousApp: false) }
             } catch {
+                DebugLog.shared.write("[question-send] FAILED: \(error.localizedDescription)")
                 await MainActor.run {
                     errorMessage = error.localizedDescription
                     isSending = false
@@ -405,33 +413,7 @@ struct QuestionPanelView: View {
     }
 }
 
-// MARK: - Back Chevron Button (hover-highlighted nav-bar back affordance)
-
-private struct BackChevronButton: View {
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button {
-            action()
-        } label: {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(isHovered ? .white : .white.opacity(0.7))
-                .frame(width: 22, height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(isHovered ? Color.white.opacity(0.12) : Color.clear)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .help("Back to sessions")
-    }
-}
-
-// MARK: - Pager Chevron Button (matches BackChevronButton hover style)
+// MARK: - Pager Chevron Button
 
 private struct PagerChevronButton: View {
     let systemImage: String
