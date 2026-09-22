@@ -72,6 +72,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case selectPrevious
     case selectNext
     case enterSession
+    case replyToQuestion
     case navigateBack
     case openSettings
 
@@ -82,6 +83,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .selectPrevious:  return "Navigate Up"
         case .selectNext:      return "Navigate Down"
         case .enterSession:    return "Open"
+        case .replyToQuestion: return "Reply to Question"
         case .navigateBack:    return "Go Back"
         case .openSettings:    return "Open Settings"
         }
@@ -94,6 +96,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .selectPrevious:  return "chevron.up"
         case .selectNext:      return "chevron.down"
         case .enterSession:    return "arrow.forward"
+        case .replyToQuestion: return "questionmark.bubble.fill"
         case .navigateBack:    return "arrow.uturn.left"
         case .openSettings:    return "gearshape"
         }
@@ -119,6 +122,8 @@ enum ShortcutAction: String, CaseIterable, Codable {
             ]
         case .enterSession:
             return [KeyCombination(keyCode: 36, flags: ModifierFlagsWrapper(rawValue: 0))] // Enter
+        case .replyToQuestion:
+            return [KeyCombination(keyCode: 15, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃R (keyCode 15 = R)
         case .navigateBack:
             return [KeyCombination(keyCode: 4, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃H (keyCode 4 = H)
         case .openSettings:

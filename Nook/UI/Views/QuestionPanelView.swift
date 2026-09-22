@@ -16,6 +16,7 @@
 //     batch sent an incomplete payload, and tapping any option in a multi-
 //     select question sent immediately before the user could pick more.)
 
+import OSLog
 import SwiftUI
 
 struct QuestionPanelView: View {
@@ -26,12 +27,17 @@ struct QuestionPanelView: View {
 
     @State private var pendingQuestions: [PendingQuestion] = []
     @State private var currentIndex: Int = 0
-    /// Per-question custom text. Keyed by question index so each question
-    /// retains its own input when the user paginates between questions.
     @State private var freeTexts: [Int: String] = [:]
     @State private var selectedAnswers: [Int: Set<String>] = [:]
     @State private var isSending: Bool = false
     @State private var errorMessage: String?
+    /// Manual focus tracking for option rows — not using @FocusState because
+    /// NSPanel doesn't participate in SwiftUI's focus chain reliably.
+    @State private var focusedOptionIndex: Int = 0
+    /// TextField focus — kept as @FocusState so .focused() modifier works
+    /// and Tab can programmatically activate it.
+    @FocusState private var isTextFieldFocused: Bool
+    @State private var localMonitor: Any?
 
     private var context: AskUserQuestionContext? { session.pendingQuestionContext }
 
@@ -89,6 +95,7 @@ struct QuestionPanelView: View {
             isFocused: false,
             action: onClose
         )
+        .padding(.bottom, 6)
     }
 
     // MARK: - Single
@@ -105,7 +112,7 @@ struct QuestionPanelView: View {
                         PagerChevronButton(systemImage: "chevron.left", disabled: currentIndex == 0) {
                             if currentIndex > 0 { currentIndex -= 1 }
                         }
-                        .help("Previous question")
+                        .help("Ctrl+[ Previous question")
 
                         Text("\(currentIndex + 1)/\(pendingQuestions.count)")
                             .font(.system(size: 11, weight: .semibold))
@@ -115,7 +122,7 @@ struct QuestionPanelView: View {
                         PagerChevronButton(systemImage: "chevron.right", disabled: currentIndex == pendingQuestions.count - 1) {
                             if currentIndex < pendingQuestions.count - 1 { currentIndex += 1 }
                         }
-                        .help("Next question")
+                        .help("Ctrl+] Next question")
                     }
                     .padding(.trailing, 12)
                 }
@@ -146,6 +153,22 @@ struct QuestionPanelView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 14)
         }
+        .onAppear {
+            DebugLog.shared.log(Self.logger, "QUESTION-PANEL: onAppear fired, keyWindow=\(NSApp.keyWindow != nil)")
+            // Ensure the notch window is key so keyboard events reach our monitor.
+            if NSApp.keyWindow == nil {
+                DebugLog.shared.log(Self.logger, "QUESTION-PANEL: no keyWindow, activating")
+                NSApp.activate(ignoringOtherApps: false)
+                NSApp.windows.first { $0 is NotchPanel }?.makeKey()
+            }
+            installKeyboardMonitor()
+            if focusedOptionIndex >= pendingQuestions[currentIndex].options.count {
+                focusedOptionIndex = 0
+            }
+        }
+        .onDisappear {
+            removeKeyboardMonitor()
+        }
     }
 
     // MARK: - Building blocks
@@ -153,8 +176,8 @@ struct QuestionPanelView: View {
     // MARK: - Building blocks
 
     private func questionTitle(_ q: PendingQuestion) -> some View {
-        // Body title: just the question text + multi-select pill on the
-        // right. Header label (e.g. "phonics 系统细节") and project name
+        // Body title: question text + multi-select pill on the right.
+        // Header label (e.g. "phonics 系统细节") and project name
         // moved up to `headerBar` (iOS-nav style: ‹ Header … projectName),
         // so this section is the actual question being asked.
         HStack(alignment: .top, spacing: 8) {
@@ -179,36 +202,16 @@ struct QuestionPanelView: View {
         return VStack(spacing: 4) {
             ForEach(Array(q.options.enumerated()), id: \.offset) { optIndex, option in
                 let isSelected = selected.contains(option.label)
-                Button { toggleOption(questionIndex: questionIndex, label: option.label) } label: {
-                    HStack(spacing: 10) {
-                        Text(letterLabel(for: optIndex)).font(.system(size: 10, weight: .semibold))
-                            .frame(width: 20, height: 20)
-                            .background(isSelected ? Color.orange.opacity(0.35) : Color.white.opacity(0.12))
-                            .clipShape(Circle())
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(option.label)
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                            if let desc = option.description, !desc.isEmpty {
-                                Text(desc)
-                                    .font(.system(size: 9.5))
-                                    .foregroundColor(.white.opacity(0.5))
-                                    .lineLimit(1)
-                            }
-                        }
-                        Spacer()
-                        if isSelected {
-                            Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundColor(.orange)
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(isSelected ? 0.12 : 0.07))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                OptionRow(
+                    letter: letterLabel(for: optIndex),
+                    label: option.label,
+                    description: option.description,
+                    isSelected: isSelected,
+                    isFocused: focusedOptionIndex == optIndex,
+                    isSending: isSending
+                ) {
+                    toggleOption(questionIndex: questionIndex, label: option.label)
                 }
-                .buttonStyle(.plain)
-                .disabled(isSending)
             }
         }
     }
@@ -219,7 +222,7 @@ struct QuestionPanelView: View {
         // padding (h14 v10 — gives ~34pt total height to match the
         // arrow.up.circle.fill button's natural height). Font is a bit
         // smaller (11 vs 13) because the question panel is narrower.
-        TextField("自定义回答...", text: currentFreeText)
+        TextField("Tab to type custom answer...", text: currentFreeText)
             .textFieldStyle(.plain)
             .font(.system(size: 11))
             .foregroundColor(.white.opacity(0.9))
@@ -233,7 +236,9 @@ struct QuestionPanelView: View {
                             .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
                     )
             )
+            .focused($isTextFieldFocused)
             .onSubmit { if canSend { sendAnswers() } }
+            .help("Tab to focus · Enter to send")
     }
 
     /// Bottom action row: free-text input (if allowed) and Send button share
@@ -261,7 +266,7 @@ struct QuestionPanelView: View {
         }
         .buttonStyle(.plain)
         .disabled(!canSend || isSending)
-        .help("Send your answer to the agent")
+        .help("Enter to send")
     }
 
     private var canSend: Bool {
@@ -325,6 +330,126 @@ struct QuestionPanelView: View {
                 custom: q.custom
             )
         }
+    }
+
+    // MARK: - Keyboard (AppKit local monitor — works in NSPanel)
+
+    private static let logger = Logger(subsystem: "com.celestial.Nook", category: "QuestionPanel")
+
+    private func installKeyboardMonitor() {
+        guard localMonitor == nil else { return }
+        DebugLog.shared.log(Self.logger, "QUESTION-PANEL: installKeyboardMonitor called")
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            DebugLog.shared.log(Self.logger, "QUESTION-PANEL: keyDown intercepted keyCode=\(event.keyCode) chars=\(event.charactersIgnoringModifiers ?? "?") window=\(event.window != nil)")
+            return self.handleKeyDown(event)
+        }
+        DebugLog.shared.log(Self.logger, "QUESTION-PANEL: localMonitor installed=\(localMonitor != nil)")
+    }
+
+    private func removeKeyboardMonitor() {
+        if let monitor = localMonitor {
+            NSEvent.removeMonitor(monitor)
+            localMonitor = nil
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        // Only handle when our panel is key window
+        guard NSApp.keyWindow != nil else { return event }
+
+        let chars = event.charactersIgnoringModifiers ?? ""
+        let mods = event.modifierFlags
+        let hasCtrl = mods.contains(.control)
+        let hasCmd = mods.contains(.command)
+        let hasShift = mods.contains(.shift)
+
+        guard !hasCmd else { return event }
+
+        // ── Esc: blur text field or close notch ──
+        if event.keyCode == 53 { // Escape
+            if isTextFieldFocused {
+                isTextFieldFocused = false
+                return nil
+            }
+            return event // let notch handle
+        }
+
+        // ── When text field has focus, let it handle all keys ──
+        // (arrow keys, typing, IME, etc.) except Esc and Ctrl shortcuts.
+        if isTextFieldFocused {
+            // Ctrl+[/] still navigate questions even in text field
+            if hasCtrl && (chars == "[" || event.keyCode == 33) { goPreviousQuestion(); return nil }
+            if hasCtrl && (chars == "]" || event.keyCode == 30) { goNextQuestion(); return nil }
+            // Tab toggles back to options
+            if event.keyCode == 48 { // Tab
+                isTextFieldFocused = false
+                return nil
+            }
+            // Everything else passes through to the TextField
+            return event
+        }
+
+        // ── Question navigation: Ctrl+]/Ctrl+[ ──
+        if hasCtrl && (chars == "]" || event.keyCode == 30) { goNextQuestion(); return nil }
+        if hasCtrl && (chars == "[" || event.keyCode == 33) { goPreviousQuestion(); return nil }
+
+        // ── Option focus: Up/Down / Ctrl+N/P ──
+        if event.keyCode == 126 || (hasCtrl && chars == "p") { // Up / Ctrl+P
+            moveFocusUp(); return nil
+        }
+        if event.keyCode == 125 || (hasCtrl && chars == "n") { // Down / Ctrl+N
+            moveFocusDown(); return nil
+        }
+
+        // ── Space: toggle selection ──
+        if event.keyCode == 49 && !hasCtrl && !hasShift { // Space
+            let q = pendingQuestions[currentIndex]
+            guard focusedOptionIndex < q.options.count else { return event }
+            toggleOption(questionIndex: currentIndex, label: q.options[focusedOptionIndex].label)
+            return nil
+        }
+
+        // ── Enter: send ──
+        if event.keyCode == 36 { // Return
+            if canSend { sendAnswers() }
+            return nil
+        }
+
+        // ── Tab: focus text field (only for custom questions) ──
+        if event.keyCode == 48 { // Tab
+            if pendingQuestions[currentIndex].custom {
+                isTextFieldFocused = true
+                return nil
+            }
+        }
+
+        return event
+    }
+
+    private func moveFocusUp() {
+        let count = pendingQuestions[currentIndex].options.count
+        guard count > 0 else { return }
+        focusedOptionIndex = focusedOptionIndex > 0 ? focusedOptionIndex - 1 : count - 1
+    }
+
+    private func moveFocusDown() {
+        let count = pendingQuestions[currentIndex].options.count
+        guard count > 0 else { return }
+        focusedOptionIndex = focusedOptionIndex < count - 1 ? focusedOptionIndex + 1 : 0
+    }
+
+    private func goNextQuestion() {
+        guard currentIndex < pendingQuestions.count - 1 else { return }
+        currentIndex += 1
+        focusedOptionIndex = 0
+        isTextFieldFocused = false
+    }
+
+    private func goPreviousQuestion() {
+        guard currentIndex > 0 else { return }
+        currentIndex -= 1
+        focusedOptionIndex = 0
+        isTextFieldFocused = false
     }
 
     /// Toggle a label in the multi-select set. Picking an option NEVER sends —
@@ -413,6 +538,54 @@ struct QuestionPanelView: View {
     }
 }
 
+// MARK: - Option Row (matches settings page hover/focus style)
+
+private struct OptionRow: View {
+    let letter: String
+    let label: String
+    let description: String?
+    let isSelected: Bool
+    let isFocused: Bool
+    let isSending: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button { action() } label: {
+            HStack(spacing: 10) {
+                Text(letter).font(.system(size: 10, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                    .background(isSelected ? Color.orange.opacity(0.35) : Color.white.opacity(0.12))
+                    .clipShape(Circle())
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(label)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundColor(isHovered ? .white : .white.opacity(0.9))
+                        .lineLimit(1)
+                    if let desc = description, !desc.isEmpty {
+                        Text(desc)
+                            .font(.system(size: 9.5))
+                            .foregroundColor(.white.opacity(0.5))
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundColor(.orange)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(isFocused ? Color.white.opacity(0.12) : (isHovered ? Color.white.opacity(0.08) : Color.clear))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(isSending)
+        .onHover { isHovered = $0 }
+        .help("Space to select · Enter to send")
+    }
+}
+
 // MARK: - Pager Chevron Button
 
 private struct PagerChevronButton: View {
@@ -426,9 +599,9 @@ private struct PagerChevronButton: View {
             action()
         } label: {
             Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(foreground)
-                .frame(width: 18, height: 22)
+                .frame(width: 24, height: 28)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(isHovered && !disabled ? Color.white.opacity(0.12) : Color.clear)

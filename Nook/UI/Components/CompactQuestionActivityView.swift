@@ -2,13 +2,12 @@
 // Nook
 //
 // Closed-notch chip shown when a session is waiting to answer an
-// AskUserQuestion. Layout mirrors the agent close-state (provider activity
-// carousel): left orange ? pill (semantic "question pending"), middle
-// provider+summary, right AgentIcon for the waiting session's provider.
-// Question is treated as an agent-run state for status purposes, so the
-// waiting provider's animated icon is shown on the right rather than the
-// music wave that the previous implementation borrowed from
-// CompactMusicActivityView.
+// AskUserQuestion. Layout mirrors the permission close-state (provider
+// activity carousel): left amber ? pill (semantic "question pending"),
+// middle provider+summary, right a provider-tinted * spinner that reads as
+// an active waiting state — the same symbol/animation the permission and
+// processing header uses (ProcessingSpinner), so the chip stays visually
+// consistent with those two waiting-for-input treatments.
 //
 // The middle text is drawn unconditionally — on devices with a physical
 // notch the OS covers it, which is the intended look.
@@ -34,24 +33,12 @@ struct CompactQuestionActivityView: View {
         (primarySession?.provider.rawValue ?? "").uppercased()
     }
 
-    private var waitingProvider: SessionProvider? {
-        primarySession?.provider
-    }
-
     var body: some View {
         HStack(spacing: 8) {
-            // Left: orange "?" pill. Same hue as the in-panel question
-            // header so the chip and the panel it opens share a colour
-            // vocabulary. Size 18x18 matches CompactMusicActivityView's
-            // 18x18 artwork placeholder.
-            Circle()
-                .fill(Color.orange)
-                .frame(width: 18, height: 18)
-                .overlay(
-                    Text("?")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.black)
-                )
+            // Left: same pixel-art icon as the permission close-state,
+            // tinted amber so it reads as the question sibling.
+            PermissionIndicatorIcon(size: 16, color: TerminalColors.amber)
+                .frame(width: 16, height: 16)
 
             VStack(alignment: .leading, spacing: 0) {
                 Text("\(providerLabel) · QUESTION")
@@ -69,18 +56,13 @@ struct CompactQuestionActivityView: View {
 
             Spacer(minLength: 0)
 
-            // Right: PermissionIndicatorIcon (the same animated spinner used by
-            // the permission close-state indicator), tinted to the
-            // waiting session's provider colour. Same visual idiom as
-            // permission so the two wait-states read as siblings;
-            // semantic for "this agent is currently waiting on something".
-            if let provider = waitingProvider {
-                PermissionIndicatorIcon(
-                    size: 16,
-                    color: SessionLoadingStyle.tint(for: provider)
-                )
+            // Right: provider-tinted * spinner — mirrors the permission /
+            // processing header so the closed chip reads as an active
+            // waiting state rather than a static label. Falls back to the
+            // Claude tint when no waiting session resolves (e.g. race on
+            // dismissal).
+            ProcessingSpinner(provider: primarySession?.provider ?? .claude)
                 .frame(width: 16, height: 16)
-            }
         }
         .padding(.horizontal, 7)
         .frame(maxWidth: .infinity)

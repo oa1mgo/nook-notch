@@ -218,6 +218,15 @@ struct SessionListView: View {
                       viewModel.keyboardSelectedIndex < sortedInstances.count else { return }
                 openChat(sortedInstances[viewModel.keyboardSelectedIndex])
             }
+            .onReceive(viewModel.$keyboardReplyTrigger) { trigger in
+                guard trigger != nil,
+                      viewModel.contentType == .instances,
+                      viewModel.keyboardSelectedIndex >= 0,
+                      viewModel.keyboardSelectedIndex < sortedInstances.count else { return }
+                let session = sortedInstances[viewModel.keyboardSelectedIndex]
+                guard session.phase == .waitingForInput else { return }
+                replyToQuestion(session)
+            }
         }
     }
 
@@ -625,6 +634,7 @@ struct InstanceRow: View {
                         IconButton(icon: "questionmark.bubble.fill") {
                             onReply()
                         }
+                        .help("Reply to question (⌃R)")
                     }
                     if session.phase == .idle || session.phase == .waitingForInput {
                         IconButton(icon: "archivebox") {
@@ -665,10 +675,10 @@ struct InstanceRow: View {
         case .waitingForApproval, .waitingForTerminalApproval:
             ProcessingSpinner(color: TerminalColors.amber)
         case .waitingForInput:
-            // Pixel speech bubble (12×12) — visually distinct from the
-            // 6×6 idle dot, matches the opencode ask_user_question /
-            // Claude Code "Ready for input" state semantically.
-            WaitingForInputIcon(size: 12)
+            // Same pixel-art icon as the question close-state / panel
+            // header, tinted amber so the session row matches the
+            // question view. 12pt mirrors the original speech bubble size.
+            PermissionIndicatorIcon(size: 12, color: TerminalColors.amber)
         case .idle, .ended:
             Circle()
                 .fill(Color.white.opacity(0.2))

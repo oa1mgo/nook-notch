@@ -118,6 +118,9 @@ class NotchViewModel: ObservableObject {
     @Published var keyboardSelectedIndex: Int = -1
     /// Trigger to activate the currently keyboard-selected session
     @Published var keyboardActivateTrigger: UUID?
+    /// Trigger to open the question panel for the currently keyboard-selected
+    /// session (only effective when that session is in `.waitingForInput`).
+    @Published var keyboardReplyTrigger: UUID?
 
     /// Focused row index for keyboard navigation on settings pages (menu, shortcuts).
     @Published var settingsFocusedIndex: Int = -1
@@ -779,6 +782,13 @@ class NotchViewModel: ObservableObject {
         keyboardActivateTrigger = UUID()
     }
 
+    /// Open the question panel for the currently keyboard-selected session.
+    /// SessionListView listens to this trigger and calls `replyToQuestion`
+    /// on the selected session if it's in `.waitingForInput`.
+    func activateReplyToQuestion() {
+        keyboardReplyTrigger = UUID()
+    }
+
     /// Total focusable items in the menu page
     let menuItemCount: Int = 13
     /// Total focusable items in the shortcuts page (Back + action rows + Restore)
@@ -823,7 +833,15 @@ class NotchViewModel: ObservableObject {
         switch action {
         case .toggleNotch:
             if status == .opened {
-                notchClose(restorePreviousApp: true)
+                // If panel is open but window isn't key, bring focus to it
+                // (so keyboard shortcuts work). Only close if already focused.
+                let notchWindow = NSApp.windows.first { $0 is NotchPanel }
+                if NSApp.keyWindow === notchWindow {
+                    notchClose(restorePreviousApp: true)
+                } else {
+                    NSApp.activate(ignoringOtherApps: false)
+                    notchWindow?.makeKey()
+                }
             } else {
                 notchOpen(reason: .click)
             }
@@ -835,6 +853,8 @@ class NotchViewModel: ObservableObject {
             selectNextItem()
         case .enterSession:
             activateSelectedItem()
+        case .replyToQuestion:
+            activateReplyToQuestion()
         case .navigateBack:
             navigateBack()
         case .openSettings:
