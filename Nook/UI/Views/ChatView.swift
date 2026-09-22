@@ -235,6 +235,14 @@ struct ChatView: View {
             guard let direction = notification.object as? ChatScrollDirection else { return }
             performKeyboardScroll(direction)
         }
+        .onReceive(viewModel.$keyboardReplyTrigger) { trigger in
+            guard trigger != nil,
+                  viewModel.contentType == .chat(session),
+                  session.phase == .waitingForInput,
+                  session.provider == .opencode else { return }
+            viewModel.notchOpen(reason: .notification)
+            viewModel.pushTo(.question(session))
+        }
     }
 
     // MARK: - Header
@@ -1613,7 +1621,7 @@ struct ChatInteractivePromptBar: View {
                     .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .help("Open the question panel in Nook's notch")
+                .help("Open the question panel in Nook's notch (⌃R)")
                 .opacity(showButton ? 1 : 0)
                 .scaleEffect(showButton ? 1 : 0.8)
             } else {
@@ -1733,6 +1741,7 @@ struct ChatApprovalBar: View {
     @State private var showDenyButton = false
     @State private var showAlwaysButton = false
     @State private var isConfirmingAlways = false
+    @State private var localMonitor: Any?
 
     init(
         tool: String,
@@ -1799,7 +1808,7 @@ struct ChatApprovalBar: View {
                     Button {
                         isConfirmingAlways = false
                     } label: {
-                        Text("Cancel")
+                        Text("Cancel (Esc)")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(.white.opacity(0.6))
                             .padding(.horizontal, 16)
@@ -1809,12 +1818,13 @@ struct ChatApprovalBar: View {
                     }
                     .buttonStyle(.plain)
                     .fixedSize(horizontal: true, vertical: false)
+                    .help("Cancel (Esc)")
 
                     Button {
                         isConfirmingAlways = false
                         onApproveAlways?()
                     } label: {
-                        Text("Confirm")
+                        Text("Confirm (C)")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(Color(red: 0.92, green: 0.30, blue: 0.25))
                             .padding(.horizontal, 16)
@@ -1824,6 +1834,7 @@ struct ChatApprovalBar: View {
                     }
                     .buttonStyle(.plain)
                     .fixedSize(horizontal: true, vertical: false)
+                    .help("Confirm (C)")
                 }
             } else {
                 // Normal three-button layout
@@ -1849,7 +1860,7 @@ struct ChatApprovalBar: View {
                     Button {
                         onDeny()
                     } label: {
-                        Text("Deny")
+                        Text("Deny (N)")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(.white.opacity(0.6))
                             .padding(.horizontal, 16)
@@ -1861,12 +1872,13 @@ struct ChatApprovalBar: View {
                     .fixedSize(horizontal: true, vertical: false)
                     .opacity(showDenyButton ? 1 : 0)
                     .scaleEffect(showDenyButton ? 1 : 0.8)
+                    .help("Deny (N)")
 
                     // Allow button
                     Button {
                         onApprove()
                     } label: {
-                        Text("Allow")
+                        Text("Allow (Y)")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(Color.black.opacity(0.88))
                             .padding(.horizontal, 16)
@@ -1878,13 +1890,14 @@ struct ChatApprovalBar: View {
                     .fixedSize(horizontal: true, vertical: false)
                     .opacity(showAllowButton ? 1 : 0)
                     .scaleEffect(showAllowButton ? 1 : 0.8)
+                    .help("Approve (Y)")
 
                     // Always button — only when onApproveAlways is provided.
                     if onApproveAlways != nil {
                         Button {
                             isConfirmingAlways = true
                         } label: {
-                            Text("Always")
+                            Text("Always (A)")
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundColor(Color(red: 0.92, green: 0.30, blue: 0.25))
                                 .padding(.horizontal, 16)
@@ -1896,6 +1909,7 @@ struct ChatApprovalBar: View {
                         .fixedSize(horizontal: true, vertical: false)
                         .opacity(showAlwaysButton ? 1 : 0)
                         .scaleEffect(showAlwaysButton ? 1 : 0.8)
+                        .help("Always allow (A)")
                     }
                 }
             }
@@ -1918,6 +1932,77 @@ struct ChatApprovalBar: View {
                     showAlwaysButton = true
                 }
             }
+            installKeyboardMonitor()
+        }
+        .onDisappear {
+            removeKeyboardMonitor()
+        }
+    }
+
+    // MARK: - Keyboard (AppKit local monitor — Y/N/A in permission bar)
+
+    private func installKeyboardMonitor() {
+        guard localMonitor == nil else { return }
+        // Make the notch key so the local monitor fires. Permission
+        // requires an explicit response (Y/N/A), so stealing focus here
+        // is the right call — unlike question/notification auto-expand
+        // which can wait. Restoring previous-app focus when the bar
+        // disappears is the user's responsibility (close the notch).
+        NSApp.activate(ignoringOtherApps: false)
+        NSApp.windows.first { $0 is NotchPanel }?.makeKey()
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            self.handleKeyDown(event)
+        }
+    }
+
+    private func removeKeyboardMonitor() {
+        if let monitor = localMonitor {
+            NSEvent.removeMonitor(monitor)
+            localMonitor = nil
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        // Skip when an editable text field is focused (let it handle typing)
+        if let responder = NSApp.keyWindow?.firstResponder,
+           (responder.isKind(of: NSTextView.self) || responder.isKind(of: NSTextField.self)) {
+            return event
+        }
+
+        let mods = event.modifierFlags
+        let hasCtrl = mods.contains(.control)
+        let hasCmd = mods.contains(.command)
+        guard !hasCmd, !hasCtrl else { return event }
+
+        let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+        if isConfirmingAlways {
+            // Confirm step: C confirms, Esc cancels
+            if chars == "c" {
+                isConfirmingAlways = false
+                onApproveAlways?()
+                return nil
+            }
+            if event.keyCode == 53 { // Esc
+                isConfirmingAlways = false
+                return nil
+            }
+            return event
+        }
+
+        // Main buttons
+        switch chars {
+        case "y":
+            onApprove()
+            return nil
+        case "n":
+            onDeny()
+            return nil
+        case "a" where onApproveAlways != nil:
+            isConfirmingAlways = true
+            return nil
+        default:
+            return event
         }
     }
 }

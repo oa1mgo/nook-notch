@@ -1058,13 +1058,42 @@ struct NotchView: View {
         let currentIds = Set(sessions.map { $0.stableId })
         let newPendingIds = currentIds.subtracting(previousPendingIds)
 
-        if !newPendingIds.isEmpty &&
-           viewModel.status == .closed &&
-           !TerminalVisibilityDetector.isTerminalVisibleOnCurrentSpace() {
-            viewModel.notchOpen(reason: .notification)
+        if !newPendingIds.isEmpty && viewModel.status == .closed {
+            // Permission auto-expand: a session that newly entered
+            // `.waitingForApproval` / `.waitingForTerminalApproval` →
+            // open the notch and land on its chat view so the user can
+            // approve/reject without hunting for the right session.
+            // Unlike question auto-expand (which lets the user keep
+            // typing in the terminal), permission needs an explicit
+            // click/keystroke — so we always steal focus here, even if
+            // a terminal is visible on the current space. Questions are
+            // excluded (handleWaitingForInputChange owns that path).
+            let newPermissionSession = sessions
+                .filter { $0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval }
+                .filter { newPendingIds.contains($0.stableId) }
+                .max(by: { $0.lastActivity < $1.lastActivity })
+            if let permissionSession = newPermissionSession,
+               !isCurrentlyViewingWaitingChat,
+               !isAlreadyShowingPermissionChat(for: permissionSession) {
+                viewModel.notchOpen(reason: .notification)
+                viewModel.pushTo(.chat(permissionSession))
+            } else if newPermissionSession != nil {
+                viewModel.notchOpen(reason: .notification)
+            }
         }
 
         previousPendingIds = currentIds
+    }
+
+    /// Idempotency guard for permission auto-expand: if the notch is
+    /// already open and showing the chat view for THIS session, a
+    /// repeat change event must not push a duplicate `.chat` onto the
+    /// nav stack.
+    private func isAlreadyShowingPermissionChat(for session: SessionState) -> Bool {
+        guard viewModel.status == .opened, case .chat(let current) = viewModel.contentType else {
+            return false
+        }
+        return current.sessionId == session.sessionId
     }
 
     private func handleWaitingForInputChange(_ instances: [SessionState]) {
