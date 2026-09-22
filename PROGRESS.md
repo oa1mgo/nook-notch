@@ -92,7 +92,7 @@
 
 ## 🧠 Context Notes
 
-> **本节是 PROGRESS 专属"指针索引"** —— 具体内容已沉淀到 `docs/specs/` / `docs/debug/` / `docs/architecture/` 或代码注释,只保留 1-2 行概要 + 链接。**完整入口** 看 [CLAUDE.md](CLAUDE.md)。
+> **本节是 PROGRESS 专属"指针索引"** —— 具体内容已沉淀到 `docs/specs/` / `docs/debug/` / `docs/architecture/` 或代码注释,只保留 1-2 行概要 + 链接。**完整入口** 看 [AGENTS.md](AGENTS.md)。
 
 ### Brand icon 设计（2026-06-23 落地）
 详见 `AgentSettingsView.brandIcon(for:)` 和 `AgentProviderIcons.swift` 顶部注释。槽宽统一 16×16,size 差异由自然宽高比决定(Claude 12.6 / 其他 16)。**customIcon type 优化方向**(AnyView → generic / some View) — 2026-06-23 用户决议延后,实测成本不可见。
