@@ -533,7 +533,7 @@ struct InlineApprovalButtons: View {
 | phase 超时回退（5s 无 replied → 回 `.processing`） | 需要 SessionStore 加 timer / 状态机，改动膨胀 | 后续，可放在 Step 4 |
 | subagent 触发的 permission | subagent 的 permission 在 opencode 内部自决，不暴露给父 session | 暂不处理 |
 | diff 预览 hover-expand | 视觉增强，非核心 | 后续 |
-| 键盘快捷键（⌘↩ / ⌘⌫） | 独立增强 | 后续 |
+| 键盘快捷键 | ~~⌘↩ / ⌘⌫~~ 改为 Y/N/A（与 ChatApprovalBar 一致）；chat 页已上线，instances 页由 `docs/superpowers/specs/2026-09-23-session-list-permission-shortcuts-design.md` 实现 | 已取代 |
 
 ---
 
