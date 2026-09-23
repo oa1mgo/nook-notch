@@ -43,6 +43,10 @@ struct SessionListView: View {
     @State private var instanceRowHeight: CGFloat = 0
     @State private var performanceRowHeight: CGFloat = 0
     @State private var musicCardHeight: CGFloat = 0
+    /// The session currently in Always-confirm mode (Patterns + Cancel/Confirm).
+    /// Parent-scoped so only one row can be in confirm mode at a time and the
+    /// keyboard path can drive it (spec §5).
+    @State private var confirmingSessionId: String?
 
     private var showsPerformanceRow: Bool { isPerformanceMonitorEnabled }
     private var showsMusicCard: Bool { musicManager.isVisible }
@@ -145,6 +149,12 @@ struct SessionListView: View {
         .onChange(of: instanceRowHeight) { _, _ in
             syncLayoutMetrics()
         }
+        .onChange(of: approvalTargets) { _, newTargets in
+            if let id = confirmingSessionId,
+               !newTargets.contains(where: { $0.sessionId == id }) {
+                confirmingSessionId = nil
+            }
+        }
     }
 
     // MARK: - Empty State
@@ -193,6 +203,11 @@ struct SessionListView: View {
         }
     }
 
+    /// Rows that render InlineApprovalButtons — keyboard Y/N/A targets (spec §1).
+    private var approvalTargets: [SessionState] {
+        sortedInstances.filter(\.showsInlineApprovalButtons)
+    }
+
     /// Lower number = higher priority
     /// Approval requests share priority with processing to maintain stable ordering
     private func phasePriority(_ phase: SessionPhase) -> Int {
@@ -217,7 +232,11 @@ struct SessionListView: View {
                             onApprove: { approveSession(session) },
                             onReject: { rejectSession(session) },
                             onApproveAlways: session.provider == .opencode ? { approveAlwaysSession(session) } : nil,
-                            isKeyboardSelected: index == viewModel.keyboardSelectedIndex
+                            isKeyboardSelected: index == viewModel.keyboardSelectedIndex,
+                            isConfirmingAlways: Binding(
+                                get: { confirmingSessionId == session.sessionId },
+                                set: { confirmingSessionId = $0 ? session.sessionId : nil }
+                            )
                         )
                         .measureHeight(using: InstanceRowHeightKey.self) {
                             if index == 0 {
@@ -418,10 +437,12 @@ struct InstanceRow: View {
     /// allowance. Only wired up for OpenCode sessions.
     let onApproveAlways: (() -> Void)?
     let isKeyboardSelected: Bool
+    /// Parent-owned Always-confirm mode (was per-row @State — allowed two rows
+    /// to confirm simultaneously; hoisted per spec §5).
+    @Binding var isConfirmingAlways: Bool
 
     @State private var isHovered = false
     @State private var isYabaiAvailable = false
-    @State private var isConfirmingAlways = false
 
     private var providerTint: Color {
         SessionLoadingStyle.tint(for: session.provider)
