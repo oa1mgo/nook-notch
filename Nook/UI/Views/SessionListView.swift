@@ -8,6 +8,30 @@
 import Combine
 import SwiftUI
 
+extension SessionState {
+    /// SOI: row renders InlineApprovalButtons — keyboard Y/N/A target.
+    /// Mirrors InstanceRow action-area branch (SessionListView.swift
+    /// `isWaitingForTerminalApproval || (... && isInteractiveTool)` first,
+    /// then approval buttons). Keep both in sync when either changes.
+    ///
+    /// Premise: `phase.isWaitingForApproval` matches ONLY
+    /// `.waitingForApproval` (SessionPhase.swift L266-269) — terminal-side
+    /// `.waitingForTerminalApproval` is a different case and is NOT
+    /// included. Targets do not pass through InstanceRow's else-if chain,
+    /// so this exclusivity is what keeps terminal-approval rows out of the
+    /// keyboard target set. Do not "merge" the two phase helpers.
+    var showsInlineApprovalButtons: Bool {
+        guard phase.isWaitingForApproval else { return false }
+        if let tool = pendingToolName, ToolCallItem.kind(of: tool) == .askUserQuestion {
+            return false // branch 1: Go to Terminal, not Y/N/A
+        }
+        return true
+    }
+
+    /// Always button exists only for OpenCode (mirrors onApproveAlways wiring at call site L195).
+    var canApproveAlways: Bool { showsInlineApprovalButtons && provider == .opencode }
+}
+
 struct SessionListView: View {
     @ObservedObject var sessionMonitor: SessionMonitor
     @ObservedObject var viewModel: NotchViewModel
@@ -605,7 +629,7 @@ struct InstanceRow: View {
                     }
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
-            } else if isWaitingForApproval {
+            } else if session.showsInlineApprovalButtons {
                 InlineApprovalButtons(
                     onApprove: onApprove,
                     onReject: onReject,
