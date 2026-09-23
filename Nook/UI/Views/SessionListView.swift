@@ -47,6 +47,8 @@ struct SessionListView: View {
     /// Parent-scoped so only one row can be in confirm mode at a time and the
     /// keyboard path can drive it (spec §5).
     @State private var confirmingSessionId: String?
+    /// Local keyDown monitor for Y/N/A/C/Esc (installed on appear — spec §4).
+    @State private var keyMonitor: Any?
 
     private var showsPerformanceRow: Bool { isPerformanceMonitorEnabled }
     private var showsMusicCard: Bool { musicManager.isVisible }
@@ -130,6 +132,7 @@ struct SessionListView: View {
         }
         .onAppear {
             syncLayoutMetrics()
+            installKeyboardMonitor()
         }
         .onChange(of: musicManager.isVisible) { _, _ in
             syncLayoutMetrics()
@@ -154,6 +157,10 @@ struct SessionListView: View {
                !newTargets.contains(where: { $0.sessionId == id }) {
                 confirmingSessionId = nil
             }
+        }
+        .onDisappear {
+            removeKeyboardMonitor()
+            confirmingSessionId = nil
         }
     }
 
@@ -302,6 +309,92 @@ struct SessionListView: View {
 
     private func rejectSession(_ session: SessionState) {
         sessionMonitor.denyPermission(sessionId: session.sessionId, reason: nil)
+    }
+
+    // MARK: - Keyboard (AppKit local monitor — Y/N/A on instances page)
+
+    private func installKeyboardMonitor() {
+        guard keyMonitor == nil else { return }
+        // Deliberately NO NSApp.activate / makeKey here: NotchWindowController
+        // L75-77 skips activate only for .notification opens (task-finished
+        // notifications mount THIS page while the user types elsewhere —
+        // activating would route subsequent keystrokes into Nook and a stray
+        // `y` could approve a permission). User-initiated opens (click/hover/
+        // hotkey) are already key via the window controller.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            self.handleKeyDown(event)
+        }
+    }
+
+    private func removeKeyboardMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        // Skip when an editable text field is focused (mirrors ChatApprovalBar)
+        if let responder = NSApp.keyWindow?.firstResponder,
+           (responder.isKind(of: NSTextView.self) || responder.isKind(of: NSTextField.self)) {
+            return event
+        }
+
+        let mods = event.modifierFlags
+        guard !mods.contains(.command), !mods.contains(.control) else { return event }
+
+        let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+        // Confirm step: scoped to confirmingSessionId's row (may differ from highlight)
+        if confirmingSessionId != nil {
+            if chars == "c" {
+                if let id = confirmingSessionId,
+                   let session = sortedInstances.first(where: { $0.sessionId == id }) {
+                    approveAlwaysSession(session)
+                }
+                confirmingSessionId = nil
+                return nil
+            }
+            if event.keyCode == 53 { // Esc — cancel confirm only; NOT closeNotch
+                                     // (list monitor is LIFO-later ⇒ receives first)
+                confirmingSessionId = nil
+                return nil
+            }
+            return event
+        }
+
+        guard chars == "y" || chars == "n" || chars == "a" else { return event }
+
+        // Resolve target (spec §2): 0 → none; 1 → ignore highlight; 2+ → highlight must be a target
+        let targets = approvalTargets
+        let target: SessionState?
+        switch targets.count {
+        case 0:
+            target = nil
+        case 1:
+            target = targets[0]
+        default:
+            let idx = viewModel.keyboardSelectedIndex // -1 = no highlight (NotchViewModel L118)
+            guard idx >= 0, idx < sortedInstances.count else { return event }
+            let highlighted = sortedInstances[idx]
+            target = highlighted.showsInlineApprovalButtons ? highlighted : nil
+        }
+        guard let target else { return event }
+
+        switch chars {
+        case "y":
+            approveSession(target)
+            return nil
+        case "n":
+            rejectSession(target)
+            return nil
+        case "a":
+            guard target.canApproveAlways else { return event } // non-OpenCode: pass through
+            confirmingSessionId = target.sessionId
+            return nil
+        default:
+            return event
+        }
     }
 
     private func archiveSession(_ session: SessionState) {
