@@ -340,6 +340,13 @@ struct SessionListView: View {
             return event
         }
 
+        // Ignore auto-repeat: holding y/n/a must not cascade-approve as
+        // targets leave the list and count drops 2+ → 1 (spec: multi-pending
+        // requires explicit highlight). First physical press is not a repeat.
+        if event.isARepeat {
+            return event
+        }
+
         let mods = event.modifierFlags
         guard !mods.contains(.command), !mods.contains(.control) else { return event }
 
