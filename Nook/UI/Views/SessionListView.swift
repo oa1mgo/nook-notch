@@ -767,7 +767,7 @@ struct InlineApprovalButtons: View {
                 Button {
                     isConfirmingAlways = false
                 } label: {
-                    Text("Cancel")
+                    Text("Cancel (Esc)")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.white.opacity(0.6))
                         .padding(.horizontal, 10)
@@ -783,7 +783,7 @@ struct InlineApprovalButtons: View {
                     isConfirmingAlways = false
                     onApproveAlways?()
                 } label: {
-                    Text("Confirm")
+                    Text("Confirm (C)")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(Color(red: 0.92, green: 0.30, blue: 0.25))
                         .padding(.horizontal, 10)
@@ -797,7 +797,7 @@ struct InlineApprovalButtons: View {
                 Button {
                     onReject()
                 } label: {
-                    Text("Deny")
+                    Text("Deny (N)")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.white.opacity(0.6))
                         .padding(.horizontal, 10)
@@ -813,7 +813,7 @@ struct InlineApprovalButtons: View {
                 Button {
                     onApprove()
                 } label: {
-                    Text("Allow")
+                    Text("Allow (Y)")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.black)
                         .padding(.horizontal, 10)
@@ -831,7 +831,7 @@ struct InlineApprovalButtons: View {
                         DebugLog.shared.write("[notch] Always tapped")
                         isConfirmingAlways = true
                     } label: {
-                        Text("Always")
+                        Text("Always (A)")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Color(red: 0.92, green: 0.30, blue: 0.25))
                             .padding(.horizontal, 10)
