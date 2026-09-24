@@ -23,20 +23,23 @@ final class OpencodeQuestionReplyProvider: QuestionReplyProvider, @unchecked Sen
             throw QuestionReplyError.missingRequestId
         }
 
+        // SessionStore is an actor and `sessions` is private; the public
+        // lookup is `session(for:)`, awaited directly (no MainActor hop).
+        // directory (session.cwd) pins the reply to the session's InstanceState
+        // shard — the pid socket may be owned by a plugin load from another
+        // project (see permission.reply note in opencode-plugin/index.js).
+        let session = await SessionStore.shared.session(for: sessionId)
         let payload: [String: Any] = [
             "cmd": "question.reply",
             "sessionId": sessionId,
             "requestId": requestId,
-            "answers": answers
+            "answers": answers,
+            "directory": session?.cwd ?? ""
         ]
-
-        // SessionStore is an actor and `sessions` is private; the public
-        // lookup is `session(for:)`, awaited directly (no MainActor hop).
-        let pid = await SessionStore.shared.session(for: sessionId)?.pid
 
         // sendCommand is sync fire-and-forget (mirrors SessionMonitor's
         // permission.reply call sites); transport failure surfaces later via
         // the phase transition, not here.
-        OpencodeCommandSocket.shared.sendCommand(payload, pid: pid)
+        OpencodeCommandSocket.shared.sendCommand(payload, pid: session?.pid)
     }
 }

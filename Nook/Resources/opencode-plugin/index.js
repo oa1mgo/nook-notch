@@ -107,10 +107,18 @@ async function handleCommand(rawLine, input) {
 
       // opencode v1 permission reply body: { reply: "once" | "always" | "reject" }
       // Nook's reply values map 1:1 — no transformation needed.
+      //
+      // directory query: InstanceState pending-map is sharded by directory.
+      // A long-lived opencode --port process can load this plugin once per
+      // InstanceContext; the last startCommandServer() wins the pid socket,
+      // so input.client's x-opencode-directory header may name the WRONG
+      // project → PermissionNotFoundError. WorkspaceRouting prefers
+      // ?directory= over the header — Nook sends session.cwd with the command.
       const res = await heyApiClient.post({
         url: "/permission/{requestID}/reply",
         path: { requestID: requestId },
         body: { reply },
+        ...(cmd.directory ? { query: { directory: cmd.directory } } : {}),
       });
 
       logDebug(`reply OK res=${JSON.stringify(res)}`);
@@ -144,6 +152,7 @@ async function handleCommand(rawLine, input) {
         url: "/question/{requestID}/reply",
         path: { requestID: requestId },
         body: { answers },
+        ...(cmd.directory ? { query: { directory: cmd.directory } } : {}),
       });
       logDebug(`question.reply OK res=${JSON.stringify(res)}`);
     } catch (err) {
@@ -156,7 +165,7 @@ async function handleCommand(rawLine, input) {
 /// opencode calls `server(input, options)` directly with the plugin input
 /// (including `client`). We capture `input` in the closure so the command
 /// socket handler can use it later for permission replies.
-  const PLUGIN_VERSION = "1.5.0";
+  const PLUGIN_VERSION = "1.5.1";
 export default function server(input) {
   logDebug(`nook plugin v${PLUGIN_VERSION} loaded serverUrl=${input?.serverUrl?.toString() ?? "undefined"} argv=${JSON.stringify(process.argv ?? [])}`);
   // Start listening for commands from Nook as soon as the plugin loads.

@@ -218,11 +218,12 @@ class SessionMonitor: ObservableObject {
             // the active permission carries an opencodeRequestId, route the
             // approval there and skip the Claude/Codex hook response.
             if let requestId = permission.opencodeRequestId {
-                Self.logger.info("approvePermission: sending permission.reply to opencode requestId=\(requestId, privacy: .public) pid=\(session.pid ?? -1, privacy: .public)")
+                Self.logger.info("approvePermission: sending permission.reply to opencode requestId=\(requestId, privacy: .public) pid=\(session.pid ?? -1, privacy: .public) cwd=\(session.cwd, privacy: .public)")
                 OpencodeCommandSocket.shared.sendCommand([
                     "cmd": "permission.reply",
                     "requestId": requestId,
                     "reply": "once",
+                    "directory": session.cwd,
                 ], pid: session.pid)
                 await SessionStore.shared.process(
                     .permissionApproved(sessionId: sessionId, toolUseId: permission.toolUseId)
@@ -265,6 +266,7 @@ class SessionMonitor: ObservableObject {
                 "cmd": "permission.reply",
                 "requestId": requestId,
                 "reply": always ? "always" : "once",
+                "directory": session.cwd,
             ], pid: session.pid)
 
             await SessionStore.shared.process(
@@ -286,6 +288,7 @@ class SessionMonitor: ObservableObject {
                     "cmd": "permission.reply",
                     "requestId": requestId,
                     "reply": "reject",
+                    "directory": session.cwd,
                 ], pid: session.pid)
                 await SessionStore.shared.process(
                     .permissionDenied(sessionId: sessionId, toolUseId: permission.toolUseId, reason: reason)
