@@ -26,7 +26,7 @@ final class OpencodeHookAdapterEventDrivenSelfHealTests: XCTestCase {
 
         // First event must be the self-heal .sessionStart.
         guard let first = events.first,
-              case .sessionStart(let sid, let cwd) = first,
+              case .sessionStart(let sid, let cwd, _, _) = first,
               sid == sessionId, cwd == "/tmp/test-project" else {
             return XCTFail("permission.asked should self-heal with a leading .sessionStart, got \(events)")
         }
@@ -55,7 +55,7 @@ final class OpencodeHookAdapterEventDrivenSelfHealTests: XCTestCase {
         )
         let events = OpencodeHookAdapter.adapt(envelope)
         XCTAssertFalse(events.contains { event in
-            if case .sessionStart(let sid, _) = event { return sid == sessionId }
+            if case .sessionStart(let sid, _, _, _) = event { return sid == sessionId }
             return false
         }, "permission.asked without cwd must NOT self-heal, got \(events)")
     }

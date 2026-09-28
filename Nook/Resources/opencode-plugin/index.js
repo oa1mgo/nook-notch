@@ -165,7 +165,7 @@ async function handleCommand(rawLine, input) {
 /// opencode calls `server(input, options)` directly with the plugin input
 /// (including `client`). We capture `input` in the closure so the command
 /// socket handler can use it later for permission replies.
-  const PLUGIN_VERSION = "1.5.1";
+  const PLUGIN_VERSION = "1.5.2";
 export default function server(input) {
   logDebug(`nook plugin v${PLUGIN_VERSION} loaded serverUrl=${input?.serverUrl?.toString() ?? "undefined"} argv=${JSON.stringify(process.argv ?? [])}`);
   // Start listening for commands from Nook as soon as the plugin loads.
@@ -283,11 +283,17 @@ export default function server(input) {
       const status = await client.session.status();
       logDebug(`reportCurrentSession status=${JSON.stringify(status)}`);
       var sessionId = extractSessionId(status);
-      // Fallback: status() returned empty — try listing sessions and pick the
-      // most-recent one. opencode v1.18.x server mode returns empty status().
+      // Fallback: status() returned empty — try listing sessions and pick
+      // the most-recent one. opencode v1.18.x server mode returns empty status().
+      // The guessed id is tagged source=list-fallback so Nook can treat the
+      // registration as provisional: in `--port` connect mode the TUI often
+      // creates a NEW session instead of resuming the guessed one, and Nook
+      // drops the inactive provisional entry when that happens.
+      var source;
       if (!sessionId) {
         logDebug("reportCurrentSession: status empty, falling back to session.list()");
         sessionId = await listAndPickSession();
+        if (sessionId) source = "list-fallback";
       }
       if (!sessionId) {
         logDebug("reportCurrentSession: no current session yet");
@@ -297,9 +303,14 @@ export default function server(input) {
       await send({
         origin: "opencode",
         type: "session.started",
-        properties: { sessionID: sessionId, cwd, pid: INSTANCE_PID },
+        properties: {
+          sessionID: sessionId,
+          cwd,
+          pid: INSTANCE_PID,
+          ...(source ? { source } : {}),
+        },
       });
-      logDebug(`reportCurrentSession sent session.started sessionID=${sessionId} cwd=${cwd}`);
+      logDebug(`reportCurrentSession sent session.started sessionID=${sessionId} cwd=${cwd}${source ? ` source=${source}` : ""}`);
       return true;
     } catch (err) {
       logDebug(`reportCurrentSession FAILED: ${err.message}\n${err.stack || ""}`);

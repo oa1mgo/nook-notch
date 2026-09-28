@@ -29,7 +29,14 @@ struct OpencodeHookEnvelope: Decodable, Sendable {
 /// OpencodeChatItemAdapter's BlockOrdering. It is optional with a default of
 /// nil so existing call sites continue to compile without changes.
 enum OpencodeSessionEvent: Sendable {
-    case sessionStart(sessionId: String, cwd: String)
+    /// `provisional: true` marks a session id guessed by the plugin's
+    /// session.list() fallback (status() returned empty) rather than
+    /// confirmed by opencode. SessionStore drops an inactive provisional
+    /// entry when the same pid later starts a different session — the
+    /// `--port` connect case where the TUI creates a new session instead of
+    /// resuming the guessed one. `pid` is the plugin-injected instance pid
+    /// used to match provisional entries against real session.created events.
+    case sessionStart(sessionId: String, cwd: String, provisional: Bool = false, pid: Int? = nil)
     case userPromptSubmitted(sessionId: String, cwd: String, prompt: String?, messageId: String? = nil)
     case processingStarted(sessionId: String, cwd: String)
     /// OpenCode is showing an ask_user_question dialog. `requestId` is the

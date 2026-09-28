@@ -88,6 +88,14 @@ actor SessionStore {
     /// sessions in the UI. See docs/debug/2026-07-23-subagent-cleanup-bug.md.
     private var registeredSessionIds: Set<String> = []
 
+    /// SessionIds registered from the plugin's session.list() storage guess
+    /// (provisional), mapped to the plugin-injected instance pid. When the
+    /// same pid starts a different session, an inactive provisional entry is
+    /// removed — this is the `--port` connect phantom-Idle fix: the TUI
+    /// creates a new session instead of resuming the guessed one. Entries
+    /// with unknown pid are never recorded (conservatively never removed).
+    private var provisionalSessionPids: [String: Int] = [:]
+
     /// Buffer for chat-item updates that arrive before their session is registered.
     /// Subagent child sessions are intentionally never registered (they don't emit
     /// SessionStarted), so their buffered updates are naturally dropped. Top-level
@@ -175,9 +183,9 @@ actor SessionStore {
         case .codexStopped(let sessionId, let cwd):
             processCodexStop(sessionId: sessionId, cwd: cwd)
 
-        case .opencodeSessionStarted(let sessionId, let cwd):
+        case .opencodeSessionStarted(let sessionId, let cwd, let provisional, let pid):
             registerSession(sessionId: sessionId)
-            processOpencodeSessionStart(sessionId: sessionId, cwd: cwd)
+            processOpencodeSessionStart(sessionId: sessionId, cwd: cwd, provisional: provisional, pid: pid)
 
         case .opencodeProcessingStarted(let sessionId, let cwd):
             processOpencodeProcessingStarted(sessionId: sessionId, cwd: cwd)
@@ -316,6 +324,7 @@ actor SessionStore {
     private func unregisterSession(sessionId: String) {
         registeredSessionIds.remove(sessionId)
         earlyChatItemBuffer.removeValue(forKey: sessionId)
+        provisionalSessionPids.removeValue(forKey: sessionId)
     }
 
     /// Filtered wrapper around `applyChatItemUpdate`: drops updates for
@@ -902,7 +911,14 @@ actor SessionStore {
     // surfacing child session ids we should add the ignore check back here
     // (mirroring `shouldIgnoreCodexSession`'s transcript-based filter).
 
-    private func processOpencodeSessionStart(sessionId: String, cwd: String) {
+    private func processOpencodeSessionStart(sessionId: String, cwd: String, provisional: Bool = false, pid: Int? = nil) {
+        // A real (non-provisional) session start on a known pid invalidates
+        // any inactive provisional guess from the same instance — the plugin's
+        // session.list() fallback picked a storage session the TUI did not
+        // actually resume (the `--port` connect-then-new-session case).
+        if !provisional, let pid {
+            removeInactiveProvisionalSessions(excluding: sessionId, pid: pid)
+        }
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         // When the session was auto-created by applyChatItemUpdate
@@ -935,6 +951,16 @@ actor SessionStore {
         }
         sessions[sessionId] = session
 
+        if provisional {
+            if let pid {
+                provisionalSessionPids[sessionId] = pid
+            } else {
+                provisionalSessionPids.removeValue(forKey: sessionId)
+            }
+        } else {
+            provisionalSessionPids.removeValue(forKey: sessionId)
+        }
+
         // Track "Session Started" even for auto-created sessions —
         // applyChatItemUpdate fires the Mixpanel event on first creation
         // but processOpencodeSessionStart may be the first real session
@@ -950,6 +976,22 @@ actor SessionStore {
         }
 
         publishState()
+    }
+
+    /// Drop provisional list-fallback entries belonging to `pid` (other than
+    /// `newSessionId`) that never saw any activity. Called when a real
+    /// session start arrives for the same opencode instance.
+    private func removeInactiveProvisionalSessions(excluding newSessionId: String, pid: Int) {
+        let candidates = provisionalSessionPids.filter { $0.key != newSessionId && $0.value == pid }
+        guard !candidates.isEmpty else { return }
+        for (provisionalId, _) in candidates {
+            guard let session = sessions[provisionalId],
+                  session.chatItems.isEmpty,
+                  !session.phase.isActive else { continue }
+            sessions.removeValue(forKey: provisionalId)
+            unregisterSession(sessionId: provisionalId)
+            writeDebugLogAsync("[opencode] removed inactive provisional session=\(provisionalId.prefix(12)) replacedBy=\(newSessionId.prefix(12)) pid=\(pid)")
+        }
     }
 
     private func processOpencodeProcessingStarted(sessionId: String, cwd: String) {
@@ -2739,6 +2781,7 @@ actor SessionStore {
         pendingCodexStartupSessions.removeAll()
         ignoredCodexSessions.removeAll()
         blockOrderings.removeAll()
+        provisionalSessionPids.removeAll()
         publishState()
     }
 

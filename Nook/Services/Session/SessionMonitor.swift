@@ -104,8 +104,8 @@ class SessionMonitor: ObservableObject {
                 // Chat-item events are handled via onOpencodeChatItems below.
                 Task {
                     switch event {
-                    case .sessionStart(let sessionId, let cwd):
-                        await SessionStore.shared.process(.opencodeSessionStarted(sessionId: sessionId, cwd: cwd))
+                    case .sessionStart(let sessionId, let cwd, let provisional, let pid):
+                        await SessionStore.shared.process(.opencodeSessionStarted(sessionId: sessionId, cwd: cwd, provisional: provisional, pid: pid))
                     case .processingStarted(let sessionId, let cwd):
                         await SessionStore.shared.process(.opencodeProcessingStarted(sessionId: sessionId, cwd: cwd))
                     case .waitingForUserInput(let sessionId, let cwd, let toolUseId, let questions, let requestId):

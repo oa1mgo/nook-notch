@@ -49,8 +49,11 @@ enum SessionEvent: Sendable {
     /// Codex stopped the current turn
     case codexStopped(sessionId: String, cwd: String)
 
-    /// An OpenCode session was created or resumed
-    case opencodeSessionStarted(sessionId: String, cwd: String)
+    /// An OpenCode session was created or resumed.
+    /// `provisional` marks a plugin session.list() storage guess (see
+    /// OpencodeSessionEvent.sessionStart); `pid` is the plugin-injected
+    /// opencode instance pid used to match provisional cleanup.
+    case opencodeSessionStarted(sessionId: String, cwd: String, provisional: Bool = false, pid: Int? = nil)
 
     /// OpenCode session entered a working state (thinking or running a tool)
     case opencodeProcessingStarted(sessionId: String, cwd: String)
@@ -307,7 +310,7 @@ extension SessionEvent: CustomStringConvertible {
             return "codexSubagentStopped(session: \(sessionId.prefix(8)))"
         case .codexStopped(let sessionId, _):
             return "codexStopped(session: \(sessionId.prefix(8)))"
-        case .opencodeSessionStarted(let sessionId, _):
+        case .opencodeSessionStarted(let sessionId, _, _, _):
             return "opencodeSessionStarted(session: \(sessionId.prefix(8)))"
         case .opencodeProcessingStarted(let sessionId, _):
             return "opencodeProcessingStarted(session: \(sessionId.prefix(8)))"

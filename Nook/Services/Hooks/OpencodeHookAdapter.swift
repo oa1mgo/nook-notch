@@ -279,7 +279,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         if ["permission.asked", "question.asked", "session.status",
             "message.updated", "message.part.updated", "message.part.delta"].contains(envelope.type) {
             let fallbackCwd = (props["cwd"]?.value as? String) ?? ""
-            healEvents = ensureSessionRegistered(sessionId, fallbackCwd: fallbackCwd)
+            healEvents = ensureSessionRegistered(sessionId, fallbackCwd: fallbackCwd, pid: instancePid(from: props))
         } else {
             healEvents = []
         }
@@ -326,12 +326,21 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         return healEvents + handled
     }
 
+    /// Extract the plugin-injected opencode instance pid from event
+    /// properties. The plugin merges `pid` into every forwarded event;
+    /// depending on the transport/JSON round-trip it arrives as either an
+    /// Int or a String, so accept both.
+    private static func instancePid(from props: [String: AnyCodable]) -> Int? {
+        guard let raw = props["pid"]?.value else { return nil }
+        return (raw as? Int) ?? Int(raw as? String ?? "")
+    }
+
     /// Self-heal registration for a session Nook hasn't seen yet. Business
     /// events carry an injected `cwd` (plugin side), so on first sighting we
     /// register the session and emit `.sessionStart`. Mirrors `handleSessionStarted`:
     /// it bypasses the `recentlyStopped` guard so a genuinely re-activated
     /// session always self-heals instead of being suppressed by a prior idle.
-    private static func ensureSessionRegistered(_ sessionId: String, fallbackCwd: String) -> [OpencodeSessionEvent] {
+    private static func ensureSessionRegistered(_ sessionId: String, fallbackCwd: String, pid: Int? = nil) -> [OpencodeSessionEvent] {
         guard sessionId != "?", !sessionId.isEmpty else { return [] }
         guard !fallbackCwd.isEmpty else { return [] }
         lock.lock()
@@ -343,7 +352,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         lock.unlock()
         if isNew {
             Self.logNotice("→ sessionStart (event-driven self-heal) session=\(sessionId) cwd=\(fallbackCwd)")
-            return [.sessionStart(sessionId: sessionId, cwd: fallbackCwd)]
+            return [.sessionStart(sessionId: sessionId, cwd: fallbackCwd, pid: pid)]
         }
         return []
     }
@@ -571,9 +580,10 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         let recentlyStopped = recentlyStoppedSessions[sessionId] != nil
         lock.unlock()
 
+        let pid = instancePid(from: props)
         if isNew && !recentlyStopped {
             Self.logNotice("→ sessionStart (first sighting) session=\(sessionId) cwd=\(cwd)")
-            return [.sessionStart(sessionId: sessionId, cwd: cwd)]
+            return [.sessionStart(sessionId: sessionId, cwd: cwd, pid: pid)]
         }
         Self.logNotice("→ session.updated (known) session=\(sessionId) cwd=\(cwd) recentlyStopped=\(recentlyStopped)")
         return []
@@ -592,6 +602,13 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     private static func handleSessionStarted(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
         guard let sessionId = props["sessionID"]?.value as? String, !sessionId.isEmpty else { return [] }
         let cwd = props["cwd"]?.value as? String ?? ""
+        // The plugin tags session.started events whose id came from the
+        // session.list() storage guess (status() was empty) with
+        // source=list-fallback. Those entries are provisional — they may not
+        // be the session the TUI will actually use (`--port` connect often
+        // creates a new session instead of resuming the guessed one).
+        let provisional = (props["source"]?.value as? String) == "list-fallback"
+        let pid = instancePid(from: props)
 
         lock.lock()
         let isNew = sessionCwd[sessionId] == nil
@@ -600,8 +617,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         lock.unlock()
 
         if isNew {
-            Self.logNotice("→ session.started (first sighting) session=\(sessionId) cwd=\(cwd)")
-            return [.sessionStart(sessionId: sessionId, cwd: cwd)]
+            Self.logNotice("→ session.started (first sighting) session=\(sessionId) cwd=\(cwd) provisional=\(provisional)")
+            return [.sessionStart(sessionId: sessionId, cwd: cwd, provisional: provisional, pid: pid)]
         }
         Self.logNotice("→ session.started (known) session=\(sessionId) cwd=\(cwd)")
         return []
@@ -867,7 +884,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             return []
         }
         let version = props["version"]?.value as? String
-        let pid = (props["pid"]?.value as? Int) ?? Int(props["pid"]?.value as? String ?? "")
+        let pid = instancePid(from: props)
         let cwd: String = {
             lock.lock()
             let v = sessionCwd[sessionId] ?? ""

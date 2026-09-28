@@ -14,7 +14,7 @@ final class OpencodeChatItemAdapterTests: XCTestCase {
         ))
         XCTAssertEqual(sessionStart.chatItemUpdates.count, 0)
         XCTAssertEqual(sessionStart.passthroughEvents.count, 1)
-        guard case .sessionStart(let startedSession, let cwd) = sessionStart.passthroughEvents[0] else {
+        guard case .sessionStart(let startedSession, let cwd, _, _) = sessionStart.passthroughEvents[0] else {
             return XCTFail("Expected sessionStart passthrough")
         }
         XCTAssertEqual(startedSession, sessionId)
