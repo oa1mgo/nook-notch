@@ -444,7 +444,9 @@ git commit -m "feat(question): single-select follows focus (Space is multi-selec
 ## Task 3: info 图标 + 动态 tooltip
 
 **Files:**
-- Modify: `Nook/UI/Views/QuestionPanelView.swift`（`singleQuestionCard` 的 ZStack overlay :108-129）
+- Modify: `Nook/UI/Views/QuestionPanelView.swift`（`singleQuestionCard` 的 ZStack overlay :108-129 + OptionRow keyHint）
+- Modify: `Nook/UI/Views/QuestionSelection.swift`（新增 `rowKeyHint(for:)`，SOI）
+- Test: `NookTests/QuestionPanelSelectionTests.swift`（`rowKeyHint` 两个用例）
 
 > ⚠️ **不能用 `MenuRow` 的 `trailingIcon` 槽位**——它渲染在 MenuRow 内部右侧（NotchMenuView.swift:852-853），而多题时 pager overlay 也以 `.trailing` 叠在同一位置，会互相盖住。info 图标必须进 **overlay 的 HStack**，放在 pager 左侧（spec §3："backRow 内、pager 左侧"）。
 
@@ -537,17 +539,27 @@ git commit -m "feat(question): single-select follows focus (Space is multi-selec
 替换为：
 
 ```swift
-        .help("\(keyHint) · Enter to send")
+        .help("\(keyHint) · Enter 发送")
 ```
 
-`optionsList` 里的调用点加参数（`isSending: isSending` 之后）：
+`optionsList` 里的调用点加参数（`isSending: isSending` 之后）—— keyHint 前缀走 Task 1 同文件的纯函数（SOI，字面量不得跨文件重复）：
 
 ```swift
                     isSending: isSending,
-                    keyHint: q.multiple ? "Space to select" : "⌃N/⌃P 选择",
+                    keyHint: QuestionSelection.rowKeyHint(for: q),
 ```
 
-（单选提示 ⌃N/⌃P、多选提示 Space；`· Enter to send` 由 OptionRow 内拼接，两个题型共用。）
+并在 `Nook/UI/Views/QuestionSelection.swift` 的 `enum QuestionSelection` 里新增（`tooltipText` 之前）：
+
+```swift
+    /// Per-row key hint prefix: single-select teaches the focus=select key,
+    /// multi-select teaches the toggle key. The caller appends "· Enter 发送".
+    static func rowKeyHint(for question: PendingQuestion) -> String {
+        question.multiple ? "Space 选中" : "⌃N/⌃P 选择"
+    }
+```
+
+（单选提示 ⌃N/⌃P、多选提示 Space；`· Enter 发送` 由 OptionRow 内拼接，两个题型共用，用词与 info tooltip 一致。）
 
 - [ ] **Step 3: build 验证**
 

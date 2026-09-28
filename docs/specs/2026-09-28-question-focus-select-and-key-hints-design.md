@@ -52,14 +52,14 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
 
 ### 3. 键位提示（info 图标 + tooltip）
 
-- `backRow` **内部**（MenuRow 右侧的 Spacer 之间）放 `info.circle` SF Symbol（约 10pt，`white.opacity(0.4)`）。注意多题时 pager `‹ 1/2 ›` 以 `.trailing` 叠加在同一行（`singleQuestionCard` 的 ZStack），info 图标必须留在 backRow 内、pager 左侧，不能共用 trailing 位置
+- `backRow` **内部**（MenuRow 右侧的 Spacer 之间）放 `info.circle` SF Symbol（11pt，`white.opacity(0.4)`）。注意多题时 pager `‹ 1/2 ›` 以 `.trailing` 叠加在同一行（`singleQuestionCard` 的 ZStack），info 图标必须留在 backRow 内、pager 左侧，不能共用 trailing 位置
 - 悬停显示 `.help` tooltip，文案按**当前题卡**动态生成：
   - 单选（非 custom）：`⌃N/⌃P 选择 · Enter 发送`
   - 多选（非 custom）：`⌃N/⌃P 移动 · Space 选中 · Enter 发送`
   - 单选 + custom：`⌃N/⌃P 选择 · Tab 输入 · Enter 发送`
   - 多选 + custom：`⌃N/⌃P 移动 · Space 选中 · Tab 输入 · Enter 发送`
 - **不新增行 → 不改 `NotchViewModel.questionContentHeight` 高度公式**（`backRowHeight = 63` 已含 MenuRow + pager，10pt 图标在行内不改变行高）。硬约束：若实现时图标放不下必须新增行，则必须同步 NotchViewModel 的 `questionContentHeight`（SOI，见 `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md`）
-- **选项行 `OptionRow` 的 `.help` 同步改动态**（Space 对单选失效后的 stale 提示）：单选 → `Enter to send`；多选 → 保持 `Space to select · Enter to send`。经由 OptionRow 新增 `keyHint: String` 参数传入，不留硬编码分支
+- **选项行 `OptionRow` 的 `.help` 同步改动态**（Space 对单选失效后的 stale 提示）：keyHint 前缀按题型——单选 `⌃N/⌃P 选择`、多选 `Space 选中`，OptionRow 内拼 `· Enter 发送`，与 info tooltip 用词一致（中文）。前缀抽纯函数 `QuestionSelection.rowKeyHint(for:)`（SOI，字面量不得跨文件重复）
 - 不做点击 popover（YAGNI）
 
 ### 4. 不做什么（YAGNI）
