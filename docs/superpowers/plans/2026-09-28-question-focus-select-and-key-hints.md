@@ -4,7 +4,7 @@
 
 **Goal:** 单选题改成"焦点即选择"（⌃N/⌃P 即改选中，省掉 Space），并用一个 info 图标的 tooltip 提示当前题卡的键位。
 
-**Architecture:** 把三条纯逻辑抽到 `Nook/UI/Views/QuestionSelection.swift`（可单测、无 SwiftUI 依赖）：焦点→选中同步、勾选视觉可见性判定、tooltip 文案生成。`QuestionPanelView` 只做状态接线：所有焦点变化入口调用同步函数，Space 单选时 no-op，info 图标走 `MenuRow` 已有的 `trailingIcon` 槽位。提交链路（`canSend` / `sendAnswers` / replyProvider）零改动。
+**Architecture:** 把三条纯逻辑抽到 `Nook/UI/Views/QuestionSelection.swift`（可单测、不依赖 view state）：焦点→选中同步、勾选视觉可见性判定、tooltip 文案生成。`QuestionPanelView` 只做状态接线：所有焦点变化入口调用同步函数，Space 单选时 no-op，info 图标放进 back-row 已有的 ZStack overlay HStack（pager 左侧）。提交链路（`canSend` / `sendAnswers` / replyProvider）零改动。
 
 **Tech Stack:** Swift 5 / SwiftUI (macOS) / XCTest（`@testable import Nook`）
 
@@ -174,8 +174,14 @@ enum QuestionSelection {
     /// Hides it for single-select + custom + non-empty text, because
     /// `sendAnswers` replaces the selection with the text — showing a
     /// checkmark next to the text would misrepresent what gets sent.
+    /// `sendAnswers` trims before testing emptiness, so trim here too
+    /// (otherwise a whitespace-only answer would hide the checkmark while
+    /// the option is still what gets submitted).
     static func showsSelectionHighlight(_ question: PendingQuestion, text: String) -> Bool {
-        if question.custom, !question.multiple, !text.isEmpty { return false }
+        if question.custom, !question.multiple,
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
         return true
     }
 
@@ -193,7 +199,7 @@ enum QuestionSelection {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-同 Step 2 的命令。Expected: `Executed 12 tests, with 0 failures` + `TEST SUCCEEDED`
+同 Step 2 的命令。Expected: `Executed 11 tests, with 0 failures` + `TEST SUCCEEDED`
 
 - [ ] **Step 5: 提交**
 
@@ -312,7 +318,8 @@ git commit -m "refactor(question): extract selection + key-hint pure functions"
                         .help("Ctrl+] Next question")
 ```
 
-> `goPreviousQuestion` / `goNextQuestion` 内部已有 `guard currentIndex > 0` / `< count - 1`，与 `disabled:` 条件一致，语义不变。
+> `goPreviousQuestion` / `goNextQuestion` 内部已有 `guard currentIndex > 0` / `< count - 1`，与 `disabled:` 条件一致，翻页守卫语义不变。
+> **有意的行为变化**：pager 点击现在会同时 `focusedOptionIndex = 0`、`isTextFieldFocused = false`（原来只 `currentIndex ±= 1`、焦点保留）——pager 点击与 ⌃[/⌃] 键盘切题从此走同一条路径，单选同步才有保证（spec 切题节：焦点重置为 0 → 同步选中第一项）。
 
 - [ ] **Step 5: `onAppear` 初始同步**
 
@@ -417,6 +424,8 @@ Expected: `** BUILD SUCCEEDED **`
 
 - [ ] **Step 10: 跑全部测试**
 
+> 若 Nook.app 正在运行会占住单实例，test host 起不来（`BUG_IN_CLIENT_OF_LIBMALLOC` / bootstrap error）。先退出再跑：`osascript -e 'tell application "Nook" to quit' 2>/dev/null; sleep 1`
+
 ```bash
 xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug -derivedDataPath build/TestDerivedData -destination 'platform=macOS' 2>&1 | grep -E "Executed .* tests|TEST (SUCCEEDED|FAILED)"
 ```
@@ -435,44 +444,75 @@ git commit -m "feat(question): single-select follows focus (Space is multi-selec
 ## Task 3: info 图标 + 动态 tooltip
 
 **Files:**
-- Modify: `Nook/UI/Views/QuestionPanelView.swift`（`backRow` :89-99）
+- Modify: `Nook/UI/Views/QuestionPanelView.swift`（`singleQuestionCard` 的 ZStack overlay :108-129）
 
-- [ ] **Step 1: 给 backRow 加 info 图标**
+> ⚠️ **不能用 `MenuRow` 的 `trailingIcon` 槽位**——它渲染在 MenuRow 内部右侧（NotchMenuView.swift:852-853），而多题时 pager overlay 也以 `.trailing` 叠在同一位置，会互相盖住。info 图标必须进 **overlay 的 HStack**，放在 pager 左侧（spec §3："backRow 内、pager 左侧"）。
 
-把 `backRow`：
+- [ ] **Step 1: 给 back-row 的 overlay 加 info 图标**
 
-```swift
-    private var backRow: some View {
-        MenuRow(
-            icon: "chevron.left",
-            label: "Back",
-            trailingIcon: nil,
-            primaryTextColor: .white,
-            isFocused: false,
-            action: onClose
-        )
-        .padding(.bottom, 6)
-    }
-```
-
-替换为（复用 `MenuRow` 已有的 `trailingIcon` 槽位，不改组件；tooltip 挂在 MenuRow 上以便 hover 整个 Back 行都触发）：
+把 `singleQuestionCard` 开头的 ZStack（此时已是 Task 2 Step 4 改过 chevron 调用之后的状态）：
 
 ```swift
-    private var backRow: some View {
-        MenuRow(
-            icon: "chevron.left",
-            label: "Back",
-            trailingIcon: pendingQuestions.isEmpty ? nil : "info.circle",
-            primaryTextColor: .white,
-            isFocused: false,
-            action: onClose
-        )
-        .padding(.bottom, 6)
-        .help(pendingQuestions.isEmpty ? "" : QuestionSelection.tooltipText(for: pendingQuestions[currentIndex]))
-    }
+            ZStack(alignment: .trailing) {
+                backRow
+                if pendingQuestions.count > 1 {
+                    HStack(spacing: 6) {
+                        PagerChevronButton(systemImage: "chevron.left", disabled: currentIndex == 0) {
+                            goPreviousQuestion()
+                        }
+                        .help("Ctrl+[ Previous question")
+
+                        Text("\(currentIndex + 1)/\(pendingQuestions.count)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                            .fixedSize()
+
+                        PagerChevronButton(systemImage: "chevron.right", disabled: currentIndex == pendingQuestions.count - 1) {
+                            goNextQuestion()
+                        }
+                        .help("Ctrl+] Next question")
+                    }
+                    .padding(.trailing, 12)
+                }
+            }
 ```
 
-> 高度影响：`info.circle` 复用 trailingIcon 槽位，10–11pt 符号低于 Back 行的 11pt 文字行高，`NotchViewModel.questionContentHeight` 的 `backRowHeight = 63` 不需要改（spec §3 硬约束：只有必须新增行时才动公式）。
+替换为：
+
+```swift
+            ZStack(alignment: .trailing) {
+                backRow
+                HStack(spacing: 6) {
+                    if !pendingQuestions.isEmpty {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                            .fixedSize()
+                            .help(QuestionSelection.tooltipText(for: pendingQuestions[currentIndex]))
+                    }
+                    if pendingQuestions.count > 1 {
+                        PagerChevronButton(systemImage: "chevron.left", disabled: currentIndex == 0) {
+                            goPreviousQuestion()
+                        }
+                        .help("Ctrl+[ Previous question")
+
+                        Text("\(currentIndex + 1)/\(pendingQuestions.count)")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                            .fixedSize()
+
+                        PagerChevronButton(systemImage: "chevron.right", disabled: currentIndex == pendingQuestions.count - 1) {
+                            goNextQuestion()
+                        }
+                        .help("Ctrl+] Next question")
+                    }
+                }
+                .padding(.trailing, 12)
+            }
+```
+
+> 变化点：HStack 从"多题才渲染"改为无条件渲染（单题时只含 info 图标），`.padding(.trailing, 12)` 从多题分支挪到 HStack 上。`backRow` 本身（:89-99）**不动**。
+> 高度影响：info 是 overlay 元素，位于已有 backRow 行内右侧，不改变行高，`NotchViewModel.questionContentHeight` 的 `backRowHeight = 63` 不改（spec §3 硬约束：只有必须新增行时才动公式）。
 
 - [ ] **Step 2: build 验证**
 
@@ -497,8 +537,12 @@ git commit -m "feat(question): key-hint info icon with per-card tooltip"
 
 - [ ] **Step 1: 启动 app**
 
+> 路径必须精确：`Nook-*` 通配会匹配多份 DerivedData（用户 Xcode Run 的 + xcodebuild 默认的），而单实例守卫（`AppDelegate.ensureSingleInstance`）会让**后启动的实例直接退出**——旧 build 会挡住新 build。与测试命令统一用 `build/TestDerivedData`，再先退出旧实例。
+
 ```bash
-xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Debug -destination 'platform=macOS' build && open ~/Library/Developer/Xcode/DerivedData/Nook-*/Build/Products/Debug/Nook.app
+xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Debug -derivedDataPath build/TestDerivedData -destination 'platform=macOS' build \
+  && osascript -e 'tell application "Nook" to quit' 2>/dev/null; sleep 1; \
+  open build/TestDerivedData/Build/Products/Debug/Nook.app
 ```
 
 - [ ] **Step 2: 单选题验证**
