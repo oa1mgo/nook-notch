@@ -105,4 +105,14 @@ final class QuestionPanelSelectionTests: XCTestCase {
             "⌃N/⌃P 移动 · Space 选中 · Tab 输入 · Enter 发送"
         )
     }
+
+    // MARK: - rowKeyHint
+
+    func testRowKeyHintForSingleSelect() {
+        XCTAssertEqual(QuestionSelection.rowKeyHint(for: question()), "⌃N/⌃P 选择")
+    }
+
+    func testRowKeyHintForMultiSelect() {
+        XCTAssertEqual(QuestionSelection.rowKeyHint(for: question(multiple: true)), "Space 选中")
+    }
 }

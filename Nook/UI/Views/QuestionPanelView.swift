@@ -223,7 +223,7 @@ struct QuestionPanelView: View {
                     isSelected: isSelected,
                     isFocused: focusedOptionIndex == optIndex,
                     isSending: isSending,
-                    keyHint: q.multiple ? "Space to select" : "⌃N/⌃P 选择",
+                    keyHint: QuestionSelection.rowKeyHint(for: q),
                 ) {
                     focusedOptionIndex = optIndex
                     if q.multiple {
@@ -634,7 +634,7 @@ private struct OptionRow: View {
         .buttonStyle(.plain)
         .disabled(isSending)
         .onHover { isHovered = $0 }
-        .help("\(keyHint) · Enter to send")
+        .help("\(keyHint) · Enter 发送")
     }
 }
 

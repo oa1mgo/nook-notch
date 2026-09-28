@@ -38,6 +38,12 @@ enum QuestionSelection {
         return true
     }
 
+    /// Per-row key hint prefix: single-select teaches the focus=select key,
+    /// multi-select teaches the toggle key. The caller appends "· Enter 发送".
+    static func rowKeyHint(for question: PendingQuestion) -> String {
+        question.multiple ? "Space 选中" : "⌃N/⌃P 选择"
+    }
+
     /// Key-hint tooltip for the current question card.
     static func tooltipText(for question: PendingQuestion) -> String {
         let move = question.multiple ? "⌃N/⌃P 移动" : "⌃N/⌃P 选择"
