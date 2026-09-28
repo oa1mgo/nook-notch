@@ -110,7 +110,7 @@ struct QuestionPanelView: View {
                 if pendingQuestions.count > 1 {
                     HStack(spacing: 6) {
                         PagerChevronButton(systemImage: "chevron.left", disabled: currentIndex == 0) {
-                            if currentIndex > 0 { currentIndex -= 1 }
+                            goPreviousQuestion()
                         }
                         .help("Ctrl+[ Previous question")
 
@@ -120,7 +120,7 @@ struct QuestionPanelView: View {
                             .fixedSize()
 
                         PagerChevronButton(systemImage: "chevron.right", disabled: currentIndex == pendingQuestions.count - 1) {
-                            if currentIndex < pendingQuestions.count - 1 { currentIndex += 1 }
+                            goNextQuestion()
                         }
                         .help("Ctrl+] Next question")
                     }
@@ -165,6 +165,7 @@ struct QuestionPanelView: View {
             if focusedOptionIndex >= pendingQuestions[currentIndex].options.count {
                 focusedOptionIndex = 0
             }
+            syncSelectionToFocus(questionIndex: currentIndex)
         }
         .onDisappear {
             removeKeyboardMonitor()
@@ -199,9 +200,15 @@ struct QuestionPanelView: View {
     private func optionsList(questionIndex: Int) -> some View {
         let q = pendingQuestions[questionIndex]
         let selected = selectedAnswers[questionIndex] ?? []
+        // Single-select + custom + text: the text REPLACES the selection on
+        // send, so don't show a checkmark next to it.
+        let showHighlight = QuestionSelection.showsSelectionHighlight(
+            q,
+            text: freeTexts[questionIndex] ?? ""
+        )
         return VStack(spacing: 4) {
             ForEach(Array(q.options.enumerated()), id: \.offset) { optIndex, option in
-                let isSelected = selected.contains(option.label)
+                let isSelected = showHighlight && selected.contains(option.label)
                 OptionRow(
                     letter: letterLabel(for: optIndex),
                     label: option.label,
@@ -210,6 +217,7 @@ struct QuestionPanelView: View {
                     isFocused: focusedOptionIndex == optIndex,
                     isSending: isSending
                 ) {
+                    focusedOptionIndex = optIndex
                     toggleOption(questionIndex: questionIndex, label: option.label)
                 }
             }
@@ -409,10 +417,13 @@ struct QuestionPanelView: View {
             moveFocusDown(); return nil
         }
 
-        // ── Space: toggle selection ──
+        // ── Space: toggle selection (multi-select only) ──
         if event.keyCode == 49 && !hasCtrl && !hasShift { // Space
             let q = pendingQuestions[currentIndex]
             guard focusedOptionIndex < q.options.count else { return event }
+            // Single-select is "focus = selection" — toggling would clear the
+            // answer while focus stays put, breaking the invariant.
+            if !q.multiple { return nil }
             toggleOption(questionIndex: currentIndex, label: q.options[focusedOptionIndex].label)
             return nil
         }
@@ -438,12 +449,14 @@ struct QuestionPanelView: View {
         let count = pendingQuestions[currentIndex].options.count
         guard count > 0 else { return }
         focusedOptionIndex = focusedOptionIndex > 0 ? focusedOptionIndex - 1 : count - 1
+        syncSelectionToFocus(questionIndex: currentIndex)
     }
 
     private func moveFocusDown() {
         let count = pendingQuestions[currentIndex].options.count
         guard count > 0 else { return }
         focusedOptionIndex = focusedOptionIndex < count - 1 ? focusedOptionIndex + 1 : 0
+        syncSelectionToFocus(questionIndex: currentIndex)
     }
 
     private func goNextQuestion() {
@@ -451,6 +464,7 @@ struct QuestionPanelView: View {
         currentIndex += 1
         focusedOptionIndex = 0
         isTextFieldFocused = false
+        syncSelectionToFocus(questionIndex: currentIndex)
     }
 
     private func goPreviousQuestion() {
@@ -458,6 +472,23 @@ struct QuestionPanelView: View {
         currentIndex -= 1
         focusedOptionIndex = 0
         isTextFieldFocused = false
+        syncSelectionToFocus(questionIndex: currentIndex)
+    }
+
+    /// Keep the single-select answer in lockstep with the focused option
+    /// (spec 2026-09-28: single-select is "focus = selection"). No-op for
+    /// multi-select — there focus and selection are independent.
+    private func syncSelectionToFocus(questionIndex: Int) {
+        guard pendingQuestions.indices.contains(questionIndex) else { return }
+        let synced = QuestionSelection.syncSingleSelection(
+            pendingQuestions[questionIndex],
+            focusedIndex: focusedOptionIndex
+        )
+        if synced.isEmpty {
+            // Multi-select: never clobber the user's explicit choices.
+            return
+        }
+        selectedAnswers[questionIndex] = synced
     }
 
     /// Toggle a label in the multi-select set. Picking an option NEVER sends —
