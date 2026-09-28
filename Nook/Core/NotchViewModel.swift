@@ -526,6 +526,7 @@ class NotchViewModel: ObservableObject {
 
         // Clear stale keyboard activation signal to avoid re-trigger on view re-subscription
         keyboardActivateTrigger = nil
+        keyboardReplyTrigger = nil
 
         // Save the frontmost app before we steal focus
         if reason != .notification, previousActiveApp == nil {
@@ -622,6 +623,7 @@ class NotchViewModel: ObservableObject {
     /// Go back to instances list and clear saved chat state
     func exitChat() {
         keyboardActivateTrigger = nil
+        keyboardReplyTrigger = nil
         currentChatSession = nil
         contentType = .instances
     }
@@ -652,6 +654,11 @@ class NotchViewModel: ObservableObject {
     /// Navigate back from a sub-page (e.g. shortcuts) to the previous page
     func navigateBack() {
         keyboardActivateTrigger = nil
+        // Clear the reply trigger here too: SessionListView re-subscribes to
+        // $keyboardReplyTrigger on re-mount, and @Published replays the current
+        // value — a stale UUID would immediately bounce back into the question
+        // panel (the "⌃H flashed back to question" bug, 2026-09-28).
+        keyboardReplyTrigger = nil
         // See `pushTo` — same reset applies when leaving agents via Back.
         if self.contentType == .agents {
             agentsClaudeDirPickerExpanded = false

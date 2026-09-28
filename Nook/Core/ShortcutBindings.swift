@@ -76,6 +76,21 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case navigateBack
     case openSettings
 
+    /// Whether the question panel drives this action's default keys itself
+    /// when the notch is on the question page (⌃N/⌃P/↑/↓ move option focus,
+    /// Enter sends, ⌃R is a no-op there). ShortcutManager must yield those
+    /// keys to the panel's own local monitor instead of consuming them —
+    /// `handleShortcutAction` ignores them on `.question`, so swallowing the
+    /// key made ⌃N/⌃P appear dead (2026-09-28).
+    var isOwnedByQuestionPanel: Bool {
+        switch self {
+        case .selectPrevious, .selectNext, .enterSession, .replyToQuestion:
+            return true
+        case .toggleNotch, .closeNotch, .navigateBack, .openSettings:
+            return false
+        }
+    }
+
     var displayName: String {
         switch self {
         case .toggleNotch:     return "Toggle Main Page"

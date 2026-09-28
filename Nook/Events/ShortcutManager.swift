@@ -112,8 +112,23 @@ class ShortcutManager {
 
             let combo = KeyCombination.from(event: event)
 
+            // On the question page the panel's own local monitor owns the
+            // keyboard (option focus, send, Esc-to-blur). Deferring here is
+            // required because monitors are called in registration order —
+            // this one is installed first (NotchWindowController init), so
+            // anything it swallows never reaches the panel monitor.
+            let isQuestionPage: Bool
+            if case .question = contentTypeProvider?() {
+                isQuestionPage = true
+            } else {
+                isQuestionPage = false
+            }
+
             // Esc — close notch (skip if IME has marked text)
             if combo.keyCode == 53 {
+                if isQuestionPage {
+                    return event // QuestionPanelView decides blur vs. close
+                }
                 if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
                    textView.hasMarkedText() {
                     return event // pass through for IME composition
@@ -152,6 +167,12 @@ class ShortcutManager {
             for action in ShortcutAction.allCases {
                 let combos = ShortcutStore.shared.combinations(for: action)
                 guard combos.contains(combo) else { continue }
+
+                // Question page: hand navigation/activation keys back to the
+                // panel's monitor instead of posting a no-op action (see
+                // isOwnedByQuestionPanel). closeNotch/navigateBack/openSettings
+                // keep working normally (⌃H still leaves the panel).
+                if isQuestionPage, action.isOwnedByQuestionPanel { continue }
 
                 // When an editable text field is first responder, let it
                 // handle typing keys and cursor-movement keys instead of

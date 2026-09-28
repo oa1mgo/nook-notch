@@ -263,14 +263,19 @@ struct SessionListView: View {
                 }
             }
             .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
-                guard trigger != nil,
-                      viewModel.keyboardSelectedIndex >= 0,
+                guard trigger != nil else { return }
+                // Consume immediately: @Published replays the current value to
+                // every new subscription, and this view re-subscribes every time
+                // it re-mounts (chat → back). A leftover UUID would re-fire.
+                viewModel.keyboardActivateTrigger = nil
+                guard viewModel.keyboardSelectedIndex >= 0,
                       viewModel.keyboardSelectedIndex < sortedInstances.count else { return }
                 openChat(sortedInstances[viewModel.keyboardSelectedIndex])
             }
             .onReceive(viewModel.$keyboardReplyTrigger) { trigger in
-                guard trigger != nil,
-                      viewModel.contentType == .instances,
+                guard trigger != nil else { return }
+                viewModel.keyboardReplyTrigger = nil // consume (see above)
+                guard viewModel.contentType == .instances,
                       viewModel.keyboardSelectedIndex >= 0,
                       viewModel.keyboardSelectedIndex < sortedInstances.count else { return }
                 let session = sortedInstances[viewModel.keyboardSelectedIndex]

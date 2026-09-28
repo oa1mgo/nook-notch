@@ -368,10 +368,18 @@ struct QuestionPanelView: View {
         // ── Esc: blur text field or close notch ──
         if event.keyCode == 53 { // Escape
             if isTextFieldFocused {
+                // IME composition in progress: let the field editor cancel it.
+                if let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+                   textView.hasMarkedText() {
+                    return event
+                }
                 isTextFieldFocused = false
                 return nil
             }
-            return event // let notch handle
+            // ShortcutManager defers Esc on this page (isOwnedByQuestionPanel),
+            // so closing the notch is our responsibility now.
+            NotificationCenter.default.post(name: .shortcutAction, object: ShortcutAction.closeNotch)
+            return nil
         }
 
         // ── When text field has focus, let it handle all keys ──
@@ -555,7 +563,7 @@ private struct OptionRow: View {
             HStack(spacing: 10) {
                 Text(letter).font(.system(size: 10, weight: .semibold))
                     .frame(width: 20, height: 20)
-                    .background(isSelected ? Color.orange.opacity(0.35) : Color.white.opacity(0.12))
+                    .background(isSelected ? TerminalColors.green.opacity(0.35) : Color.white.opacity(0.12))
                     .clipShape(Circle())
                 VStack(alignment: .leading, spacing: 1) {
                     Text(label)
@@ -571,7 +579,7 @@ private struct OptionRow: View {
                 }
                 Spacer()
                 if isSelected {
-                    Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundColor(.orange)
+                    Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundColor(TerminalColors.green)
                 }
             }
             .padding(.horizontal, 10)
