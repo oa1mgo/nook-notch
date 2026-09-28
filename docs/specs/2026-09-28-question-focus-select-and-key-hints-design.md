@@ -29,9 +29,13 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
 
 **单选题（`!multiple`）——焦点即选择**：
 
-- 焦点变化的所有路径同步选中：⌃N/⌃P、↑/↓、⌃[/⌃] 切题、初始进入面板/切入新题卡。不变量：
+- 焦点变化的所有路径同步选中。**必须覆盖以下全部入口**（缺一即出现"焦点在 B、选中在 A"的不一致）：
+  - `moveFocusUp` / `moveFocusDown`（⌃N/⌃P、↑/↓）
+  - `goNextQuestion` / `goPreviousQuestion`（⌃[、⌃] 键盘切题）
+  - **pager chevron 点击**（`singleQuestionCard` 里 `currentIndex ±= 1` 的两个按钮，**不走** goNext/goPrevious —— 最容易漏的入口）
+  - `onAppear` 的 focus 越界重置处（:165）—— 初始 `focusedOptionIndex = 0` 必须在 onAppear 同步，否则首帧 canSend=false 直到用户动一次
+- 不变量：
   `selectedAnswers[i] == [options[focusedOptionIndex].label]`
-- 进入面板或切到新题卡时焦点重置为 0 → 自动选中第一项（接受"隐式默认选中"的误发风险，canSend 本就允许）
 - **Space 变为 no-op**（吞掉事件）：保留 toggle 会清空选中、破坏"焦点=选中"不变量
 - **鼠标点击**：点击选项时 `focusedOptionIndex` 跟随点击项 —— 焦点与选择不分离
 - **text field 聚焦时**（Tab 进入 custom 输入）：⌃N/⌃P 维持现状 —— 走 `isTextFieldFocused` 分支交给文本框原生光标移动，不移动选项焦点、不改选中
@@ -48,13 +52,13 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
 
 ### 3. 键位提示（info 图标 + tooltip）
 
-- back-row 行内右侧放 `info.circle` SF Symbol（约 10pt，`white.opacity(0.4)`）
+- `backRow` **内部**（MenuRow 右侧的 Spacer 之间）放 `info.circle` SF Symbol（约 10pt，`white.opacity(0.4)`）。注意多题时 pager `‹ 1/2 ›` 以 `.trailing` 叠加在同一行（`singleQuestionCard` 的 ZStack），info 图标必须留在 backRow 内、pager 左侧，不能共用 trailing 位置
 - 悬停显示 `.help` tooltip，文案按**当前题卡**动态生成：
   - 单选（非 custom）：`⌃N/⌃P 选择 · Enter 发送`
   - 多选（非 custom）：`⌃N/⌃P 移动 · Space 选中 · Enter 发送`
   - 单选 + custom：`⌃N/⌃P 选择 · Tab 输入 · Enter 发送`
   - 多选 + custom：`⌃N/⌃P 移动 · Space 选中 · Tab 输入 · Enter 发送`
-- **不新增行 → 不改 `NotchViewModel.questionContentHeight` 高度公式**。硬约束：若实现时 back-row 行内放不下、必须新增行，则必须同步 NotchViewModel 的 `questionContentHeight`（SOI，见 `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md`）
+- **不新增行 → 不改 `NotchViewModel.questionContentHeight` 高度公式**（`backRowHeight = 63` 已含 MenuRow + pager，10pt 图标在行内不改变行高）。硬约束：若实现时图标放不下必须新增行，则必须同步 NotchViewModel 的 `questionContentHeight`（SOI，见 `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md`）
 - 不做点击 popover（YAGNI）
 
 ### 4. 不做什么（YAGNI）
