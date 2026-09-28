@@ -22,7 +22,8 @@ enum QuestionSelection {
         return [question.options[focusedIndex].label]
     }
 
-    /// Whether an option row should render its selected checkmark.
+    /// Whether this question's option rows should render their selected
+    /// checkmark.
     /// Hides it for single-select + custom + non-empty text, because
     /// `sendAnswers` replaces the selection with the text — showing a
     /// checkmark next to the text would misrepresent what gets sent.

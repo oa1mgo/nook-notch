@@ -1,8 +1,8 @@
 import XCTest
 @testable import Nook
 
-/// Pure-function core of the question panel's "focus = selection" model for
-/// single-select questions (spec 2026-09-28).
+/// Pure-function core of the question panel: the "focus = selection" model
+/// for single-select questions and the key-hint tooltip (spec 2026-09-28).
 final class QuestionPanelSelectionTests: XCTestCase {
 
     private func question(multiple: Bool = false, custom: Bool = false) -> PendingQuestion {
@@ -39,6 +39,12 @@ final class QuestionPanelSelectionTests: XCTestCase {
                       "out-of-range focus must not invent a selection")
     }
 
+    func testSyncReturnsEmptyWhenFocusIsNegative() {
+        let q = question()
+        XCTAssertTrue(QuestionSelection.syncSingleSelection(q, focusedIndex: -1).isEmpty,
+                      "negative focus must not wrap or invent a selection")
+    }
+
     // MARK: - showsSelectionHighlight
 
     func testHighlightShownForPlainSingleSelect() {
@@ -54,6 +60,13 @@ final class QuestionPanelSelectionTests: XCTestCase {
 
     func testHighlightShownForCustomWithEmptyText() {
         XCTAssertTrue(QuestionSelection.showsSelectionHighlight(question(custom: true), text: "   "))
+    }
+
+    func testHighlightShownForCustomWithNewlineOnlyText() {
+        XCTAssertTrue(
+            QuestionSelection.showsSelectionHighlight(question(custom: true), text: "\n"),
+            "newline-only text trims to empty, so the option is what gets submitted"
+        )
     }
 
     func testHighlightShownForMultiSelectWithCustomText() {
