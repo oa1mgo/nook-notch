@@ -58,7 +58,7 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
   - 多选（非 custom）：`⌃N/⌃P 移动 · Space 选中 · Enter 发送`
   - 单选 + custom：`⌃N/⌃P 选择 · Tab 输入 · Enter 发送`
   - 多选 + custom：`⌃N/⌃P 移动 · Space 选中 · Tab 输入 · Enter 发送`
-- **不新增行 → 不改 `NotchViewModel.questionContentHeight` 高度公式**（`backRowHeight = 63` 已含 MenuRow + pager，10pt 图标在行内不改变行高）。硬约束：若实现时图标放不下必须新增行，则必须同步 NotchViewModel 的 `questionContentHeight`（SOI，见 `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md`）
+- **不新增行 → 不改 `NotchViewModel.questionContentHeight` 高度公式**（`backRowHeight = 63` 已含 MenuRow + pager，11pt 图标在行内不改变行高）。硬约束：若实现时图标放不下必须新增行，则必须同步 NotchViewModel 的 `questionContentHeight`（SOI，见 `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md`）
 - **选项行 `OptionRow` 的 `.help` 同步改动态**（Space 对单选失效后的 stale 提示）：keyHint 前缀按题型——单选 `⌃N/⌃P 选择`、多选 `Space 选中`，OptionRow 内拼 `· Enter 发送`，与 info tooltip 用词一致（中文）。前缀抽纯函数 `QuestionSelection.rowKeyHint(for:)`（SOI，字面量不得跨文件重复）
 - 不做点击 popover（YAGNI）
 
