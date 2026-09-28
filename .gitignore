@@ -52,3 +52,6 @@ dist/
 
 # Xcode profiling data
 *.profraw
+
+# Skill session artifacts
+.superpowers/
