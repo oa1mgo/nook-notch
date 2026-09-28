@@ -107,8 +107,15 @@ struct QuestionPanelView: View {
             // owns the hover/focus styling.
             ZStack(alignment: .trailing) {
                 backRow
-                if pendingQuestions.count > 1 {
-                    HStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    if !pendingQuestions.isEmpty {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                            .fixedSize()
+                            .help(QuestionSelection.tooltipText(for: pendingQuestions[currentIndex]))
+                    }
+                    if pendingQuestions.count > 1 {
                         PagerChevronButton(systemImage: "chevron.left", disabled: currentIndex == 0) {
                             goPreviousQuestion()
                         }
@@ -124,8 +131,8 @@ struct QuestionPanelView: View {
                         }
                         .help("Ctrl+] Next question")
                     }
-                    .padding(.trailing, 12)
                 }
+                .padding(.trailing, 12)
             }
             Divider().background(Color.white.opacity(0.06))
             VStack(alignment: .leading, spacing: 12) {
@@ -215,7 +222,8 @@ struct QuestionPanelView: View {
                     description: option.description,
                     isSelected: isSelected,
                     isFocused: focusedOptionIndex == optIndex,
-                    isSending: isSending
+                    isSending: isSending,
+                    keyHint: q.multiple ? "Space to select" : "⌃N/⌃P 选择",
                 ) {
                     focusedOptionIndex = optIndex
                     if q.multiple {
@@ -588,6 +596,9 @@ private struct OptionRow: View {
     let isSelected: Bool
     let isFocused: Bool
     let isSending: Bool
+    /// Key-hint for this row's hover tooltip; single-select differs from
+    /// multi-select because Space is a no-op there (focus = selection).
+    let keyHint: String
     let action: () -> Void
     @State private var isHovered = false
 
@@ -623,7 +634,7 @@ private struct OptionRow: View {
         .buttonStyle(.plain)
         .disabled(isSending)
         .onHover { isHovered = $0 }
-        .help("Space to select · Enter to send")
+        .help("\(keyHint) · Enter to send")
     }
 }
 
