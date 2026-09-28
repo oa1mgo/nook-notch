@@ -165,7 +165,7 @@ struct QuestionPanelView: View {
             if focusedOptionIndex >= pendingQuestions[currentIndex].options.count {
                 focusedOptionIndex = 0
             }
-            syncSelectionToFocus(questionIndex: currentIndex)
+            syncSelectionToFocus()
         }
         .onDisappear {
             removeKeyboardMonitor()
@@ -218,7 +218,11 @@ struct QuestionPanelView: View {
                     isSending: isSending
                 ) {
                     focusedOptionIndex = optIndex
-                    toggleOption(questionIndex: questionIndex, label: option.label)
+                    if q.multiple {
+                        toggleOption(questionIndex: questionIndex, label: option.label)
+                    } else {
+                        syncSelectionToFocus()
+                    }
                 }
             }
         }
@@ -449,14 +453,14 @@ struct QuestionPanelView: View {
         let count = pendingQuestions[currentIndex].options.count
         guard count > 0 else { return }
         focusedOptionIndex = focusedOptionIndex > 0 ? focusedOptionIndex - 1 : count - 1
-        syncSelectionToFocus(questionIndex: currentIndex)
+        syncSelectionToFocus()
     }
 
     private func moveFocusDown() {
         let count = pendingQuestions[currentIndex].options.count
         guard count > 0 else { return }
         focusedOptionIndex = focusedOptionIndex < count - 1 ? focusedOptionIndex + 1 : 0
-        syncSelectionToFocus(questionIndex: currentIndex)
+        syncSelectionToFocus()
     }
 
     private func goNextQuestion() {
@@ -464,7 +468,7 @@ struct QuestionPanelView: View {
         currentIndex += 1
         focusedOptionIndex = 0
         isTextFieldFocused = false
-        syncSelectionToFocus(questionIndex: currentIndex)
+        syncSelectionToFocus()
     }
 
     private func goPreviousQuestion() {
@@ -472,39 +476,37 @@ struct QuestionPanelView: View {
         currentIndex -= 1
         focusedOptionIndex = 0
         isTextFieldFocused = false
-        syncSelectionToFocus(questionIndex: currentIndex)
+        syncSelectionToFocus()
     }
 
     /// Keep the single-select answer in lockstep with the focused option
     /// (spec 2026-09-28: single-select is "focus = selection"). No-op for
     /// multi-select — there focus and selection are independent.
-    private func syncSelectionToFocus(questionIndex: Int) {
-        guard pendingQuestions.indices.contains(questionIndex) else { return }
+    private func syncSelectionToFocus() {
+        guard pendingQuestions.indices.contains(currentIndex) else { return }
         let synced = QuestionSelection.syncSingleSelection(
-            pendingQuestions[questionIndex],
+            pendingQuestions[currentIndex],
             focusedIndex: focusedOptionIndex
         )
         if synced.isEmpty {
             // Multi-select: never clobber the user's explicit choices.
             return
         }
-        selectedAnswers[questionIndex] = synced
+        selectedAnswers[currentIndex] = synced
     }
 
-    /// Toggle a label in the multi-select set. Picking an option NEVER sends —
-    /// the user must explicitly press Send. (Previous behaviour auto-sent on
-    /// every click which caused mis-clicks in multi-question flows.)
+    /// Toggle a label in a MULTI-select question's answer set (Space key +
+    /// option click). Single-select never goes here — it is "focus =
+    /// selection" (see `syncSelectionToFocus`). Picking an option NEVER
+    /// sends — the user must explicitly press Send. (Previous behaviour
+    /// auto-sent on every click which caused mis-clicks in multi-question
+    /// flows.)
     private func toggleOption(questionIndex: Int, label: String) {
         var set = selectedAnswers[questionIndex] ?? []
         if set.contains(label) {
             set.remove(label)
         } else {
-            // Single-select questions: replace any prior selection
-            if !pendingQuestions[questionIndex].multiple {
-                set = [label]
-            } else {
-                set.insert(label)
-            }
+            set.insert(label)
         }
         selectedAnswers[questionIndex] = set
     }
