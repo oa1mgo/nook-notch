@@ -514,15 +514,50 @@ git commit -m "feat(question): single-select follows focus (Space is multi-selec
 > 变化点：HStack 从"多题才渲染"改为无条件渲染（单题时只含 info 图标），`.padding(.trailing, 12)` 从多题分支挪到 HStack 上。`backRow` 本身（:89-99）**不动**。
 > 高度影响：info 是 overlay 元素，位于已有 backRow 行内右侧，不改变行高，`NotchViewModel.questionContentHeight` 的 `backRowHeight = 63` 不改（spec §3 硬约束：只有必须新增行时才动公式）。
 
-- [ ] **Step 2: build 验证**
+- [ ] **Step 2: `OptionRow` 的 `.help` 按题型动态（Space 对单选失效后的 stale 提示）**
+
+`QuestionPanelView` 底部的 `private struct OptionRow` 目前硬编码 `.help("Space to select · Enter to send")`（:626），但单选下 Space 已是 no-op。
+
+给 OptionRow 加参数（放在 `let isSending: Bool` 之后、`let action` 之前）：
+
+```swift
+    let isSending: Bool
+    /// Key-hint for this row's hover tooltip; single-select differs from
+    /// multi-select because Space is a no-op there (focus = selection).
+    let keyHint: String
+    let action: () -> Void
+```
+
+把 help 行：
+
+```swift
+        .help("Space to select · Enter to send")
+```
+
+替换为：
+
+```swift
+        .help("\(keyHint) · Enter to send")
+```
+
+`optionsList` 里的调用点加参数（`isSending: isSending` 之后）：
+
+```swift
+                    isSending: isSending,
+                    keyHint: q.multiple ? "Space to select" : "⌃N/⌃P 选择",
+```
+
+（单选提示 ⌃N/⌃P、多选提示 Space；`· Enter to send` 由 OptionRow 内拼接，两个题型共用。）
+
+- [ ] **Step 3: build 验证**
 
 同 Task 2 Step 9。Expected: `** BUILD SUCCEEDED **`
 
-- [ ] **Step 3: 跑全部测试**
+- [ ] **Step 4: 跑全部测试**
 
 同 Task 2 Step 10。Expected: `TEST SUCCEEDED`
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
 git add Nook/UI/Views/QuestionPanelView.swift

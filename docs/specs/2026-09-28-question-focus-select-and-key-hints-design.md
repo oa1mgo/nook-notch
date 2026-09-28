@@ -11,7 +11,7 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
 - ⌃N/⌃P（及 ↑/↓）移动 `focusedOptionIndex` 焦点，**不改**选中
 - Space toggle `selectedAnswers` 选中，Enter（canSend 门控）提交全部
 - 单选、多选行为一致；鼠标点击 = toggle 选中但不发送
-- 面板上没有任何可见键位提示，只有 Send 按钮 / text field 的 `.help` tooltip
+- 面板的键位提示只有零散的 `.help` tooltip：Send 按钮 / text field，以及选项行的 `Space to select · Enter to send`（后者在本变更后对单选失效——见 §3）
 
 问题：单选题需要"⌃N 移到目标 → Space 选中 → Enter 提交"三步，Space 这一步在单选场景是冗余的（焦点已经落在目标上还要再确认一次）；且新用户不知道有键盘操作。
 
@@ -32,12 +32,12 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
 - 焦点变化的所有路径同步选中。**必须覆盖以下全部入口**（缺一即出现"焦点在 B、选中在 A"的不一致）：
   - `moveFocusUp` / `moveFocusDown`（⌃N/⌃P、↑/↓）
   - `goNextQuestion` / `goPreviousQuestion`（⌃[、⌃] 键盘切题）
-  - **pager chevron 点击**（`singleQuestionCard` 里 `currentIndex ±= 1` 的两个按钮，**不走** goNext/goPrevious —— 最容易漏的入口）
+  - **pager chevron 点击**（`singleQuestionCard` 的两个 `‹ ›` 按钮 —— 实现上已改为调用 `goPreviousQuestion`/`goNextQuestion`，与 ⌃[/⌃] 统一入口，顺带统一了切题时的焦点重置；勿再留 `currentIndex ±= 1` 的裸赋值路径）
   - `onAppear` 的 focus 越界重置处（:165）—— 初始 `focusedOptionIndex = 0` 必须在 onAppear 同步，否则首帧 canSend=false 直到用户动一次
 - 不变量：
   `selectedAnswers[i] == [options[focusedOptionIndex].label]`
 - **Space 变为 no-op**（吞掉事件）：保留 toggle 会清空选中、破坏"焦点=选中"不变量
-- **鼠标点击**：点击选项时 `focusedOptionIndex` 跟随点击项 —— 焦点与选择不分离
+- **鼠标点击**：`focusedOptionIndex` 跟随点击项；**单选点击走同步（`syncSelectionToFocus`）而非 toggle** —— 点已选中项保持选中，点其他项切换选中，任何点击都不清空答案（toggle 的 remove 分支对单选不可达，`toggleOption` 仅限多选）
 - **text field 聚焦时**（Tab 进入 custom 输入）：⌃N/⌃P 维持现状 —— 走 `isTextFieldFocused` 分支交给文本框原生光标移动，不移动选项焦点、不改选中
 
 **多选题：完全不变**（焦点≠选中，Space/点击 toggle）。
@@ -59,6 +59,7 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
   - 单选 + custom：`⌃N/⌃P 选择 · Tab 输入 · Enter 发送`
   - 多选 + custom：`⌃N/⌃P 移动 · Space 选中 · Tab 输入 · Enter 发送`
 - **不新增行 → 不改 `NotchViewModel.questionContentHeight` 高度公式**（`backRowHeight = 63` 已含 MenuRow + pager，10pt 图标在行内不改变行高）。硬约束：若实现时图标放不下必须新增行，则必须同步 NotchViewModel 的 `questionContentHeight`（SOI，见 `docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md`）
+- **选项行 `OptionRow` 的 `.help` 同步改动态**（Space 对单选失效后的 stale 提示）：单选 → `Enter to send`；多选 → 保持 `Space to select · Enter to send`。经由 OptionRow 新增 `keyHint: String` 参数传入，不留硬编码分支
 - 不做点击 popover（YAGNI）
 
 ### 4. 不做什么（YAGNI）
@@ -69,9 +70,10 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
 
 ## 测试
 
-- 抽两个纯函数并单测（新建 `QuestionPanelSelectionTests`）：
-  1. 焦点→选中同步：互斥、切题重置、初始选中第一项
-  2. `showsSelectionHighlight`：custom+文字非空 → false，其余 → true
+- 抽三个纯函数并单测（`QuestionPanelSelectionTests`）：
+  1. `syncSingleSelection`：互斥、越界/负数 focus 返回空、切题与初始选中第一项（由调用方接线）
+  2. `showsSelectionHighlight`：custom+文字非空（trim 后）→ false，其余 → true；多选恒 true
+  3. `tooltipText`：四种文案组合逐条锁定
 - 手测清单：
   - 单选 ⌃N/⌃P 即改选中；Space 无反应；Enter 提交
   - 多选：焦点移动不改选中、Space toggle、点击 toggle —— 与改动前一致
