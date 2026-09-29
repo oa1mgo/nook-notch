@@ -381,20 +381,15 @@ struct SessionListView: View {
 
         guard chars == "y" || chars == "n" || chars == "a" else { return event }
 
-        // Resolve target (spec §2): 0 → none; 1 → ignore highlight; 2+ → highlight must be a target
-        let targets = approvalTargets
-        let target: SessionState?
-        switch targets.count {
-        case 0:
-            target = nil
-        case 1:
-            target = targets[0]
-        default:
-            let idx = viewModel.keyboardSelectedIndex // -1 = no highlight (NotchViewModel L118)
-            guard idx >= 0, idx < sortedInstances.count else { return event }
-            let highlighted = sortedInstances[idx]
-            target = highlighted.showsInlineApprovalButtons ? highlighted : nil
-        }
+        // Resolve target (spec §2, shared with question ⌃R via
+        // KeyboardTargetResolver): 0 → none; 1 → ignore highlight;
+        // 2+ → highlight must be a target. Single snapshot for idx + membership.
+        let rows = sortedInstances
+        let idx = viewModel.keyboardSelectedIndex // -1 = no highlight (NotchViewModel L118)
+        let highlighted = (idx >= 0 && idx < rows.count) ? rows[idx] : nil
+        let target: SessionState? = KeyboardTargetResolver.resolve(
+            from: rows.filter(\.showsInlineApprovalButtons), highlighted: highlighted
+        )
         guard let target else { return event }
 
         switch chars {
