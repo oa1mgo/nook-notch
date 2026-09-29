@@ -55,6 +55,9 @@ struct ShortcutTooltip: ViewModifier {
                                     .fill(Color.black.opacity(0.65))
                             )
                             .offset(x: bubbleOffset.x, y: bubbleOffset.y)
+                            // Pure display layer — never intercept clicks that
+                            // target the host view underneath/next to the bubble.
+                            .allowsHitTesting(false)
                     }
                 }
                 .onContinuousHover { phase in

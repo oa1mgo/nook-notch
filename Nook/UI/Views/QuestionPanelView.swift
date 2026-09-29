@@ -290,6 +290,11 @@ struct QuestionPanelView: View {
         .buttonStyle(.plain)
         .disabled(!canSend || isSending)
         .shortcutTooltip("Enter to send", above: true)
+        // Diagnostic: reaches here only if the hit-test landed on the button
+        // (Button.action itself leaves no trace when swallowed upstream).
+        .simultaneousGesture(TapGesture().onEnded {
+            DebugLog.shared.write("[question-send] HIT-TEST canSend=\(canSend) isSending=\(isSending)")
+        })
     }
 
     private var canSend: Bool {
