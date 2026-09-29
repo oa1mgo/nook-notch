@@ -32,8 +32,9 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
 - 焦点变化的所有路径同步选中。**必须覆盖以下全部入口**（缺一即出现"焦点在 B、选中在 A"的不一致）：
   - `moveFocusUp` / `moveFocusDown`（⌃N/⌃P、↑/↓）
   - `goNextQuestion` / `goPreviousQuestion`（⌃[、⌃] 键盘切题）
-  - **pager chevron 点击**（`singleQuestionCard` 的两个 `‹ ›` 按钮 —— 实现上已改为调用 `goPreviousQuestion`/`goNextQuestion`，与 ⌃[/⌃] 统一入口，顺带统一了切题时的焦点重置；勿再留 `currentIndex ±= 1` 的裸赋值路径）
+  - **pager chevron 点击**（`singleQuestionCard` 的两个 `‹ ›` 按钮 —— 实现上已改为调用 `goPreviousQuestion`/`goNextQuestion`，与 ⌃[/⌃] 统一入口；勿再留 `currentIndex ±= 1` 的裸赋值路径）
   - `onAppear` 的 focus 越界重置处（:165）—— 初始 `focusedOptionIndex = 0` 必须在 onAppear 同步，否则首帧 canSend=false 直到用户动一次
+- **切题的焦点语义（per-question 焦点记忆）**：离开某题时把该题的 `focusedOptionIndex` 存入字典；进入某题时恢复记忆值（**无记忆才归 0**），再同步选中。即：**首次进入某题 → 选中第一项；切走再切回 → 恢复离开前的焦点和选中**（用户反馈：切回把已选项重置为第一项是错误行为）。多选题同样恢复离开时的焦点（选中本来就不被 sync 触碰）。
 - 不变量：
   `selectedAnswers[i] == [options[focusedOptionIndex].label]`
 - **Space 变为 no-op**（吞掉事件）：保留 toggle 会清空选中、破坏"焦点=选中"不变量
@@ -79,4 +80,4 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
   - 多选：焦点移动不改选中、Space toggle、点击 toggle —— 与改动前一致
   - custom 单选打字后勾选消失、清空文字后勾选恢复
   - info 图标 tooltip 四种文案随题卡切换；面板高度无跳变
-  - ⌃[、⌃] 切题后新题卡自动选中第一项（单选）
+  - ⌃[、⌃] 切题后**首次**进入的题自动选中第一项（单选）；**切走再切回，离开前的选中保留**（不被重置为第一项）

@@ -578,7 +578,62 @@ git commit -m "feat(question): key-hint info icon with per-card tooltip"
 
 ---
 
-## Task 4: 手测验证
+## Task 4: 切题焦点记忆（用户反馈修正）
+
+**背景**: 用户确认"切走再切回把已选项重置为第一项"是错误行为。原实现 `goNext/PreviousQuestion` 无条件 `focusedOptionIndex = 0` → 同步覆盖选中。改为 per-question 焦点记忆：离开时保存、进入时恢复（无记忆才归 0）。spec §1 已同步更新。
+
+**Files:**
+- Modify: `Nook/UI/Views/QuestionPanelView.swift`（`@State` 声明区 + `goNextQuestion` / `goPreviousQuestion`）
+
+- [ ] **Step 1: 加焦点记忆状态**（`focusedOptionIndex` 声明旁）:
+
+```swift
+    @State private var focusedOptionIndex: Int = 0
+    /// Per-question focus memory: leaving a card saves its focus here,
+    /// entering restores it (0 only for a card never visited).
+    @State private var savedFocusByQuestion: [Int: Int] = [:]
+```
+
+- [ ] **Step 2: `goNextQuestion` / `goPreviousQuestion` 保存+恢复**
+
+替换为:
+
+```swift
+    private func goNextQuestion() {
+        guard currentIndex < pendingQuestions.count - 1 else { return }
+        savedFocusByQuestion[currentIndex] = focusedOptionIndex
+        currentIndex += 1
+        focusedOptionIndex = savedFocusByQuestion[currentIndex] ?? 0
+        isTextFieldFocused = false
+        syncSelectionToFocus()
+    }
+
+    private func goPreviousQuestion() {
+        guard currentIndex > 0 else { return }
+        savedFocusByQuestion[currentIndex] = focusedOptionIndex
+        currentIndex -= 1
+        focusedOptionIndex = savedFocusByQuestion[currentIndex] ?? 0
+        isTextFieldFocused = false
+        syncSelectionToFocus()
+    }
+```
+
+（首题卡从未访问过 → `?? 0` → 同步选中第一项；访问过 → 恢复焦点 → 同步恢复原选中。多选：sync 不写选中，仅焦点恢复。）
+
+- [ ] **Step 3: build + 测试**
+
+Build 预期 `** BUILD SUCCEEDED **`；测试预期 `TEST SUCCEEDED`、84 tests（命令同前，测试前先 quit Nook.app）。
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add Nook/UI/Views/QuestionPanelView.swift
+git commit -m "fix(question): remember per-question focus across navigation"
+```
+
+---
+
+## Task 5: 手测验证
 
 **Files:** 无改动
 
@@ -615,7 +670,7 @@ xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Debug -derivedDat
 
 - [ ] **Step 5: 切题与 tooltip**
 
-- 多题时用 `‹ ›` 按钮和 ⌃[/⌃] 切题，新题卡（单选）自动选中第一项
+- 多题时用 `‹ ›` 按钮和 ⌃[/⌃] 切题：**首次**进入的题（单选）自动选中第一项；**切走再切回，离开前的选中保留**，不被重置为第一项
 - 切题后单选/多选/cust文案正确切换
 - **面板高度全程无跳变**（info 图标未改变 backRow 行高）
 - 旧行为回归：⌃H 回列表、Esc 关闭、⌃N/⌃P 焦点移动
