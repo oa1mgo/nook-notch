@@ -2,6 +2,7 @@
 
 > 状态：approved（design），待实现
 > 关联：`docs/superpowers/specs/2026-09-23-session-list-permission-shortcuts-design.md`（目标解析规则的来源，spec §2）
+> 修订（2026-09-29 review）：① `resolveTarget` 从 fileprivate 函数改为 internal `KeyboardTargetResolver.resolve(from:highlighted:)`——`@testable` 只能提升到 internal，fileprivate 单测不可见；② 命中判定由全字段 Equatable 改为 `sessionId` 比较——SessionState 深比较会遍历 chatItems/toolTracker（SessionState.swift:36/41），且"同一 session"只该看 id；③ §3.2 改为单次快照 `rows = sortedInstances`（computed 属性，两次访问可能不同快照）；④ §3.3 引用行号修正为 380-393；⑤ §5 修正：permission pending 实际落 `.waitingForApproval`（SessionEvent.swift:244、HookSocketServer.swift:71），不在 ⌃R 目标集内——原引用的 SessionListView.swift:593 注释已过时；⑥ §6 单测按新签名整理并补 `showsInlineApprovalButtons`（SessionListView.swift:23）谓词用例。设计结论（0/1/2+ 规则、§4 行为表、非目标）未变。
 
 ## 1. 问题
 
@@ -22,24 +23,33 @@ Session 页按 ⌃R（`replyToQuestion`）无法进入唯一一个等待回答�
 
 ## 3. 设计
 
-### 3.1 纯函数（SessionListView.swift 内 fileprivate）
+### 3.1 纯函数（`SessionListView.swift` 文件级，**internal** 以便单测）
 
 ```swift
-/// Target resolution shared by permission Y/N/A and question ⌃R
+/// Keyboard target resolution shared by permission Y/N/A and question ⌃R
 /// (mirrors permission-shortcuts spec §2): 0 → none; 1 → the single
 /// target regardless of highlight; 2+ → highlighted must be a target.
-private func resolveTarget<T: Equatable>(from targets: [T], highlighted: T?) -> T? {
-    switch targets.count {
-    case 0: return nil
-    case 1: return targets[0]
-    default:
-        guard let highlighted, targets.contains(highlighted) else { return nil }
-        return highlighted
+enum KeyboardTargetResolver {
+    /// `highlighted` is nil when there is no valid highlight
+    /// (`keyboardSelectedIndex == -1` or out of range).
+    static func resolve(from targets: [SessionState], highlighted: SessionState?) -> SessionState? {
+        switch targets.count {
+        case 0: return nil
+        case 1: return targets[0]
+        default:
+            guard let highlighted,
+                  targets.contains(where: { $0.sessionId == highlighted.sessionId })
+            else { return nil }
+            return highlighted
+        }
     }
 }
 ```
 
-等价性（permission 迁移可证）：原 2+ 分支先 `guard idx >= 0, idx < count else { return event }` 再查 `highlighted.showsInlineApprovalButtons`；新写法 idx 无效 → `highlighted = nil` → resolve 返回 nil → 同样 `return event`。`targets.contains(highlighted)` 中 highlighted 与 targets 同源自 `sortedInstances`，struct 全字段相等成立。
+- **可见性必须是 internal，不能是 `private` / `fileprivate`**：§6 的单测走 `@testable import Nook`，只提升 `internal`；`private` / `fileprivate` 在测试目标里不可见（NookTests 现有文件均如此，见 `QuestionPanelKeyboardRoutingTests.swift:2`）。
+- **不用泛型 `[T: Equatable]` + `contains(highlighted)`**：唯一实例化类型就是 `SessionState`；全字段 `Equatable` 在**命中**时会深比较整个 `chatItems` / `toolTracker`（`SessionState.swift:36/41`）——为回答"是不是同一行"去比对整段聊天历史。按 `sessionId` 比较既与文件既有写法一致（`SessionListView.swift:364` 的 `$0.sessionId == id`），也是"同一行"唯一有意义的语义（`sessionId` 是首字段且为 `let`，非同行在第一字段即短路）。
+
+等价性（permission 迁移可证）：原 2+ 分支先 `guard idx >= 0, idx < count else { return event }` 再查 `highlighted.showsInlineApprovalButtons`；新写法 idx 无效 → `highlighted = nil` → resolve 返回 nil → 同样 `return event`。命中判定由"直接查 `highlighted.showsInlineApprovalButtons`"改为"`highlighted.sessionId ∈ targets`"，而 `targets` 正是 `showsInlineApprovalButtons` 过滤出的集合，二者等价。
 
 ### 3.2 question 侧（onReceive 改写）
 
@@ -48,20 +58,24 @@ private func resolveTarget<T: Equatable>(from targets: [T], highlighted: T?) -> 
     guard trigger != nil else { return }
     viewModel.keyboardReplyTrigger = nil          // 消费顺序保持现状
     guard viewModel.contentType == .instances else { return }
+    // Single snapshot: `sortedInstances` re-sorts on every access, and
+    // `highlighted` (by index) + `targets` (by filter) must come from the
+    // same array, else index and membership can disagree.
+    let rows = sortedInstances
     let idx = viewModel.keyboardSelectedIndex
-    let highlighted = (idx >= 0 && idx < sortedInstances.count) ? sortedInstances[idx] : nil
-    let targets = sortedInstances.filter { $0.phase == .waitingForInput }
-    guard let target = resolveTarget(from: targets, highlighted: highlighted) else { return }
+    let highlighted = (idx >= 0 && idx < rows.count) ? rows[idx] : nil
+    let targets = rows.filter { $0.phase == .waitingForInput }
+    guard let target = KeyboardTargetResolver.resolve(from: targets, highlighted: highlighted) else { return }
     replyToQuestion(target)
 }
 ```
 
-- 判别 `phase == .waitingForInput`：与行内 Reply 气泡（SessionListView.swift:238/783）一致。该 phase 同时覆盖 permission pending（SessionListView.swift:593）——唯一 target 是 permission 时 ⌃R 也会进 question 页，与气泡点击行为一致（既有行为，见 §5）。
+- 判别 `phase == .waitingForInput`：与行内 Reply 气泡（SessionListView.swift:238/783）一致。该 phase 也覆盖 opencode 经权限通道到达的 askUserQuestion（SessionEvent.swift:241-242）——唯一 target 是它时 ⌃R 进 question 页是**正确**结果；进 question 页后落 fallback 的场景见 §5。
 - 2+ 分支要求高亮是 waiting 行：高亮 -1/越界/非 waiting → 不动作。
 
 ### 3.3 permission 侧（handleKeyDown 改写）
 
-`switch targets.count` 块（SessionListView.swift:380-394）替换为 idx 解析 + `resolveTarget(from: approvalTargets, highlighted:)`，后续 `guard let target` / y-n-a 分发不动。行为逐分支等价（§3.1）。
+`switch targets.count` 块（`SessionListView.swift:380-393`）替换为 idx 解析 + `KeyboardTargetResolver.resolve(from: approvalTargets, highlighted:)`，紧随其后的 `guard let target else { return event }`（`L394`）与 y-n-a 分发不动。行为逐分支等价（§3.1）。
 
 ## 4. 行为变化
 
@@ -76,13 +90,25 @@ private func resolveTarget<T: Equatable>(from targets: [T], highlighted: T?) -> 
 
 ## 5. 已知限制
 
-- 唯一 waiting 是 **permission pending** 时 ⌃R 进入 question 页 → 显示 loading placeholder / terminal fallback（与行内气泡一致，非本次引入）。
+- 唯一 waiting 行**没有加载到 question 上下文**时，进入 question 页会落 fallback：非 inline-answer provider → "Go to Terminal" card；inline-answer 但 questions 未加载 → loading placeholder（`QuestionPanelView.swift:62-68`）。与行内气泡点击行为一致，非本次引入。
+  - 注：permission pending **不是**这个场景——它落 `.waitingForApproval`（`HookSocketServer.swift:71`、`SessionEvent.swift:244`），不在 ⌃R 目标集（`phase == .waitingForInput`）内；唯一经权限通道进 `.waitingForInput` 的是 opencode askUserQuestion（`SessionEvent.swift:241-242`），进 question 页是正确结果。
 - chat 页 ⌃R 的 `provider == .opencode` guard 与 session 页无 provider guard 不一致（既有）。
-- chat 页 ⌃R 走 ChatView 独立 handler，不共享 resolveTarget（设计决策，见 §2）。
+- chat 页 ⌃R 走 ChatView 独立 handler，不共享 resolver（设计决策，见 §2）。
 
 ## 6. 测试
 
-**单测**（纯函数）：0 target；1 target + highlighted=nil；1 target + highlighted 非它；2+ 高亮是 target；2+ 高亮非 target；2+ highlighted=nil（-1/越界）。permission 与 question 两处调用点共享同一组用例（参数化 targets/highlighted）。
+**单测**（纯函数 `KeyboardTargetResolver.resolve`，需 `internal` 可见性）：
+
+- 0 target；
+- 1 target + highlighted=nil（-1/越界）；
+- 1 target + highlighted 非它；
+- 2+ 高亮是 target；
+- 2+ 高亮非 target；
+- 2+ highlighted=nil。
+
+permission 与 question 两处调用点共享同一组用例（参数化 targets/highlighted）。
+
+**补充单测**（调用点谓词，弥补 view 层不可测）：`SessionState.showsInlineApprovalButtons` 是 internal 纯扩展、可直接单测 permission 侧目标集——`waitingForApproval` 且非 askUserQuestion → true；terminal-approval / askUserQuestion / 其他 phase → false。view 层本身无单测（`NotchViewModel` 在测试进程 deinit 崩溃，见 `QuestionPanelKeyboardRoutingTests.swift:13-18`）。
 
 **手测**
 1. session 页（不按 ↑↓）按 ⌃R → 进入唯一 waiting session 的 question 页。
