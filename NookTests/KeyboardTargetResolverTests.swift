@@ -55,3 +55,45 @@ final class KeyboardTargetResolverTests: XCTestCase {
         XCTAssertEqual(resolved?.sessionId, "a")
     }
 }
+
+/// Permission-side target-set predicate (spec §6) — covers what the view
+/// layer's handleKeyDown cannot: SessionListView.swift:23-29.
+final class InlineApprovalPredicateTests: XCTestCase {
+
+    private func session(phase: SessionPhase) -> SessionState {
+        SessionState(sessionId: "ses_test", cwd: "/tmp/test", phase: phase)
+    }
+
+    private func approvalPhase(toolName: String) -> SessionPhase {
+        .waitingForApproval(PermissionContext(
+            toolUseId: "tool-1",
+            toolName: toolName,
+            toolInput: nil,
+            receivedAt: fixedDate(10)
+        ))
+    }
+
+    func testWaitingForApprovalWithBashShowsInlineButtons() {
+        XCTAssertTrue(session(phase: approvalPhase(toolName: "Bash")).showsInlineApprovalButtons)
+    }
+
+    func testWaitingForApprovalWithAskUserQuestionHidesInlineButtons() {
+        // AskUserQuestion routes to "Go to Terminal", not Y/N/A
+        // (ToolKind.classify lowercases: "askuserquestion" → .askUserQuestion).
+        XCTAssertFalse(session(phase: approvalPhase(toolName: "AskUserQuestion")).showsInlineApprovalButtons)
+    }
+
+    func testTerminalApprovalIsNotAnInlineTarget() {
+        // isWaitingForApproval matches ONLY .waitingForApproval (SessionPhase.swift:266-269);
+        // terminal-side approval must stay out of the keyboard target set.
+        let phase = SessionPhase.waitingForTerminalApproval(PermissionContext(
+            toolUseId: "tool-1", toolName: "Bash", toolInput: nil, receivedAt: fixedDate(10)
+        ))
+        XCTAssertFalse(session(phase: phase).showsInlineApprovalButtons)
+    }
+
+    func testNonApprovalPhasesAreNotInlineTargets() {
+        XCTAssertFalse(session(phase: .waitingForInput).showsInlineApprovalButtons)
+        XCTAssertFalse(session(phase: .idle).showsInlineApprovalButtons)
+    }
+}
