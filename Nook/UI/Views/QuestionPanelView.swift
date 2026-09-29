@@ -116,13 +116,13 @@ struct QuestionPanelView: View {
                             .font(.system(size: 11))
                             .foregroundColor(.white.opacity(0.4))
                             .fixedSize()
-                            .help(QuestionSelection.tooltipText(for: pendingQuestions[currentIndex]))
+                            .shortcutTooltip(QuestionSelection.tooltipText(for: pendingQuestions[currentIndex]))
                     }
                     if pendingQuestions.count > 1 {
                         PagerChevronButton(systemImage: "chevron.left", disabled: currentIndex == 0) {
                             goPreviousQuestion()
                         }
-                        .help("Ctrl+[ Previous question")
+                        .shortcutTooltip("Ctrl+[ Previous question")
 
                         Text("\(currentIndex + 1)/\(pendingQuestions.count)")
                             .font(.system(size: 11, weight: .semibold))
@@ -132,7 +132,7 @@ struct QuestionPanelView: View {
                         PagerChevronButton(systemImage: "chevron.right", disabled: currentIndex == pendingQuestions.count - 1) {
                             goNextQuestion()
                         }
-                        .help("Ctrl+] Next question")
+                        .shortcutTooltip("Ctrl+] Next question")
                     }
                 }
                 .padding(.trailing, 12)
@@ -261,7 +261,7 @@ struct QuestionPanelView: View {
             )
             .focused($isTextFieldFocused)
             .onSubmit { if canSend { sendAnswers() } }
-            .help("Tab to focus · Enter to send")
+            .shortcutTooltip("Tab to focus · Enter to send")
     }
 
     /// Bottom action row: free-text input (if allowed) and Send button share
@@ -289,7 +289,7 @@ struct QuestionPanelView: View {
         }
         .buttonStyle(.plain)
         .disabled(!canSend || isSending)
-        .help("Enter to send")
+        .shortcutTooltip("Enter to send")
     }
 
     private var canSend: Bool {
@@ -641,7 +641,7 @@ private struct OptionRow: View {
         .buttonStyle(.plain)
         .disabled(isSending)
         .onHover { isHovered = $0 }
-        .help("\(keyHint) · Enter 发送")
+        .shortcutTooltip("\(keyHint) · Enter 发送")
     }
 }
 
