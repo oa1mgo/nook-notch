@@ -275,12 +275,16 @@ struct SessionListView: View {
             .onReceive(viewModel.$keyboardReplyTrigger) { trigger in
                 guard trigger != nil else { return }
                 viewModel.keyboardReplyTrigger = nil // consume (see above)
-                guard viewModel.contentType == .instances,
-                      viewModel.keyboardSelectedIndex >= 0,
-                      viewModel.keyboardSelectedIndex < sortedInstances.count else { return }
-                let session = sortedInstances[viewModel.keyboardSelectedIndex]
-                guard session.phase == .waitingForInput else { return }
-                replyToQuestion(session)
+                guard viewModel.contentType == .instances else { return }
+                // Single snapshot: `sortedInstances` re-sorts on every access, and
+                // `highlighted` (by index) + `targets` (by filter) must come from the
+                // same array, else index and membership can disagree.
+                let rows = sortedInstances
+                let idx = viewModel.keyboardSelectedIndex
+                let highlighted = (idx >= 0 && idx < rows.count) ? rows[idx] : nil
+                let targets = rows.filter { $0.phase == .waitingForInput }
+                guard let target = KeyboardTargetResolver.resolve(from: targets, highlighted: highlighted) else { return }
+                replyToQuestion(target)
             }
         }
     }
