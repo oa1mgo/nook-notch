@@ -789,9 +789,9 @@ class NotchViewModel: ObservableObject {
         keyboardActivateTrigger = UUID()
     }
 
-    /// Open the question panel for the currently keyboard-selected session.
-    /// SessionListView listens to this trigger and calls `replyToQuestion`
-    /// on the selected session if it's in `.waitingForInput`.
+    /// Open the question panel for the resolved target (0/1/2+ rule —
+    /// SessionListView listens to this trigger and resolves via
+    /// KeyboardTargetResolver; 1 waiting session is entered regardless of highlight).
     func activateReplyToQuestion() {
         keyboardReplyTrigger = UUID()
     }
