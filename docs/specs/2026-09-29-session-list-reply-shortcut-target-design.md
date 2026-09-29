@@ -3,6 +3,7 @@
 > 状态：approved（design），待实现
 > 关联：`docs/superpowers/specs/2026-09-23-session-list-permission-shortcuts-design.md`（目标解析规则的来源，spec §2）
 > 修订（2026-09-29 review）：① `resolveTarget` 从 fileprivate 函数改为 internal `KeyboardTargetResolver.resolve(from:highlighted:)`——`@testable` 只能提升到 internal，fileprivate 单测不可见；② 命中判定由全字段 Equatable 改为 `sessionId` 比较——SessionState 深比较会遍历 chatItems/toolTracker（SessionState.swift:36/41），且"同一 session"只该看 id；③ §3.2 改为单次快照 `rows = sortedInstances`（computed 属性，两次访问可能不同快照）；④ §3.3 引用行号修正为 380-393；⑤ §5 修正：permission pending 实际落 `.waitingForApproval`（SessionEvent.swift:244、HookSocketServer.swift:71），不在 ⌃R 目标集内——原引用的 SessionListView.swift:593 注释已过时；⑥ §6 单测按新签名整理并补 `showsInlineApprovalButtons`（SessionListView.swift:23）谓词用例。设计结论（0/1/2+ 规则、§4 行为表、非目标）未变。
+> 修订（2026-09-29 与实现 plan 对账）：§3.1 落点由 spec 原写的 `SessionListView.swift` 文件级改为新文件 `Nook/Core/KeyboardTargetResolver.swift`；§3.3 目标来源由 `approvalTargets` 改为 `rows.filter(\.showsInlineApprovalButtons)`。两处均以 plan 为准（plan 更优：独立可测 + 保持单快照）。
 
 ## 1. 问题
 
@@ -23,7 +24,9 @@ Session 页按 ⌃R（`replyToQuestion`）无法进入唯一一个等待回答�
 
 ## 3. 设计
 
-### 3.1 纯函数（`SessionListView.swift` 文件级，**internal** 以便单测）
+### 3.1 纯函数（新文件 `Nook/Core/KeyboardTargetResolver.swift`，**internal** 以便单测）
+
+> 落点：`Nook/` 是 `PBXFileSystemSynchronizedRootGroup`（exception 仅 `Info.plist`），新增 .swift 无需改 `project.pbxproj`。
 
 ```swift
 /// Keyboard target resolution shared by permission Y/N/A and question ⌃R
@@ -75,7 +78,7 @@ enum KeyboardTargetResolver {
 
 ### 3.3 permission 侧（handleKeyDown 改写）
 
-`switch targets.count` 块（`SessionListView.swift:380-393`）替换为 idx 解析 + `KeyboardTargetResolver.resolve(from: approvalTargets, highlighted:)`，紧随其后的 `guard let target else { return event }`（`L394`）与 y-n-a 分发不动。行为逐分支等价（§3.1）。
+`switch targets.count` 块（`SessionListView.swift:380-393`）替换为 idx 解析 + `KeyboardTargetResolver.resolve(from: rows.filter(\.showsInlineApprovalButtons), highlighted:)`（`rows = sortedInstances` 单快照；不用 `approvalTargets`——那是另一次 `sortedInstances` 求值，与 `highlighted` 不同快照；该属性仍由 `.onChange(of: approvalTargets)`（:155）使用，不会 unused），紧随其后的 `guard let target else { return event }`（`L394`）与 y-n-a 分发不动。行为逐分支等价（§3.1）。
 
 ## 4. 行为变化
 

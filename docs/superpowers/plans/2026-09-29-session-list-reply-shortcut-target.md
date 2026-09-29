@@ -146,7 +146,7 @@ git commit -m "feat(keyboard): add KeyboardTargetResolver 0/1/2+ target rule (TD
 **Files:**
 - Test: `NookTests/KeyboardTargetResolverTests.swift`（追加第二个 test class）
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: 补测试（characterization——谓词已存在，无红阶段，直接期待 PASS）**
 
 在 `NookTests/KeyboardTargetResolverTests.swift` 末尾追加：
 
@@ -199,8 +199,11 @@ final class InlineApprovalPredicateTests: XCTestCase {
 ```bash
 xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug \
   -derivedDataPath build/TestDerivedData -destination 'platform=macOS' \
-  -only-testing:NookTests/KeyboardTargetResolverTests
+  -only-testing:NookTests/KeyboardTargetResolverTests \
+  -only-testing:NookTests/InlineApprovalPredicateTests
 ```
+
+**两个 `-only-testing` 都要写**：`-only-testing:<Target>/<Class>` 是**按类名过滤，不认文件名**。本文件里有两个 test class，只写 `KeyboardTargetResolverTests` 会把 `InlineApprovalPredicateTests` 整个排除掉（期望 10 个却只跑 6 个，且它的 FAIL 会被静默跳过）。多次 `-only-testing` 取并集。
 
 预期：**10 tests PASS**（6 + 4）。若有 FAIL，先核对 `SessionPhase.waitingForTerminalApproval` 关联值签名与 `fixedDate` 可见性，不要改谓词实现。
 
