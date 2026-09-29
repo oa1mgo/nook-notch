@@ -261,7 +261,7 @@ struct QuestionPanelView: View {
             )
             .focused($isTextFieldFocused)
             .onSubmit { if canSend { sendAnswers() } }
-            .shortcutTooltip("Tab to focus · Enter to send")
+            .shortcutTooltip("Tab to focus · Enter to send", above: true)
     }
 
     /// Bottom action row: free-text input (if allowed) and Send button share
@@ -289,7 +289,7 @@ struct QuestionPanelView: View {
         }
         .buttonStyle(.plain)
         .disabled(!canSend || isSending)
-        .shortcutTooltip("Enter to send")
+        .shortcutTooltip("Enter to send", above: true)
     }
 
     private var canSend: Bool {

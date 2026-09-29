@@ -261,6 +261,6 @@ private struct TransportButton: View {
                 )
         }
         .buttonStyle(.plain)
-        .modifier(ShortcutTooltip(shortcut: shortcut))
+        .shortcutTooltip(shortcut)
     }
 }
