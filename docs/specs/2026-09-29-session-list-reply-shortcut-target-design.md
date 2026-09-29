@@ -1,0 +1,92 @@
+# Session 列表 ⌃R 单一 pending 直达 — 设计
+
+> 状态：approved（design），待实现
+> 关联：`docs/superpowers/specs/2026-09-23-session-list-permission-shortcuts-design.md`（目标解析规则的来源，spec §2）
+
+## 1. 问题
+
+Session 页按 ⌃R（`replyToQuestion`）无法进入唯一一个等待回答的 session。根因：消费端 `SessionListView.onReceive($keyboardReplyTrigger)`（SessionListView.swift:275-284）要求 `keyboardSelectedIndex >= 0` 且该行 `phase == .waitingForInput`，而 `keyboardSelectedIndex` 初始为 **-1**（NotchViewModel.swift:118）——用户进入 session 页后未按过 ↑/↓ 时 ⌃R 静默失败。
+
+现有 ⌃R 规则等价于 permission 的 "2+ 高亮规则"，缺 permission 已有的 0/1 宽松分支。
+
+## 2. 目标 / 非目标
+
+**目标**
+- ⌃R 镜像 permission Y/N/A 的目标解析规则（permission shortcuts spec §2）：0 → 不动作；**1 → 无视高亮直接进入唯一 target**；≥2 → 高亮必须是 target，否则不动作。
+- 同构代码抽共享纯函数（SOI，lessons 3），permission 与 question 两处同迁共用。
+
+**非目标**
+- chat 页 ⌃R（ChatView.swift:238-245 已有独立 handler 且工作正常；单 session 无高亮，helper 退化为一行 guard，不接入）。
+- session 页无 provider guard 而 chat 页有 `provider == .opencode` guard 的既有不一致。
+- 行内 Reply 气泡、`activateReplyToQuestion`、`keyboardReplyTrigger` 传输层均不改。
+
+## 3. 设计
+
+### 3.1 纯函数（SessionListView.swift 内 fileprivate）
+
+```swift
+/// Target resolution shared by permission Y/N/A and question ⌃R
+/// (mirrors permission-shortcuts spec §2): 0 → none; 1 → the single
+/// target regardless of highlight; 2+ → highlighted must be a target.
+private func resolveTarget<T: Equatable>(from targets: [T], highlighted: T?) -> T? {
+    switch targets.count {
+    case 0: return nil
+    case 1: return targets[0]
+    default:
+        guard let highlighted, targets.contains(highlighted) else { return nil }
+        return highlighted
+    }
+}
+```
+
+等价性（permission 迁移可证）：原 2+ 分支先 `guard idx >= 0, idx < count else { return event }` 再查 `highlighted.showsInlineApprovalButtons`；新写法 idx 无效 → `highlighted = nil` → resolve 返回 nil → 同样 `return event`。`targets.contains(highlighted)` 中 highlighted 与 targets 同源自 `sortedInstances`，struct 全字段相等成立。
+
+### 3.2 question 侧（onReceive 改写）
+
+```swift
+.onReceive(viewModel.$keyboardReplyTrigger) { trigger in
+    guard trigger != nil else { return }
+    viewModel.keyboardReplyTrigger = nil          // 消费顺序保持现状
+    guard viewModel.contentType == .instances else { return }
+    let idx = viewModel.keyboardSelectedIndex
+    let highlighted = (idx >= 0 && idx < sortedInstances.count) ? sortedInstances[idx] : nil
+    let targets = sortedInstances.filter { $0.phase == .waitingForInput }
+    guard let target = resolveTarget(from: targets, highlighted: highlighted) else { return }
+    replyToQuestion(target)
+}
+```
+
+- 判别 `phase == .waitingForInput`：与行内 Reply 气泡（SessionListView.swift:238/783）一致。该 phase 同时覆盖 permission pending（SessionListView.swift:593）——唯一 target 是 permission 时 ⌃R 也会进 question 页，与气泡点击行为一致（既有行为，见 §5）。
+- 2+ 分支要求高亮是 waiting 行：高亮 -1/越界/非 waiting → 不动作。
+
+### 3.3 permission 侧（handleKeyDown 改写）
+
+`switch targets.count` 块（SessionListView.swift:380-394）替换为 idx 解析 + `resolveTarget(from: approvalTargets, highlighted:)`，后续 `guard let target` / y-n-a 分发不动。行为逐分支等价（§3.1）。
+
+## 4. 行为变化
+
+| 场景 | 现状 | 变化 |
+|---|---|---|
+| 0 个 waiting，按 ⌃R | 不动作 | 不动作 |
+| **1 个 waiting，index=-1/越界/高亮非 waiting，按 ⌃R** | **不动作** | **进入该 session 的 question 页** |
+| 1 个 waiting，高亮即它，按 ⌃R | 进入 | 进入（不变） |
+| ≥2 个 waiting，高亮是 waiting | 进入高亮的 | 不变 |
+| ≥2 个 waiting，高亮 -1/非 waiting | 不动作 | 不动作 |
+| permission Y/N/A 各分支 | — | 逐分支等价（回归项） |
+
+## 5. 已知限制
+
+- 唯一 waiting 是 **permission pending** 时 ⌃R 进入 question 页 → 显示 loading placeholder / terminal fallback（与行内气泡一致，非本次引入）。
+- chat 页 ⌃R 的 `provider == .opencode` guard 与 session 页无 provider guard 不一致（既有）。
+- chat 页 ⌃R 走 ChatView 独立 handler，不共享 resolveTarget（设计决策，见 §2）。
+
+## 6. 测试
+
+**单测**（纯函数）：0 target；1 target + highlighted=nil；1 target + highlighted 非它；2+ 高亮是 target；2+ 高亮非 target；2+ highlighted=nil（-1/越界）。permission 与 question 两处调用点共享同一组用例（参数化 targets/highlighted）。
+
+**手测**
+1. session 页（不按 ↑↓）按 ⌃R → 进入唯一 waiting session 的 question 页。
+2. 列表含 1 个 waiting + 若干 idle，高亮到 idle 行按 ⌃R → 仍进入该 waiting（1 规则）。
+3. ≥2 个 waiting：高亮 waiting 行 → 进入；高亮 idle 行 → 不动作。
+4. 0 个 waiting 按 ⌃R → 不动作。
+5. **回归**：permission 待批时按 Y/N/A——0/1/2+ 三组行为与改前一致（permission shortcuts spec 测试清单）。
