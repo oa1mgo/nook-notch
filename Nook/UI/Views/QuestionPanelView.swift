@@ -478,7 +478,8 @@ struct QuestionPanelView: View {
         guard currentIndex < pendingQuestions.count - 1 else { return }
         savedFocusByQuestion[currentIndex] = focusedOptionIndex
         currentIndex += 1
-        focusedOptionIndex = savedFocusByQuestion[currentIndex] ?? 0
+        let saved = savedFocusByQuestion[currentIndex] ?? 0
+        focusedOptionIndex = pendingQuestions.indices.contains(saved) ? saved : 0
         isTextFieldFocused = false
         syncSelectionToFocus()
     }
@@ -487,7 +488,8 @@ struct QuestionPanelView: View {
         guard currentIndex > 0 else { return }
         savedFocusByQuestion[currentIndex] = focusedOptionIndex
         currentIndex -= 1
-        focusedOptionIndex = savedFocusByQuestion[currentIndex] ?? 0
+        let saved = savedFocusByQuestion[currentIndex] ?? 0
+        focusedOptionIndex = pendingQuestions.indices.contains(saved) ? saved : 0
         isTextFieldFocused = false
         syncSelectionToFocus()
     }
