@@ -276,6 +276,8 @@ struct SessionListView: View {
                 guard trigger != nil else { return }
                 viewModel.keyboardReplyTrigger = nil // consume (see above)
                 guard viewModel.contentType == .instances else { return }
+                // Target set + 0/1/2+ rule: reply-shortcut spec §3.2 (shared
+                // resolver with permission Y/N/A below).
                 // Single snapshot: `sortedInstances` re-sorts on every access, and
                 // `highlighted` (by index) + `targets` (by filter) must come from the
                 // same array, else index and membership can disagree.
@@ -381,8 +383,8 @@ struct SessionListView: View {
 
         guard chars == "y" || chars == "n" || chars == "a" else { return event }
 
-        // Resolve target (spec §2, shared with question ⌃R via
-        // KeyboardTargetResolver): 0 → none; 1 → ignore highlight;
+        // Resolve target (permission-shortcuts spec §2 — shared with question
+        // ⌃R via KeyboardTargetResolver): 0 → none; 1 → ignore highlight;
         // 2+ → highlight must be a target. Single snapshot for idx + membership.
         let rows = sortedInstances
         let idx = viewModel.keyboardSelectedIndex // -1 = no highlight (NotchViewModel L118)
