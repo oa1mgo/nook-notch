@@ -43,4 +43,15 @@ final class KeyboardTargetResolverTests: XCTestCase {
         let a = makeSession("a"), b = makeSession("b")
         XCTAssertNil(KeyboardTargetResolver.resolve(from: [a, b], highlighted: nil))
     }
+
+    func testMultipleTargetsMatchBySessionIdNotByInstanceOrFields() {
+        // Same sessionId, different content: must still hit by id — this pins
+        // the sessionId-match decision (spec revision ②: no deep Equatable
+        // compare over chatItems/toolTracker; no identity requirement).
+        let inList = SessionState(sessionId: "a", cwd: "/tmp/a")
+        let highlightedCopy = SessionState(sessionId: "a", cwd: "/tmp/a-copy", phase: .processing)
+        let other = makeSession("b")
+        let resolved = KeyboardTargetResolver.resolve(from: [inList, other], highlighted: highlightedCopy)
+        XCTAssertEqual(resolved?.sessionId, "a")
+    }
 }
