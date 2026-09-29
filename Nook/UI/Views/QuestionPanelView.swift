@@ -34,6 +34,9 @@ struct QuestionPanelView: View {
     /// Manual focus tracking for option rows — not using @FocusState because
     /// NSPanel doesn't participate in SwiftUI's focus chain reliably.
     @State private var focusedOptionIndex: Int = 0
+    /// Per-question focus memory: leaving a card saves its focus here,
+    /// entering restores it (0 only for a card never visited).
+    @State private var savedFocusByQuestion: [Int: Int] = [:]
     /// TextField focus — kept as @FocusState so .focused() modifier works
     /// and Tab can programmatically activate it.
     @FocusState private var isTextFieldFocused: Bool
@@ -473,16 +476,18 @@ struct QuestionPanelView: View {
 
     private func goNextQuestion() {
         guard currentIndex < pendingQuestions.count - 1 else { return }
+        savedFocusByQuestion[currentIndex] = focusedOptionIndex
         currentIndex += 1
-        focusedOptionIndex = 0
+        focusedOptionIndex = savedFocusByQuestion[currentIndex] ?? 0
         isTextFieldFocused = false
         syncSelectionToFocus()
     }
 
     private func goPreviousQuestion() {
         guard currentIndex > 0 else { return }
+        savedFocusByQuestion[currentIndex] = focusedOptionIndex
         currentIndex -= 1
-        focusedOptionIndex = 0
+        focusedOptionIndex = savedFocusByQuestion[currentIndex] ?? 0
         isTextFieldFocused = false
         syncSelectionToFocus()
     }
