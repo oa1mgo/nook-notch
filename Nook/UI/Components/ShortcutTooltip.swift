@@ -23,6 +23,7 @@ struct ShortcutTooltip: ViewModifier {
     private static let bubbleFont = Font.system(size: 10, weight: .medium)
     private static let bubbleHPadding: CGFloat = 10   // 5 per side
     private static let bubbleVPadding: CGFloat = 4    // 2 per side
+    private static let bubbleHeight: CGFloat = 17     // single-line 10pt text + vpadding
     private static let bubbleGap: CGFloat = 16        // cursor → bubble
     private static let widthSlack: CGFloat = 6        // estimation margin
 
@@ -90,12 +91,11 @@ struct ShortcutTooltip: ViewModifier {
         let text = shortcut ?? ""
         let estW = (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10, weight: .medium)]).width
             + Self.bubbleHPadding + Self.widthSlack
-        let estH: CGFloat = 17
         var x = hoverPoint.x
         if x + estW > anchorSize.width {
             x = anchorSize.width - estW   // right-align to host; may go negative
         }
-        let y = above ? hoverPoint.y - Self.bubbleGap - estH
+        let y = above ? hoverPoint.y - Self.bubbleGap - Self.bubbleHeight
                       : hoverPoint.y + Self.bubbleGap
         return CGPoint(x: x, y: y)
     }

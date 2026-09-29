@@ -54,7 +54,7 @@ Question 面板当前的键盘交互是"焦点 + 选中"两状态模型：
 ### 3. 键位提示（info 图标 + tooltip）
 
 - `backRow` **内部**（MenuRow 右侧的 Spacer 之间）放 `info.circle` SF Symbol（11pt，`white.opacity(0.4)`）。注意多题时 pager `‹ 1/2 ›` 以 `.trailing` 叠加在同一行（`singleQuestionCard` 的 ZStack），info 图标必须留在 backRow 内、pager 左侧，不能共用 trailing 位置
-- 悬停显示 tooltip（共享 `ShortcutTooltip` 组件 —— `.help` 在 notch NSPanel 中不生效，全面板已替换；气泡 0.2s 延迟跟随光标，贴右缘自动向左翻转，底部元素上翻），文案按**当前题卡**动态生成：
+- 悬停显示 tooltip（共享 `ShortcutTooltip` 组件 —— `.help` 在 notch NSPanel 中不生效，Question 面板 6 处已替换、其余面板的 `.help` 属 follow-up；气泡 0.2s 延迟跟随光标，贴右缘自动向左翻转，底部元素上翻），文案按**当前题卡**动态生成：
   - 单选（非 custom）：`⌃N/⌃P 选择 · Enter 发送`
   - 多选（非 custom）：`⌃N/⌃P 移动 · Space 选中 · Enter 发送`
   - 单选 + custom：`⌃N/⌃P 选择 · Tab 输入 · Enter 发送`
