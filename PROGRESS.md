@@ -13,7 +13,8 @@
 - [2026-09-22] yabai 缺失 UX 提示 — fallback 可用但精度低无提示。Done when: 设置页说明或失败一次性提示落地
 
 ## Verify
-- [2026-09-30] session list ⌃R 单一 pending 直达 — ea309a6..5e1e5d7（resolver+11 新测试，95 全绿，双 review 通过）。Awaiting: Task 5 手测 6 项（清单见 plan §Task 5）
+- [2026-09-30] upstream sync + 1.5.0 + PR — upstream 134 commits 合入（merge `c260262`，4 冲突 union 解，`detectTerminalError` 迁 `transcriptURLs` API），186 全绿，1.5.0 bump `d272e2c`，已 push + PR #19（oa1mgo/nook-notch）。Awaiting: PR review/merge（无 CI checks）
+- [2026-09-30] session list ⌃R 单一 pending 直达 — ea309a6..5e1e5d7 + 3908360（resolver+11 新测试，95 全绿，双 review 通过，已随 PR #19 上送）。Awaiting: Task 5 手测 6 项（清单见 plan §Task 5，Nook 已重启到 1.5.0）
 - [2026-09-24] session list Y/N/A shortcuts — c1d7d25..1cd5e3b，用户确认 N 可响应（重启 Nook 后）。Awaiting: Esc 不关 notch、2+ pending 需高亮、通知不抢焦点
 - [2026-09-22] Ctrl+R 打开 question panel — bc3d053/0ed93de，session list + chat view 双路径。Awaiting: 用户手测
 - [2026-09-22] permission Y/N/A + auto-expand — 0ed93de，log 证实 08:07 Y、08:15 A→C 全链路（permission.asked→expand→replied）。Awaiting: 用户手感/视觉确认
@@ -157,7 +158,7 @@ opencode 行为要对齐 claude:子代理 reasoning/text 不下沉到 chat,tool 
 **4 个 ordering case + 接入新 provider 指南 + BlockTypePriority 因果链** 全部在 **`Nook/Models/ChatItemUpdate.swift` 顶部 + `BlockOrdering` enum 注释**。设计 spec: `docs/specs/2026-06-11-unified-chatitem-middle-layer-design.md`。PROGRESS 这块只剩指针。
 
 ## ⚡ Quick Recovery
-- **branch**: `main`（upstream 同步已完成，merge commit 7614dad）
+- **branch**: `main`（upstream 同步 → merge `c260262`，v1.5.0 `d272e2c`，PR #19 待 review）
 - **主战场文件**:
   - `Nook/UI/Views/AgentSettingsView.swift`（agents 设置页：keyboard nav + brand icon + brandIcon helper）
   - `Nook/UI/Views/NotchMenuView.swift`（`MenuRow` 共享组件 + customIcon + trailingLabel 样式）
