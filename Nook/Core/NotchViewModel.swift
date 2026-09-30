@@ -604,6 +604,10 @@ class NotchViewModel: ObservableObject {
             agentsClaudeDirPickerExpanded = false
             agentsContentHeight = agentsBaseHeight
         }
+        // Same stale-UUID clear as `exitChat`/`navigateBack` — SessionListView
+        // re-subscribes on remount and @Published would replay it.
+        keyboardActivateTrigger = nil
+        keyboardReplyTrigger = nil
         contentType = contentType == .menu ? .instances : .menu
     }
 
