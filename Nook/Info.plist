@@ -14,6 +14,8 @@
     <string>$(MARKETING_VERSION)</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Nook analyzes system audio locally so Music Edge Glow can react to real accents. Audio is never recorded, stored, or uploaded.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright 2025. All rights reserved.</string>
 

@@ -121,6 +121,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        MusicAudioAnalyzer.shared.stop()
         mixpanel?.flush()
         screenObserver = nil
     }

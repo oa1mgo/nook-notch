@@ -152,9 +152,19 @@ struct CodexHookInstaller {
         }
 
         let command = "\(detectPythonExecutable()) \(shellQuote(bridgeScript.path))"
-        let handler: [String: Any] = ["type": "command", "command": command]
+        let handler: [String: Any] = [
+            "type": "command",
+            "command": command,
+            "timeout": 5,
+        ]
+        let sessionEndHandler: [String: Any] = [
+            "type": "command",
+            "command": command,
+            "timeout": 3,
+        ]
         let allEvents: [(String, [[String: Any]])] = [
             ("SessionStart", [["matcher": "startup|resume|clear|compact", "hooks": [handler]]]),
+            ("SessionEnd", [["hooks": [sessionEndHandler]]]),
             ("UserPromptSubmit", [["hooks": [handler]]]),
             ("PreToolUse", [["hooks": [handler]]]),
             ("PermissionRequest", [["hooks": [handler]]]),
@@ -175,7 +185,7 @@ struct CodexHookInstaller {
         json["hooks"] = hooks
 
         if let data = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: hooksFile)
+            try? data.write(to: hooksFile, options: .atomic)
         }
     }
 
@@ -206,7 +216,8 @@ struct CodexHookInstaller {
         return false
     }
 
-    /// Uninstall Codex hooks: remove bridge script, disable feature flag, clean hooks.json
+    /// Uninstall only Nook's Codex hooks. Preserve the shared hooks feature flag
+    /// because the user may have other personal or plugin-provided hooks.
     static func uninstall() {
         try? FileManager.default.removeItem(at: bridgeScript)
 
@@ -234,7 +245,7 @@ struct CodexHookInstaller {
         }
 
         if let data = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: hooksFile)
+            try? data.write(to: hooksFile, options: .atomic)
         }
     }
 

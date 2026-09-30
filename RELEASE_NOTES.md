@@ -8,6 +8,61 @@ What's New
 
   - Terminal Focus Extraction — `ChatView`'s three-tier terminal-focus logic (yabai/tmux → process tree → bundle-ID fallback) is extracted into a reusable `TerminalFocusHelper`, so the question panel and other callers can focus a terminal without a view dependency.
 
+## 1.4.3
+
+What's Fixed
+
+  - Restored Codex User Messages — recognizes Desktop's direct UserMessage events alongside the legacy user_message format. Real user input appears again; injected memory, environment context, and duplicate model-input records remain excluded.
+  - Complete Codex History — loads every matching rollout fragment, validates the actual session identity, and tracks each file independently. Stable message IDs prevent duplicate history on reload and overlapping fragments.
+  - Live Conversation Updates — refreshes transcript content after hooks and while a turn is active, including text-only replies and a bounded final-response catch-up after Stop. History refresh does not reactivate completed sessions or replay completion notifications.
+  - Safer Resets and Ordering — serializes concurrent reads, cancels stale results on clear/end, and orders transcript text and live tools by source timestamps.
+  - Xcode Compatibility — explicitly qualifies Markdown.Document to avoid the new SwiftUI.Document name collision in Xcode 27; rendering behavior is unchanged.
+  - Release Version — Nook 1.4.3 (build 3). Music Glow, audio permissions, native installer layout, and signing policy are unchanged.
+
+## 1.4.2
+
+What's New
+
+  - Refined Music Accents (Beta) — evaluates frequency ranges independently so quieter pickups are less likely to block following heavy hits, and alternating low- and mid-frequency accents remain eligible.
+  - Better Strong/Weak Separation — considers each attack's importance in the whole mix, reduces over-bright responses to minor accompaniment, and rejects tested smooth bass modulation and fading-tail artifacts.
+  - Gentler Slow-Passage Tails — gradually lengthens visible falloff when repeated sparse accents support it, while keeping the 50ms rise, immediate decline, album-colored ambient base, and existing glow appearance. Dense music remains responsive; real-audio response stays opt-in.
+  - Simple Native Installer — replaces the custom image-based installer with a compact 480 × 280 Finder window and real Nook / Applications icons. No background image, Retina bitmap selection, or scaled decorative text remains.
+  - Stronger Regression Checks — 99 app tests and 16 packaging tests cover music timing, fast/slow transitions, pause/reset behavior, native Finder layout, and the Applications drop target. Packaged app signatures and disk images are verified before publication.
+  - Republished 1.4.2 (Build 2) — replaces the earlier 1.4.2 installer and includes the latest Music Glow improvements. Download this DMG again if you have the original 1.4.2 package. The regular permission-free glow is unchanged; audio-reactive behavior remains experimental and Bluetooth output delay is not automatically compensated.
+
+## 1.4.1
+
+What's New
+
+  - Redesigned Installer — introduces a compact drag-to-install window with Nook on the left, a working Applications shortcut on the right, clear instructions, and a Retina-ready background.
+  - More Responsive Music Glow (Beta) — replaces tempo-lock and fixed-stride gating with multi-band audio transient detection and timestamped animations. Active audio analysis no longer adds periodic flashes unrelated to the music.
+  - Ambient Music Light — keeps a low album-colored base beneath accents so the glow brightens and settles back naturally. Pausing fades the light out and stops capture; sustained silence also extinguishes it.
+  - Existing Controls Preserved — regular Music Edge Glow keeps its permission-free breathing effect, while real-audio response remains behind the separate Beta Features opt-in. Glow size, colors, and maximum brightness are unchanged.
+  - Safer Packaging — validates the Applications link, Finder layout, disk-image integrity, and packaged app signature before publishing. English and Chinese READMEs now include installation instructions and the new window screenshot.
+  - Release Version — bumps Nook to version 1.4.1. Audio-reactive behavior remains experimental; Bluetooth output delay is not automatically compensated.
+
+## 1.4.0
+
+What's New
+
+  - Audio-Reactive Music Glow (Beta) — adds an opt-in Beta Features control that follows system output audio with locally derived spectrum, tempo, and prominent accents.
+  - Live Compact Music Bars — drives the small-notch four-bar visualization from real audio while analysis is active, while retaining the simulated animation when it is not.
+  - Permission-Friendly Fallback — keeps the regular Music Edge Glow permission-free with its existing breathing effect, starts capture only when the Beta option is enabled, and falls back cleanly with actionable feedback if capture fails.
+  - Refined Codex Activity Feedback — restores the animated Codex processing ring in session and chat rows, and uses the ChatGPT knot mark for activity in the small notch while preserving the Codex product icon in Agents settings.
+  - Regression Coverage — adds presentation-policy and signal-processing tests for the new audio-reactive behavior; the full macOS suite passes 60 tests.
+  - Release Version — bumps Nook to version 1.4.0.
+
+## 1.3.3
+
+What's New
+
+  - Current Codex Hook Lifecycle — adds `SessionEnd` handling alongside the existing start, prompt, tool, compaction, subagent, and stop hooks so sessions are removed promptly when the main thread ends.
+  - Direct User Conversation History — records user history from Codex's dedicated direct-interaction event and no longer treats injected memories, environment context, or plugin recommendations as user messages.
+  - Updated Tool Payload Support — preserves current Codex string tool inputs and text results carried in array-based tool outputs.
+  - Safer Hook Configuration — writes hook configuration atomically, preserves unrelated user and plugin hooks during uninstall, and uses Codex's three-second maximum specifically for `SessionEnd`.
+  - Regression Coverage — adds tests for `SessionEnd`, direct-user filtering, and current tool input/output payload shapes.
+  - Release Version — bumps Nook to version 1.3.3.
+
 ## 1.3.2
 
 What's New

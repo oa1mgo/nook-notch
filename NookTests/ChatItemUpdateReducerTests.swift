@@ -2,6 +2,26 @@ import XCTest
 @testable import Nook
 
 final class ChatItemUpdateReducerTests: XCTestCase {
+    func testBatchMatchesSequentialContentMutations() {
+        let updates = [
+            ChatItemUpdate(id: "reply", sessionId: "session", block: .assistantText("answer"), ordering: .timestamp(fixedDate(3)), mutation: .insert, provider: .codex),
+            ChatItemUpdate(id: "user", sessionId: "session", block: .userPrompt("question"), ordering: .timestamp(fixedDate(1)), mutation: .insert, provider: .codex),
+            ChatItemUpdate(id: "tool", sessionId: "session", block: .toolCall(makeToolCall(id: "tool")), ordering: .timestamp(fixedDate(2)), mutation: .insert, provider: .codex),
+            ChatItemUpdate(id: "tool", sessionId: "session", block: .toolCall(makeToolCall(id: "tool", status: .success, result: "done")), ordering: .timestamp(fixedDate(4)), mutation: .updateStatus, provider: .codex)
+        ]
+        var sequential: [ChatHistoryItem] = []
+        var sequentialOrderings: [String: BlockOrdering] = [:]
+        for update in updates {
+            ChatItemUpdateReducer.apply(update, items: &sequential, orderings: &sequentialOrderings, now: fixedDate(5))
+        }
+        var batch: [ChatHistoryItem] = []
+        var batchOrderings: [String: BlockOrdering] = [:]
+        ChatItemUpdateReducer.applyBatch(updates, items: &batch, orderings: &batchOrderings, now: fixedDate(5))
+        XCTAssertEqual(batch, sequential)
+        XCTAssertEqual(batchOrderings, sequentialOrderings)
+        XCTAssertEqual(batch.map(\.id), ["user", "tool", "reply"])
+    }
+
     func testAppendOrderPreservesInsertionOrderDespiteTimestamps() {
         var items: [ChatHistoryItem] = []
         var orderings: [String: BlockOrdering] = [:]

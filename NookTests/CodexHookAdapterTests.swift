@@ -57,6 +57,26 @@ final class CodexHookAdapterTests: XCTestCase {
         XCTAssertTrue(isError)
     }
 
+    func testSessionEndDecodesReason() throws {
+        let envelope = try decodeCodexEnvelope(#"""
+        {
+          "origin": "codex",
+          "hook_event_name": "SessionEnd",
+          "session_id": "codex-session",
+          "cwd": "/tmp/project",
+          "reason": "other"
+        }
+        """#)
+
+        guard case .sessionEnd(let sessionId, let cwd, let reason) = CodexHookAdapter.adapt(envelope) else {
+            return XCTFail("Expected sessionEnd event")
+        }
+
+        XCTAssertEqual(sessionId, "codex-session")
+        XCTAssertEqual(cwd, "/tmp/project")
+        XCTAssertEqual(reason, "other")
+    }
+
     func testLegacyCodexPayloadWithoutStatusIsAccepted() throws {
         let envelope = try decodeCodexEnvelope(#"""
         {

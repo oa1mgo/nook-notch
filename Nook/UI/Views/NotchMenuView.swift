@@ -5,6 +5,7 @@
 //  Minimal menu matching Dynamic Island aesthetic
 //
 
+import AppKit
 import ApplicationServices
 import Combine
 import SwiftUI
@@ -24,15 +25,15 @@ struct NotchMenuView: View {
     @State private var didAppear = false
     @State private var isAppearancePickerExpanded = false
     @AppStorage(AppSettings.notchAppearanceStyleKey) private var notchAppearanceStyleRaw = NotchAppearanceStyle.adaptiveArtwork.rawValue
-    @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = true
+    @AppStorage(AppSettings.musicEdgeGlowEnabledKey) private var musicEdgeGlowEnabled = false
     @AppStorage(AppSettings.vibeGlowEnabledKey) private var vibeGlowEnabled = false
 
-    /// Compile-time layout for the menu page. 13 visible rows + 5
+    /// Compile-time layout for the menu page. 14 visible rows + 5
     /// dividers (Back, divider, Screen, Sound, Agents..., Performance...,
     /// Keyboard..., divider, Appearance, Music Edge, Vibe, divider,
-    /// Launch, Accessibility, divider, Star, divider, Quit).
+    /// Launch, Accessibility, Beta Features..., divider, Star, divider, Quit).
     static var pageLayout: PageLayout {
-        PageLayout(rowCount: 13, dividerCount: 5)
+        PageLayout(rowCount: 14, dividerCount: 5)
     }
 
     /// Total height the menu VStack should report, given which pickers
@@ -198,6 +199,16 @@ struct NotchMenuView: View {
 
                 AccessibilityRow(isEnabled: AXIsProcessTrusted(), primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor, isFocused: viewModel.settingsFocusedIndex == 10)
 
+                MenuRow(
+                    icon: "testtube.2",
+                    label: "Beta Features...",
+                    trailingIcon: "chevron.right",
+                    primaryTextColor: primaryTextColor,
+                    isFocused: viewModel.settingsFocusedIndex == 11
+                ) {
+                    viewModel.pushTo(.betaFeatures)
+                }
+
                 Divider()
                     .background(separatorColor)
                     .padding(.vertical, 4)
@@ -207,7 +218,7 @@ struct NotchMenuView: View {
                     label: "Star on GitHub",
                     trailingLabel: appVersion,
                     primaryTextColor: primaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 11
+                    isFocused: viewModel.settingsFocusedIndex == 12
                 ) {
                     if let url = URL(string: "https://github.com/oa1mgo/nook") {
                         NSWorkspace.shared.open(url)
@@ -224,7 +235,7 @@ struct NotchMenuView: View {
                     trailingLabel: "⌘Q",
                     isDestructive: true,
                     primaryTextColor: primaryTextColor,
-                    isFocused: viewModel.settingsFocusedIndex == 12
+                    isFocused: viewModel.settingsFocusedIndex == 13
                 ) {
                     NSApplication.shared.terminate(nil)
                 }
@@ -327,10 +338,12 @@ struct NotchMenuView: View {
                 NSWorkspace.shared.open(url)
             }
         case 11:
+            viewModel.pushTo(.betaFeatures)
+        case 12:
             if let url = URL(string: "https://github.com/oa1mgo/nook") {
                 NSWorkspace.shared.open(url)
             }
-        case 12: NSApplication.shared.terminate(nil)
+        case 13: NSApplication.shared.terminate(nil)
         default: break
         }
     }

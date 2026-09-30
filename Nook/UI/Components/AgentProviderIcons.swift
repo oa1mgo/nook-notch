@@ -19,7 +19,7 @@ struct AgentIcon: View {
         case .claude:
             ClaudeCrabIcon(size: size, color: color, animateLegs: animate)
         case .codex:
-            CodexLogoIcon(size: size, color: color, isAnimating: animate)
+            ChatGPTLogoIcon(size: size, color: color, isAnimating: animate)
         case .opencode:
             // Use the brand ring (not the generic `terminal` SF
             // Symbol) so all four providers are visually
@@ -28,6 +28,39 @@ struct AgentIcon: View {
             OpenCodeLogoIcon(size: size, color: color, isAnimating: animate)
         case .cursor:
             CursorLogoIcon(size: size, color: color, isAnimating: animate)
+        }
+    }
+}
+
+/// Compact ChatGPT mark used only for live Codex activity in the notch.
+/// The Agents settings page keeps `CodexLogoIcon`, where the Codex product
+/// identity is still the more useful label.
+struct ChatGPTLogoIcon: View {
+    let size: CGFloat
+    let color: Color
+    var isAnimating: Bool = false
+
+    init(size: CGFloat = 16, color: Color = .white, isAnimating: Bool = false) {
+        self.size = size
+        self.color = color
+        self.isAnimating = isAnimating
+    }
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let cycle = timeline.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: 1.7) / 1.7
+            let triangle = cycle < 0.5 ? cycle * 2 : (1 - cycle) * 2
+            let easedPulse = triangle * triangle * (3 - 2 * triangle)
+
+            Image("ChatGPTLogo")
+                .resizable()
+                .renderingMode(.template)
+                .scaledToFit()
+                .foregroundStyle(color)
+                .frame(width: size, height: size)
+                .scaleEffect(isAnimating ? CGFloat(0.88 + 0.12 * easedPulse) : 1.0)
+                .opacity(isAnimating ? 0.72 + 0.28 * easedPulse : 1.0)
         }
     }
 }
