@@ -72,8 +72,24 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case selectPrevious
     case selectNext
     case enterSession
+    case replyToQuestion
     case navigateBack
     case openSettings
+
+    /// Whether the question panel drives this action's default keys itself
+    /// when the notch is on the question page (⌃N/⌃P/↑/↓ move option focus,
+    /// Enter sends, ⌃R is a no-op there). ShortcutManager must yield those
+    /// keys to the panel's own local monitor instead of consuming them —
+    /// `handleShortcutAction` ignores them on `.question`, so swallowing the
+    /// key made ⌃N/⌃P appear dead (2026-09-28).
+    var isOwnedByQuestionPanel: Bool {
+        switch self {
+        case .selectPrevious, .selectNext, .enterSession, .replyToQuestion:
+            return true
+        case .toggleNotch, .closeNotch, .navigateBack, .openSettings:
+            return false
+        }
+    }
 
     var displayName: String {
         switch self {
@@ -82,6 +98,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .selectPrevious:  return "Navigate Up"
         case .selectNext:      return "Navigate Down"
         case .enterSession:    return "Open"
+        case .replyToQuestion: return "Reply to Question"
         case .navigateBack:    return "Go Back"
         case .openSettings:    return "Open Settings"
         }
@@ -94,6 +111,7 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .selectPrevious:  return "chevron.up"
         case .selectNext:      return "chevron.down"
         case .enterSession:    return "arrow.forward"
+        case .replyToQuestion: return "questionmark.bubble.fill"
         case .navigateBack:    return "arrow.uturn.left"
         case .openSettings:    return "gearshape"
         }
@@ -119,6 +137,8 @@ enum ShortcutAction: String, CaseIterable, Codable {
             ]
         case .enterSession:
             return [KeyCombination(keyCode: 36, flags: ModifierFlagsWrapper(rawValue: 0))] // Enter
+        case .replyToQuestion:
+            return [KeyCombination(keyCode: 15, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃R (keyCode 15 = R)
         case .navigateBack:
             return [KeyCombination(keyCode: 4, flags: ModifierFlagsWrapper(rawValue: NSEvent.ModifierFlags.control.rawValue))] // ⌃H (keyCode 4 = H)
         case .openSettings:

@@ -14,7 +14,7 @@ final class OpencodeChatItemAdapterTests: XCTestCase {
         ))
         XCTAssertEqual(sessionStart.chatItemUpdates.count, 0)
         XCTAssertEqual(sessionStart.passthroughEvents.count, 1)
-        guard case .sessionStart(let startedSession, let cwd) = sessionStart.passthroughEvents[0] else {
+        guard case .sessionStart(let startedSession, let cwd, _, _) = sessionStart.passthroughEvents[0] else {
             return XCTFail("Expected sessionStart passthrough")
         }
         XCTAssertEqual(startedSession, sessionId)
@@ -219,6 +219,89 @@ final class OpencodeChatItemAdapterTests: XCTestCase {
             type: type,
             properties: allProperties.mapValues { AnyCodable($0) }
         )
+    }
+
+    func testTodoWriteParsesStructuredResult() {
+        let sessionId = "opencode-session-\(UUID().uuidString)"
+        let adapter = OpencodeChatItemAdapter.shared
+        adapter.clearSession(sessionId)
+
+        _ = adapter.adaptAndConvert(envelope(
+            "session.updated",
+            sessionId: sessionId,
+            properties: ["info": ["directory": "/tmp/project"]]
+        ))
+
+        let todoOutput = """
+        [
+          {"content": "Task 1", "status": "pending", "priority": "high"},
+          {"content": "Task 2", "status": "in_progress", "priority": "medium"},
+          {"content": "Task 3", "status": "completed", "priority": "low"}
+        ]
+        """
+
+        // opencode fires `running` 2-3 times per call before `completed`;
+        // `OpencodeHookAdapter.handleToolPart` skips the postTool unless
+        // `runningToolCallIds` already contains the callID. Sending running
+        // first mirrors production event ordering.
+        _ = adapter.adaptAndConvert(envelope(
+            "message.part.updated",
+            sessionId: sessionId,
+            properties: [
+                "part": [
+                    "type": "tool",
+                    "messageID": "msg-assistant",
+                    "tool": "todowrite",
+                    "callID": "call-todo",
+                    "state": [
+                        "status": "running",
+                        "input": ["todos": todoOutput]
+                    ]
+                ]
+            ]
+        ))
+
+        let postTool = adapter.adaptAndConvert(envelope(
+            "message.part.updated",
+            sessionId: sessionId,
+            properties: [
+                "part": [
+                    "type": "tool",
+                    "messageID": "msg-assistant",
+                    "tool": "todowrite",
+                    "callID": "call-todo",
+                    "state": [
+                        "status": "completed",
+                        "output": todoOutput
+                    ]
+                ]
+            ]
+        ))
+
+        XCTAssertEqual(postTool.chatItemUpdates.count, 1)
+        guard case .toolCall(let tool) = postTool.chatItemUpdates[0].block else {
+            return XCTFail("Expected tool call")
+        }
+        XCTAssertEqual(tool.status, .success)
+
+        guard let structured = tool.structuredResult,
+              case .todoWrite(let todoResult) = structured else {
+            return XCTFail("Expected TodoWriteResult")
+        }
+        XCTAssertEqual(todoResult.newTodos.count, 3)
+        XCTAssertEqual(todoResult.newTodos[0].content, "Task 1")
+        XCTAssertEqual(todoResult.newTodos[0].status, "pending")
+        XCTAssertEqual(todoResult.newTodos[1].content, "Task 2")
+        XCTAssertEqual(todoResult.newTodos[1].status, "in_progress")
+        XCTAssertEqual(todoResult.newTodos[2].content, "Task 3")
+        XCTAssertEqual(todoResult.newTodos[2].status, "completed")
+
+        _ = adapter.adaptAndConvert(envelope(
+            "session.status",
+            sessionId: sessionId,
+            properties: ["status": ["type": "idle"]]
+        ))
+        adapter.clearSession(sessionId)
     }
 
     private func assertMessageRelativeOrdering(

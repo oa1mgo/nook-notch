@@ -8,6 +8,30 @@
 import Combine
 import SwiftUI
 
+extension SessionState {
+    /// SOI: row renders InlineApprovalButtons — keyboard Y/N/A target.
+    /// Mirrors InstanceRow action-area branch (SessionListView.swift
+    /// `isWaitingForTerminalApproval || (... && isInteractiveTool)` first,
+    /// then approval buttons). Keep both in sync when either changes.
+    ///
+    /// Premise: `phase.isWaitingForApproval` matches ONLY
+    /// `.waitingForApproval` (SessionPhase.swift L266-269) — terminal-side
+    /// `.waitingForTerminalApproval` is a different case and is NOT
+    /// included. Targets do not pass through InstanceRow's else-if chain,
+    /// so this exclusivity is what keeps terminal-approval rows out of the
+    /// keyboard target set. Do not "merge" the two phase helpers.
+    var showsInlineApprovalButtons: Bool {
+        guard phase.isWaitingForApproval else { return false }
+        if let tool = pendingToolName, ToolCallItem.kind(of: tool) == .askUserQuestion {
+            return false // branch 1: Go to Terminal, not Y/N/A
+        }
+        return true
+    }
+
+    /// Always button exists only for OpenCode (mirrors onApproveAlways wiring at call site L195).
+    var canApproveAlways: Bool { showsInlineApprovalButtons && provider == .opencode }
+}
+
 struct SessionListView: View {
     @ObservedObject var sessionMonitor: SessionMonitor
     @ObservedObject var viewModel: NotchViewModel
@@ -19,6 +43,12 @@ struct SessionListView: View {
     @State private var instanceRowHeight: CGFloat = 0
     @State private var performanceRowHeight: CGFloat = 0
     @State private var musicCardHeight: CGFloat = 0
+    /// The session currently in Always-confirm mode (Patterns + Cancel/Confirm).
+    /// Parent-scoped so only one row can be in confirm mode at a time and the
+    /// keyboard path can drive it (spec §5).
+    @State private var confirmingSessionId: String?
+    /// Local keyDown monitor for Y/N/A/C/Esc (installed on appear — spec §4).
+    @State private var keyMonitor: Any?
 
     private var showsPerformanceRow: Bool { isPerformanceMonitorEnabled }
     private var showsMusicCard: Bool { musicManager.isVisible }
@@ -102,6 +132,7 @@ struct SessionListView: View {
         }
         .onAppear {
             syncLayoutMetrics()
+            installKeyboardMonitor()
         }
         .onChange(of: musicManager.isVisible) { _, _ in
             syncLayoutMetrics()
@@ -120,6 +151,16 @@ struct SessionListView: View {
         }
         .onChange(of: instanceRowHeight) { _, _ in
             syncLayoutMetrics()
+        }
+        .onChange(of: approvalTargets) { _, newTargets in
+            if let id = confirmingSessionId,
+               !newTargets.contains(where: { $0.sessionId == id }) {
+                confirmingSessionId = nil
+            }
+        }
+        .onDisappear {
+            removeKeyboardMonitor()
+            confirmingSessionId = nil
         }
     }
 
@@ -169,6 +210,11 @@ struct SessionListView: View {
         }
     }
 
+    /// Rows that render InlineApprovalButtons — keyboard Y/N/A targets (spec §1).
+    private var approvalTargets: [SessionState] {
+        sortedInstances.filter(\.showsInlineApprovalButtons)
+    }
+
     /// Lower number = higher priority
     /// Approval requests share priority with processing to maintain stable ordering
     private func phasePriority(_ phase: SessionPhase) -> Int {
@@ -189,9 +235,15 @@ struct SessionListView: View {
                             onFocus: { focusSession(session) },
                             onChat: { openChat(session) },
                             onArchive: { archiveSession(session) },
+                            onReply: session.phase == .waitingForInput ? { replyToQuestion(session) } : nil,
                             onApprove: { approveSession(session) },
                             onReject: { rejectSession(session) },
-                            isKeyboardSelected: index == viewModel.keyboardSelectedIndex
+                            onApproveAlways: session.provider == .opencode ? { approveAlwaysSession(session) } : nil,
+                            isKeyboardSelected: index == viewModel.keyboardSelectedIndex,
+                            isConfirmingAlways: Binding(
+                                get: { confirmingSessionId == session.sessionId },
+                                set: { confirmingSessionId = $0 ? session.sessionId : nil }
+                            )
                         )
                         .measureHeight(using: InstanceRowHeightKey.self) {
                             if index == 0 {
@@ -211,10 +263,30 @@ struct SessionListView: View {
                 }
             }
             .onReceive(viewModel.$keyboardActivateTrigger) { trigger in
-                guard trigger != nil,
-                      viewModel.keyboardSelectedIndex >= 0,
+                guard trigger != nil else { return }
+                // Consume immediately: @Published replays the current value to
+                // every new subscription, and this view re-subscribes every time
+                // it re-mounts (chat → back). A leftover UUID would re-fire.
+                viewModel.keyboardActivateTrigger = nil
+                guard viewModel.keyboardSelectedIndex >= 0,
                       viewModel.keyboardSelectedIndex < sortedInstances.count else { return }
                 openChat(sortedInstances[viewModel.keyboardSelectedIndex])
+            }
+            .onReceive(viewModel.$keyboardReplyTrigger) { trigger in
+                guard trigger != nil else { return }
+                viewModel.keyboardReplyTrigger = nil // consume (see above)
+                guard viewModel.contentType == .instances else { return }
+                // Target set + 0/1/2+ rule: reply-shortcut spec §3.2 (shared
+                // resolver with permission Y/N/A below).
+                // Single snapshot: `sortedInstances` re-sorts on every access, and
+                // `highlighted` (by index) + `targets` (by filter) must come from the
+                // same array, else index and membership can disagree.
+                let rows = sortedInstances
+                let idx = viewModel.keyboardSelectedIndex
+                let highlighted = (idx >= 0 && idx < rows.count) ? rows[idx] : nil
+                let targets = rows.filter { $0.phase == .waitingForInput }
+                guard let target = KeyboardTargetResolver.resolve(from: targets, highlighted: highlighted) else { return }
+                replyToQuestion(target)
             }
         }
     }
@@ -241,12 +313,116 @@ struct SessionListView: View {
         sessionMonitor.approvePermission(sessionId: session.sessionId)
     }
 
+    private func approveAlwaysSession(_ session: SessionState) {
+        DebugLog.shared.write("[notch] approveAlwaysSession sessionId=\(session.sessionId) provider=\(session.provider) activePermission=\(session.activePermission != nil)")
+        sessionMonitor.approvePermission(sessionId: session.sessionId, always: true)
+    }
+
     private func rejectSession(_ session: SessionState) {
         sessionMonitor.denyPermission(sessionId: session.sessionId, reason: nil)
     }
 
+    // MARK: - Keyboard (AppKit local monitor — Y/N/A on instances page)
+
+    private func installKeyboardMonitor() {
+        guard keyMonitor == nil else { return }
+        // Deliberately NO NSApp.activate / makeKey here: NotchWindowController
+        // L75-77 skips activate only for .notification opens (task-finished
+        // notifications mount THIS page while the user types elsewhere —
+        // activating would route subsequent keystrokes into Nook and a stray
+        // `y` could approve a permission). User-initiated opens (click/hover/
+        // hotkey) are already key via the window controller.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            self.handleKeyDown(event)
+        }
+    }
+
+    private func removeKeyboardMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        // Skip when an editable text field is focused (mirrors ChatApprovalBar)
+        if let responder = NSApp.keyWindow?.firstResponder,
+           (responder.isKind(of: NSTextView.self) || responder.isKind(of: NSTextField.self)) {
+            return event
+        }
+
+        // Ignore auto-repeat: holding y/n/a must not cascade-approve as
+        // targets leave the list and count drops 2+ → 1 (spec: multi-pending
+        // requires explicit highlight). First physical press is not a repeat.
+        if event.isARepeat {
+            return event
+        }
+
+        let mods = event.modifierFlags
+        guard !mods.contains(.command), !mods.contains(.control) else { return event }
+
+        let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+        // Confirm step: scoped to confirmingSessionId's row (may differ from highlight)
+        if confirmingSessionId != nil {
+            if chars == "c" {
+                if let id = confirmingSessionId,
+                   let session = sortedInstances.first(where: { $0.sessionId == id }) {
+                    approveAlwaysSession(session)
+                }
+                confirmingSessionId = nil
+                return nil
+            }
+            if event.keyCode == 53 { // Esc — cancel confirm only; NOT closeNotch
+                                     // (list monitor is LIFO-later ⇒ receives first)
+                confirmingSessionId = nil
+                return nil
+            }
+            return event
+        }
+
+        guard chars == "y" || chars == "n" || chars == "a" else { return event }
+
+        // Resolve target (permission-shortcuts spec §2 — shared with question
+        // ⌃R via KeyboardTargetResolver): 0 → none; 1 → ignore highlight;
+        // 2+ → highlight must be a target. Single snapshot for idx + membership.
+        let rows = sortedInstances
+        let idx = viewModel.keyboardSelectedIndex // -1 = no highlight (NotchViewModel L118)
+        let highlighted = (idx >= 0 && idx < rows.count) ? rows[idx] : nil
+        let target: SessionState? = KeyboardTargetResolver.resolve(
+            from: rows.filter(\.showsInlineApprovalButtons), highlighted: highlighted
+        )
+        guard let target else { return event }
+
+        switch chars {
+        case "y":
+            approveSession(target)
+            return nil
+        case "n":
+            rejectSession(target)
+            return nil
+        case "a":
+            guard target.canApproveAlways else { return event } // non-OpenCode: pass through
+            confirmingSessionId = target.sessionId
+            return nil
+        default:
+            return event
+        }
+    }
+
     private func archiveSession(_ session: SessionState) {
         sessionMonitor.archiveSession(sessionId: session.sessionId)
+    }
+
+    /// Skip chat and go straight to the question panel. Previously this
+    /// went through chat first (instances → chat → question) which
+    /// produced a visible "expand then shrink" animation as the panel
+    /// size resolved three times. Going direct (instances → question)
+    /// gives a single, smooth size transition matching the panel's
+    /// intended final dimensions.
+    private func replyToQuestion(_ session: SessionState) {
+        viewModel.notchOpen(reason: .notification)
+        viewModel.pushTo(.question(session))
     }
 }
 
@@ -355,9 +531,21 @@ struct InstanceRow: View {
     let onFocus: () -> Void
     let onChat: () -> Void
     let onArchive: () -> Void
+    /// Optional "Reply to question" affordance. When non-nil, a reply icon
+    /// renders next to the archive button and the click opens the chat view
+    /// with the question panel pushed (so the user doesn't need to enter the
+    /// chat view first then re-open the question UI after collapsing the notch).
+    let onReply: (() -> Void)?
     let onApprove: () -> Void
     let onReject: () -> Void
+    /// Optional "Always allow" affordance. When non-nil, the inline approval
+    /// buttons render a third red-tinted button that grants a session-wide
+    /// allowance. Only wired up for OpenCode sessions.
+    let onApproveAlways: (() -> Void)?
     let isKeyboardSelected: Bool
+    /// Parent-owned Always-confirm mode (was per-row @State — allowed two rows
+    /// to confirm simultaneously; hoisted per spec §5).
+    @Binding var isConfirmingAlways: Bool
 
     @State private var isHovered = false
     @State private var isYabaiAvailable = false
@@ -442,71 +630,90 @@ struct InstanceRow: View {
 
             // Text content
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(session.displayTitle)
+                if isConfirmingAlways {
+                    // Confirm mode: show "Patterns" label + allowed patterns
+                    Text("Patterns")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.white)
                         .lineLimit(1)
+                    let patterns = session.activePermission?.alwaysPatterns ?? []
+                    let text = patterns.count == 1 && patterns[0] == "*"
+                        ? "Allow all until restart"
+                        : patterns.joined(separator: ", ")
+                    MarqueeText(text: text, font: .system(size: 10), color: .white.opacity(0.5))
+                        .frame(maxWidth: 200, alignment: .leading)
+                } else {
+                    HStack(spacing: 6) {
+                        Text(session.displayTitle)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
 
-                    Text(session.provider.displayName)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(providerLabelForeground)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(providerLabelBackground)
-                        .clipShape(Capsule())
+                        Text(session.provider.displayName)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(providerLabelForeground)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(providerLabelBackground)
+                            .clipShape(Capsule())
 
-                    // Token usage indicator
-                    if session.usage.totalTokens > 0 {
-                        Text(session.usage.formattedTotal)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.3))
-                    }
-                }
-
-                // Show tool call when waiting for approval/input, otherwise last activity
-                if (isWaitingForApproval || isWaitingForTerminalApproval || isWaitingForUserInput),
-                   let toolName = session.pendingToolName {
-                    // Show tool name in amber + input on same line
-                    HStack(spacing: 4) {
-                        Text(MCPToolFormatter.formatToolName(toolName))
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundColor(TerminalColors.amber.opacity(0.9))
-                        if isInteractiveTool {
-                            Text("Needs your input")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
-                                .lineLimit(1)
-                        } else if let input = session.pendingToolInput {
-                            Text(input)
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
-                                .lineLimit(1)
+                        if session.usage.totalTokens > 0 {
+                            Text(session.usage.formattedTotal)
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.3))
                         }
                     }
-                } else if let role = session.lastMessageRole {
-                    switch role {
-                    case "tool":
-                        // Tool call - show tool name + input
-                        HStack(spacing: 4) {
-                            if let toolName = session.lastToolName {
-                                Text(MCPToolFormatter.formatToolName(toolName))
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.5))
-                            }
-                            if let input = session.lastMessage {
-                                Text(input)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.4))
-                                    .lineLimit(1)
-                            }
-                        }
-                    case "user":
-                        // User message - prefix with "You:"
-                        HStack(spacing: 4) {
-                            Text("You:")
+
+                    if (isWaitingForApproval || isWaitingForTerminalApproval || isWaitingForUserInput),
+                       let toolName = session.pendingToolName {
+                        HStack(spacing: 6) {
+                            Text(MCPToolFormatter.formatToolName(toolName))
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.5))
+                                .foregroundColor(TerminalColors.amber.opacity(0.9))
+                                .fixedSize(horizontal: true, vertical: false)
+                            if isInteractiveTool {
+                                Text("Needs your input")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.white.opacity(0.5))
+                                    .lineLimit(1)
+                            } else if let input = session.pendingToolInput {
+                                MarqueeText(
+                                    text: input,
+                                    font: .system(size: 11),
+                                    color: .white.opacity(0.5)
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    } else if let role = session.lastMessageRole {
+                        switch role {
+                        case "tool":
+                            HStack(spacing: 4) {
+                                if let toolName = session.lastToolName {
+                                    Text(MCPToolFormatter.formatToolName(toolName))
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .foregroundColor(.white.opacity(0.5))
+                                }
+                                if let input = session.lastMessage {
+                                    Text(input)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.white.opacity(0.4))
+                                        .lineLimit(1)
+                                }
+                            }
+                        case "user":
+                            HStack(spacing: 4) {
+                                Text("You:")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.5))
+                                if let msg = session.lastMessage {
+                                    Text(msg)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.white.opacity(0.4))
+                                        .lineLimit(1)
+                                }
+                            }
+                        default:
                             if let msg = session.lastMessage {
                                 Text(msg)
                                     .font(.system(size: 11))
@@ -514,28 +721,25 @@ struct InstanceRow: View {
                                     .lineLimit(1)
                             }
                         }
-                    default:
-                        // Assistant message - just show text
-                        if let msg = session.lastMessage {
-                            Text(msg)
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.4))
-                                .lineLimit(1)
-                        }
+                    } else if let lastMsg = session.lastMessage {
+                        Text(lastMsg)
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                            .lineLimit(1)
+                    } else {
+                        Text(phaseStatusText)
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                            .lineLimit(1)
                     }
-                } else if let lastMsg = session.lastMessage {
-                    Text(lastMsg)
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.4))
-                        .lineLimit(1)
-                } else {
-                    // Fallback: show phase-based status when no other content
-                    Text(phaseStatusText)
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.4))
-                        .lineLimit(1)
                 }
             }
+            // layoutPriority(1) so the title + status column claims its
+            // natural width first when reply/archive/focus buttons appear
+            // on the right; without this the action icons eat into the
+            // title's available space (especially with 2-3 buttons in
+            // waitingForInput + tmux+yabai rows).
+            .layoutPriority(1)
 
             Spacer(minLength: 0)
 
@@ -543,10 +747,6 @@ struct InstanceRow: View {
             if isWaitingForTerminalApproval || ((isWaitingForApproval || isWaitingForUserInput) && isInteractiveTool) {
                 // Interactive tools and terminal-side approval prompts need terminal focus.
                 HStack(spacing: 8) {
-                    IconButton(icon: "bubble.left") {
-                        onChat()
-                    }
-
                     // Go to Terminal button (only if yabai available)
                     if isYabaiAvailable {
                         TerminalButton(
@@ -556,28 +756,37 @@ struct InstanceRow: View {
                     }
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
-            } else if isWaitingForApproval {
+            } else if session.showsInlineApprovalButtons {
                 InlineApprovalButtons(
-                    onChat: onChat,
                     onApprove: onApprove,
-                    onReject: onReject
+                    onReject: onReject,
+                    onApproveAlways: onApproveAlways,
+                    isConfirmingAlways: $isConfirmingAlways
                 )
+                .layoutPriority(1)
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             } else {
                 HStack(spacing: 8) {
-                    // Chat icon - always show
-                    IconButton(icon: "bubble.left") {
-                        onChat()
-                    }
-
-                    // Focus icon (only for tmux instances with yabai)
+                    // Left: Focus (eye) when available — only for tmux+yabai.
                     if session.isInTmux && isYabaiAvailable {
                         IconButton(icon: "eye") {
                             onFocus()
                         }
                     }
 
-                    // Archive button - only for idle or completed sessions
+                    // Push everything else right.
+                    Spacer(minLength: 0)
+
+                    // Right cluster: Reply (bubble, when waitingForInput)
+                    // sits immediately to the LEFT of Archive so the two
+                    // primary row actions group together. Archive always
+                    // stays at the far-right edge.
+                    if let onReply, session.phase == .waitingForInput {
+                        IconButton(icon: "questionmark.bubble.fill") {
+                            onReply()
+                        }
+                        .help("Reply to question (⌃R)")
+                    }
                     if session.phase == .idle || session.phase == .waitingForInput {
                         IconButton(icon: "archivebox") {
                             onArchive()
@@ -591,7 +800,7 @@ struct InstanceRow: View {
         .padding(.trailing, 14)
         .padding(.vertical, 10)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
+        .onTapGesture(count: 1) {
             onChat()
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isWaitingForApproval)
@@ -617,10 +826,10 @@ struct InstanceRow: View {
         case .waitingForApproval, .waitingForTerminalApproval:
             ProcessingSpinner(color: TerminalColors.amber)
         case .waitingForInput:
-            // Pixel speech bubble (12×12) — visually distinct from the
-            // 6×6 idle dot, matches the opencode ask_user_question /
-            // Claude Code "Ready for input" state semantically.
-            WaitingForInputIcon(size: 12)
+            // Same pixel-art icon as the question close-state / panel
+            // header, tinted amber so the session row matches the
+            // question view. 12pt mirrors the original speech bubble size.
+            PermissionIndicatorIcon(size: 12, color: TerminalColors.amber)
         case .idle, .ended:
             Circle()
                 .fill(Color.white.opacity(0.2))
@@ -632,64 +841,128 @@ struct InstanceRow: View {
 
 // MARK: - Inline Approval Buttons
 
-/// Compact inline approval buttons with staggered animation
+/// Compact inline approval buttons with staggered animation.
+/// When the user taps "Always", the buttons swap to Confirm / Cancel
+/// (inline, no extra text — notch space is too tight for patterns).
 struct InlineApprovalButtons: View {
-    let onChat: () -> Void
     let onApprove: () -> Void
     let onReject: () -> Void
+    let onApproveAlways: (() -> Void)?
+    @Binding var isConfirmingAlways: Bool
 
-    @State private var showChatButton = false
     @State private var showDenyButton = false
     @State private var showAllowButton = false
+    @State private var showAlwaysButton = false
+
+    init(
+        onApprove: @escaping () -> Void,
+        onReject: @escaping () -> Void,
+        onApproveAlways: (() -> Void)? = nil,
+        isConfirmingAlways: Binding<Bool> = .constant(false)
+    ) {
+        self.onApprove = onApprove
+        self.onReject = onReject
+        self.onApproveAlways = onApproveAlways
+        self._isConfirmingAlways = isConfirmingAlways
+    }
 
     var body: some View {
+        // Button row only — patterns info is displayed by the parent (InstanceRow)
         HStack(spacing: 6) {
-            // Chat button
-            IconButton(icon: "bubble.left") {
-                onChat()
-            }
-            .opacity(showChatButton ? 1 : 0)
-            .scaleEffect(showChatButton ? 1 : 0.8)
+            if isConfirmingAlways {
+                Button {
+                    isConfirmingAlways = false
+                } label: {
+                    Text("Cancel (Esc)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .fixedSize(horizontal: true, vertical: false)
 
-            Button {
-                onReject()
-            } label: {
-                Text("Deny")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.6))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.1))
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .opacity(showDenyButton ? 1 : 0)
-            .scaleEffect(showDenyButton ? 1 : 0.8)
+                Button {
+                    DebugLog.shared.write("[notch] Confirm tapped")
+                    isConfirmingAlways = false
+                    onApproveAlways?()
+                } label: {
+                    Text("Confirm (C)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Color(red: 0.92, green: 0.30, blue: 0.25))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.9))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .fixedSize(horizontal: true, vertical: false)
+            } else {
+                Button {
+                    onReject()
+                } label: {
+                    Text("Deny (N)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .fixedSize(horizontal: true, vertical: false)
+                .opacity(showDenyButton ? 1 : 0)
+                .scaleEffect(showDenyButton ? 1 : 0.8)
 
-            Button {
-                onApprove()
-            } label: {
-                Text("Allow")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.9))
-                    .clipShape(Capsule())
+                Button {
+                    onApprove()
+                } label: {
+                    Text("Allow (Y)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.9))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .fixedSize(horizontal: true, vertical: false)
+                .opacity(showAllowButton ? 1 : 0)
+                .scaleEffect(showAllowButton ? 1 : 0.8)
+
+                if onApproveAlways != nil {
+                    Button {
+                        DebugLog.shared.write("[notch] Always tapped")
+                        isConfirmingAlways = true
+                    } label: {
+                        Text("Always (A)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color(red: 0.92, green: 0.30, blue: 0.25))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.9))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .opacity(showAlwaysButton ? 1 : 0)
+                    .scaleEffect(showAlwaysButton ? 1 : 0.8)
+                }
             }
-            .buttonStyle(.plain)
-            .opacity(showAllowButton ? 1 : 0)
-            .scaleEffect(showAllowButton ? 1 : 0.8)
         }
         .onAppear {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.0)) {
-                showChatButton = true
-            }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.05)) {
                 showDenyButton = true
             }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.1)) {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.05)) {
                 showAllowButton = true
+            }
+            if onApproveAlways != nil {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.1)) {
+                    showAlwaysButton = true
+                }
             }
         }
     }

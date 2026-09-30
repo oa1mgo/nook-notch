@@ -46,6 +46,17 @@ actor SessionStore {
     private var pendingCodexStartupSessions: Set<String> = []
     private var ignoredCodexSessions: Set<String> = []
 
+    /// pid → server port, for multi-instance opencode. Sessions bind their
+    /// serverPort from the pid that enrichOpencodeRuntimeMetadata resolves.
+    private var opencodeServerPorts: [Int: Int] = [:]
+    /// Legacy fallback: port from a plugin that reports no pid, or from probe.
+    private var opencodeServerPortFallback: Int?
+
+    /// Running OpenCode plugin version, reported by the plugin in the serverPort
+    /// handshake. Used to detect when OpenCode is still running a stale plugin
+    /// (running version != installed version in the settings UI).
+    private var opencodePluginVersion: String?
+
     /// Sync debounce interval (100ms)
     private let syncDebounceNs: UInt64 = 100_000_000
 
@@ -71,6 +82,31 @@ actor SessionStore {
     /// correct display order regardless of event arrival timing.
     private var blockOrderings: [String: BlockOrdering] = [:]
 
+    /// Sessions that have been explicitly opened via a `SessionStarted`
+    /// event (or via Claude's hook path). The `realtimeChatItemBatch` /
+    /// `chatItemBatch` / `chatItemUpdate` entry points filter against this
+    /// set: chat-item updates for unknown sessionIds are dropped instead of
+    /// being auto-promoted to a top-level `SessionState`. This is the
+    /// contract that keeps subagent child sessions (which never emit a
+    /// SessionStarted because `OpencodeHookAdapter.adaptSubagentEvent`
+    /// short-circuits subagent events) from materializing as standalone
+    /// sessions in the UI. See docs/debug/2026-07-23-subagent-cleanup-bug.md.
+    private var registeredSessionIds: Set<String> = []
+
+    /// SessionIds registered from the plugin's session.list() storage guess
+    /// (provisional), mapped to the plugin-injected instance pid. When the
+    /// same pid starts a different session, an inactive provisional entry is
+    /// removed — this is the `--port` connect phantom-Idle fix: the TUI
+    /// creates a new session instead of resuming the guessed one. Entries
+    /// with unknown pid are never recorded (conservatively never removed).
+    private var provisionalSessionPids: [String: Int] = [:]
+
+    /// Buffer for chat-item updates that arrive before their session is registered.
+    /// Subagent child sessions are intentionally never registered (they don't emit
+    /// SessionStarted), so their buffered updates are naturally dropped. Top-level
+    /// sessions get registered via processOpencodeSessionStart and flush their buffer.
+    private var earlyChatItemBuffer: [String: [ChatItemUpdate]] = [:]
+
     // MARK: - Published State (for UI)
 
     /// Publisher for session state changes (nonisolated for Combine subscription from any context)
@@ -78,6 +114,9 @@ actor SessionStore {
 
     /// One-shot completion notifications for UI affordances like sound/bounce.
     private nonisolated(unsafe) let completionNotificationsSubject = PassthroughSubject<SessionCompletionNotification, Never>()
+
+    /// Current running OpenCode plugin version (nil until the plugin handshake).
+    private nonisolated(unsafe) let opencodePluginVersionSubject = CurrentValueSubject<String?, Never>(nil)
 
     /// Public publisher for UI subscription
     nonisolated var sessionsPublisher: AnyPublisher<[SessionState], Never> {
@@ -87,6 +126,11 @@ actor SessionStore {
     /// Public completion notification stream for UI-only affordances.
     nonisolated var completionNotificationsPublisher: AnyPublisher<SessionCompletionNotification, Never> {
         completionNotificationsSubject.eraseToAnyPublisher()
+    }
+
+    /// Current running OpenCode plugin version stream (nil until known).
+    nonisolated var opencodePluginVersionPublisher: AnyPublisher<String?, Never> {
+        opencodePluginVersionSubject.eraseToAnyPublisher()
     }
 
     private nonisolated var mixpanel: MixpanelInstance? {
@@ -108,6 +152,7 @@ actor SessionStore {
             await processHookEvent(hookEvent)
 
         case .codexSessionStarted(let sessionId, let cwd, let source):
+            registerSession(sessionId: sessionId)
             processCodexSessionStart(sessionId: sessionId, cwd: cwd, source: source)
             scheduleCodexTranscriptSync(sessionId: sessionId)
 
@@ -155,19 +200,35 @@ actor SessionStore {
             processCodexStop(sessionId: sessionId, cwd: cwd)
             scheduleCodexTranscriptSync(sessionId: sessionId)
 
-        case .opencodeSessionStarted(let sessionId, let cwd):
-            processOpencodeSessionStart(sessionId: sessionId, cwd: cwd)
+        case .opencodeSessionStarted(let sessionId, let cwd, let provisional, let pid):
+            registerSession(sessionId: sessionId)
+            processOpencodeSessionStart(sessionId: sessionId, cwd: cwd, provisional: provisional, pid: pid)
 
         case .opencodeProcessingStarted(let sessionId, let cwd):
             processOpencodeProcessingStarted(sessionId: sessionId, cwd: cwd)
 
-        case .opencodeWaitingForUserInput(let sessionId, let cwd):
-            processOpencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd)
+        case .opencodeWaitingForUserInput(let sessionId, let cwd, let toolUseId, let questions, let requestId):
+            processOpencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: toolUseId, questions: questions, requestId: requestId)
 
         case .opencodeStopped(let sessionId, let cwd):
             processOpencodeStop(sessionId: sessionId, cwd: cwd)
 
+        case .opencodePermissionRequested(let sessionId, let cwd, let permission, let requestId, let toolUseId, let input, let inputSummary, let alwaysPatterns):
+            processOpencodePermissionRequested(
+                sessionId: sessionId, cwd: cwd, permission: permission,
+                requestId: requestId, toolUseId: toolUseId,
+                input: input, inputSummary: inputSummary,
+                alwaysPatterns: alwaysPatterns
+            )
+
+        case .opencodePromptSubmitted(let sessionId, let cwd, let prompt):
+            processOpencodePromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt)
+
+        case .opencodeServerPortReceived(let sessionId, let port, let version, let pid):
+            processOpencodeServerPortReceived(sessionId: sessionId, port: port, version: version, pid: pid)
+
         case .cursorSessionStarted(let sessionId, let cwd):
+            registerSession(sessionId: sessionId)
             processCursorSessionStart(sessionId: sessionId, cwd: cwd)
 
         case .cursorProcessingStarted(let sessionId, let cwd):
@@ -183,17 +244,20 @@ actor SessionStore {
             processCursorSessionEnd(sessionId: sessionId)
 
         case .chatItemUpdate(let update):
-            applyChatItemUpdate(update)
+            applyChatItemUpdateIfRegistered(update)
+            publishState()
 
         case .chatItemBatch(let updates):
             for update in updates {
-                applyChatItemUpdate(update)
+                applyChatItemUpdateIfRegistered(update)
             }
+            publishState()
 
         case .realtimeChatItemBatch(let updates):
             for update in updates {
-                applyChatItemUpdate(update, appliesLifecycleEffects: true)
+                applyChatItemUpdateIfRegistered(update, appliesLifecycleEffects: true)
             }
+            publishState()
 
         case .permissionApproved(let sessionId, let toolUseId):
             await processPermissionApproved(sessionId: sessionId, toolUseId: toolUseId)
@@ -254,6 +318,55 @@ actor SessionStore {
         publishState()
     }
 
+    // MARK: - Session Registration
+
+    /// Mark a sessionId as a known top-level session. Called from each
+    /// `SessionStarted` branch in `process(_:)` and from `processHookEvent`
+    /// (Claude) when it first creates a session. See `registeredSessionIds`.
+    private func registerSession(sessionId: String) {
+        registeredSessionIds.insert(sessionId)
+        // Flush any chat-item updates that arrived before session registration.
+        // This handles the race condition where opencode sends chat items
+        // (e.g. image) before the sessionStart event.
+        if let buffered = earlyChatItemBuffer.removeValue(forKey: sessionId) {
+            writeDebugLogAsync("[chat-item-update] flushing \(buffered.count) buffered updates for session=\(sessionId.prefix(12))")
+            for update in buffered {
+                applyChatItemUpdate(update, appliesLifecycleEffects: true)
+            }
+        }
+    }
+
+    /// Drop `sessionId` from the registered set — typically called when the
+    /// session is removed (processSessionEnd, claude `status=ended`, etc.).
+    private func unregisterSession(sessionId: String) {
+        registeredSessionIds.remove(sessionId)
+        earlyChatItemBuffer.removeValue(forKey: sessionId)
+        provisionalSessionPids.removeValue(forKey: sessionId)
+    }
+
+    /// Filtered wrapper around `applyChatItemUpdate`: drops updates for
+    /// sessionIds that have never been explicitly registered, instead of
+    /// letting `applyChatItemUpdate`'s auto-create path materialize a fresh
+    /// top-level `SessionState`. Subagent child sessions rely on this to
+    /// stay invisible — they leak chat-item events (e.g. reasoning parts)
+    /// when `OpencodeHookAdapter`'s `cleanupState` fires prematurely, and
+    /// we must not promote those leaks to standalone sessions.
+    private func applyChatItemUpdateIfRegistered(
+        _ update: ChatItemUpdate,
+        appliesLifecycleEffects: Bool = false
+    ) {
+        if !registeredSessionIds.contains(update.sessionId) {
+            // Buffer early chat-item updates instead of dropping them.
+            // They will be flushed when the session is registered via processOpencodeSessionStart.
+            // Subagent child sessions are never registered, so their buffers
+            // are never flushed (and get cleaned up on session end).
+            earlyChatItemBuffer[update.sessionId, default: []].append(update)
+            writeDebugLogAsync("[chat-item-update] buffered for unregistered session=\(update.sessionId.prefix(12)) id=\(update.id.prefix(16)) bufferCount=\(earlyChatItemBuffer[update.sessionId]?.count ?? 0)")
+            return
+        }
+        applyChatItemUpdate(update, appliesLifecycleEffects: appliesLifecycleEffects)
+    }
+
     // MARK: - Hook Event Processing
 
     private func processHookEvent(_ event: HookEvent) async {
@@ -276,6 +389,7 @@ actor SessionStore {
         // Track new session in Mixpanel
         if isNewSession {
             mixpanel?.track(event: "Session Started")
+            registerSession(sessionId: sessionId)
         }
 
         session.pid = event.pid
@@ -291,6 +405,7 @@ actor SessionStore {
         if event.status == "ended" {
             sessions.removeValue(forKey: sessionId)
             cancelPendingSync(sessionId: sessionId)
+            unregisterSession(sessionId: sessionId)
             return
         }
 
@@ -324,7 +439,8 @@ actor SessionStore {
     }
 
     private func createSession(from event: HookEvent) -> SessionState {
-        SessionState(
+        registerSession(sessionId: event.sessionId)
+        return SessionState(
             sessionId: event.sessionId,
             provider: .claude,
             cwd: event.cwd,
@@ -337,7 +453,8 @@ actor SessionStore {
     }
 
     private func createCodexSession(sessionId: String, cwd: String) -> SessionState {
-        SessionState(
+        registerSession(sessionId: sessionId)
+        return SessionState(
             sessionId: sessionId,
             provider: .codex,
             cwd: cwd,
@@ -472,6 +589,7 @@ actor SessionStore {
             ignoredCodexSessions.insert(sessionId)
             sessions.removeValue(forKey: sessionId)
             cancelPendingSync(sessionId: sessionId)
+            unregisterSession(sessionId: sessionId)
             writeDebugLogAsync("[codex-lifecycle] ignored internal startup session=\(sessionId)")
             return
         }
@@ -793,11 +911,13 @@ actor SessionStore {
     // MARK: - OpenCode Session Processing
 
     private func createOpencodeSession(sessionId: String, cwd: String) -> SessionState {
-        SessionState(
+        registerSession(sessionId: sessionId)
+        return SessionState(
             sessionId: sessionId,
             provider: .opencode,
             cwd: cwd,
             projectName: URL(fileURLWithPath: cwd).lastPathComponent,
+            serverPort: nil,
             phase: .idle
         )
     }
@@ -810,7 +930,14 @@ actor SessionStore {
     // surfacing child session ids we should add the ignore check back here
     // (mirroring `shouldIgnoreCodexSession`'s transcript-based filter).
 
-    private func processOpencodeSessionStart(sessionId: String, cwd: String) {
+    private func processOpencodeSessionStart(sessionId: String, cwd: String, provisional: Bool = false, pid: Int? = nil) {
+        // A real (non-provisional) session start on a known pid invalidates
+        // any inactive provisional guess from the same instance — the plugin's
+        // session.list() fallback picked a storage session the TUI did not
+        // actually resume (the `--port` connect-then-new-session case).
+        if !provisional, let pid {
+            removeInactiveProvisionalSessions(excluding: sessionId, pid: pid)
+        }
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         // When the session was auto-created by applyChatItemUpdate
@@ -843,6 +970,16 @@ actor SessionStore {
         }
         sessions[sessionId] = session
 
+        if provisional {
+            if let pid {
+                provisionalSessionPids[sessionId] = pid
+            } else {
+                provisionalSessionPids.removeValue(forKey: sessionId)
+            }
+        } else {
+            provisionalSessionPids.removeValue(forKey: sessionId)
+        }
+
         // Track "Session Started" even for auto-created sessions —
         // applyChatItemUpdate fires the Mixpanel event on first creation
         // but processOpencodeSessionStart may be the first real session
@@ -850,19 +987,63 @@ actor SessionStore {
         if isNewSession {
             mixpanel?.track(event: "Session Started", properties: ["provider": "opencode"])
         }
+
+        // Probe OpenCode server port if not yet known (plugin's serverPort
+        // event may have been lost due to race with socket connection).
+        if session.serverPort == nil && opencodeServerPortFallback == nil && opencodeServerPorts.isEmpty {
+            Task { await probeOpencodeServerPort() }
+        }
+
         publishState()
     }
 
+    /// Drop provisional list-fallback entries belonging to `pid` (other than
+    /// `newSessionId`) that never saw any activity. Called when a real
+    /// session start arrives for the same opencode instance.
+    private func removeInactiveProvisionalSessions(excluding newSessionId: String, pid: Int) {
+        let candidates = provisionalSessionPids.filter { $0.key != newSessionId && $0.value == pid }
+        guard !candidates.isEmpty else { return }
+        for (provisionalId, _) in candidates {
+            guard let session = sessions[provisionalId],
+                  session.chatItems.isEmpty,
+                  !session.phase.isActive else { continue }
+            sessions.removeValue(forKey: provisionalId)
+            unregisterSession(sessionId: provisionalId)
+            writeDebugLogAsync("[opencode] removed inactive provisional session=\(provisionalId.prefix(12)) replacedBy=\(newSessionId.prefix(12)) pid=\(pid)")
+        }
+    }
+
     private func processOpencodeProcessingStarted(sessionId: String, cwd: String) {
+        if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
+            writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration processingStarted session=\(sessionId.prefix(12)) cwd=\(cwd)")
+            return
+        }
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+
+        // Retry probe if server port still unknown (plugin event may arrive late).
+        if session.serverPort == nil && opencodeServerPortFallback == nil && opencodeServerPorts.isEmpty {
+            Task { await probeOpencodeServerPort() }
+        }
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
         session.completionNotificationAt = nil
         // Idempotent: if already processing, phase.canTransition allows it
         // (processing → processing is a no-op). Covers both thinking and
         // tool-running phases; the first call wins.
+        //
+        // opencode fires `message.part.updated(running)` immediately after
+        // `permission.asked`, which surfaces here as a processingStarted.
+        // Without this guard, the processingStarted would overwrite the
+        // .waitingForApproval phase that permissionAsked just set, hiding the
+        // approval buttons before the user can click them.
         DebugLog.shared.write("[opencode-phase] processingStarted session=\(sessionId.prefix(8)) currentPhase=\(session.phase)")
-        if session.phase.canTransition(to: .processing) {
+        if case .waitingForApproval = session.phase {
+            // keep waitingForApproval — tool is awaiting user permission
+            DebugLog.shared.write("[opencode-phase] processingStarted → suppressed (waitingForApproval)")
+        } else if case .waitingForTerminalApproval = session.phase {
+            // keep waitingForTerminalApproval — terminal permission pending
+            DebugLog.shared.write("[opencode-phase] processingStarted → suppressed (waitingForTerminalApproval)")
+        } else if session.phase.canTransition(to: .processing) {
             session.phase = .processing
             DebugLog.shared.write("[opencode-phase] processingStarted → phase set to .processing")
         } else {
@@ -872,7 +1053,11 @@ actor SessionStore {
         publishState()
     }
 
-    private func processOpencodeWaitingForUserInput(sessionId: String, cwd: String) {
+    private func processOpencodeWaitingForUserInput(sessionId: String, cwd: String, toolUseId: String, questions: [QuestionItem], requestId: String?) {
+        if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
+            writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration waitingForUserInput session=\(sessionId.prefix(12)) cwd=\(cwd)")
+            return
+        }
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -881,7 +1066,25 @@ actor SessionStore {
         // waiting on them). Transition is allowed from .processing by the
         // state machine; from .idle, .waitingForInput is also reachable.
         session.completionNotificationAt = nil
-        DebugLog.shared.write("[opencode-phase] waitingForUserInput session=\(sessionId.prefix(8)) currentPhase=\(session.phase)")
+        // Populate the pending question context so the notch panel can render
+        // the question + options and reply via the plugin command socket.
+        // PRIMARY path (`question.asked`) supplies requestId + questions +
+        // toolUseId; the DEFENSIVE `question`-tool preTool path may arrive
+        // first or second and can be missing requestId (a `message.part.updated`
+        // event carries no `que_` request id). Merge rather than clobber so
+        // whichever path holds the authoritative fields wins.
+        let existing = session.pendingQuestionContext
+        let mergedRequestId = requestId ?? existing?.requestId
+        let mergedQuestions = questions.isEmpty ? (existing?.questions ?? []) : questions
+        let mergedToolUseId = toolUseId.isEmpty ? (existing?.toolUseId ?? "") : toolUseId
+        session.pendingQuestionContext = AskUserQuestionContext(
+            sessionId: sessionId,
+            toolUseId: mergedToolUseId,
+            questions: mergedQuestions,
+            requestId: mergedRequestId,
+            provider: .opencode
+        )
+        DebugLog.shared.write("[opencode-phase] waitingForUserInput session=\(sessionId.prefix(8)) currentPhase=\(session.phase) requestID=\(mergedRequestId ?? "<nil>") questions=\(mergedQuestions.count)")
         if session.phase.canTransition(to: .waitingForInput) {
             session.phase = .waitingForInput
             DebugLog.shared.write("[opencode-phase] waitingForUserInput → phase set to .waitingForInput")
@@ -893,12 +1096,18 @@ actor SessionStore {
     }
 
     private func processOpencodeStop(sessionId: String, cwd: String) {
+        if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
+            writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration stop session=\(sessionId.prefix(12)) cwd=\(cwd)")
+            return
+        }
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         let hadRunningTools = hasRunningTools(in: session)
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
         session.phase = .idle
-        session.completionNotificationAt = hadRunningTools ? nil : Date()
+        // Don't set completionNotificationAt here — we use publishCompletionNotification
+        // below for direct notification, avoiding double-trigger with
+        // handleWaitingForInputChange's completionMarker detection.
 
         for index in session.chatItems.indices {
             if case .toolCall(var tool) = session.chatItems[index].type, tool.status == .running {
@@ -914,6 +1123,173 @@ actor SessionStore {
         session.toolTracker.inProgress.removeAll()
         sessions[sessionId] = session
         publishState()
+
+        // Publish completion notification when the session ends without
+        // running tools (normal turn completion). This triggers the
+        // notification sound and bounce in NotchView.
+        // NOTE: We use publishCompletionNotification (direct) instead of
+        // completionNotificationAt (detected via handleWaitingForInputChange)
+        // to avoid double-triggering the sound.
+        if !hadRunningTools {
+            publishCompletionNotification(for: session)
+        }
+    }
+
+    private func processOpencodePromptSubmitted(sessionId: String, cwd: String, prompt: String) {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else { return }
+        registerSession(sessionId: sessionId)
+        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        enrichOpencodeRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
+        session.completionNotificationAt = nil
+        session.phase = .processing
+        let now = Date()
+        let firstUserMessage = session.conversationInfo.firstUserMessage ?? trimmedPrompt
+        session.conversationInfo = ConversationInfo(
+            summary: session.conversationInfo.summary,
+            lastMessage: trimmedPrompt,
+            lastMessageRole: "user",
+            lastToolName: nil,
+            firstUserMessage: firstUserMessage,
+            lastUserMessageDate: now,
+            usage: session.conversationInfo.usage
+        )
+        sessions[sessionId] = session
+        let millis = Int(now.timeIntervalSince1970 * 1000)
+        let id = "opencode-prompt-\(sessionId)-\(millis)"
+        let update = ChatItemUpdate(
+            id: id, sessionId: sessionId,
+            block: .userPrompt(trimmedPrompt),
+            ordering: .appendOrder,
+            mutation: .insert, provider: .opencode
+        )
+        applyChatItemUpdate(update, appliesLifecycleEffects: true)
+        publishState()
+    }
+
+    /// Probe common OpenCode server ports to discover a running server.
+    /// Note: OpenCode in TUI mode (tmux) has no HTTP server — this only works
+    /// for `opencode serve` mode. TUI sessions should use tmux send-keys.
+    private func probeOpencodeServerPort() async {
+        guard opencodeServerPortFallback == nil && opencodeServerPorts.isEmpty else { return }
+        let ports = [4096, 4097, 4098]
+        for port in ports {
+            guard let url = URL(string: "http://127.0.0.1:\(port)/global/health") else { continue }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 1
+            if let (_, response) = try? await URLSession.shared.data(for: request),
+               let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                writeDebugLogAsync("[opencode-server] probe OK port=\(port)")
+                applyOpencodeFallbackPort(port)
+                return
+            }
+        }
+        writeDebugLogAsync("[opencode-server] probe FAILED (TUI mode or no server)")
+    }
+
+    /// Legacy plugin / probe path: write global fallback and backfill all
+    /// opencode sessions that don't have a port yet.
+    private func applyOpencodeFallbackPort(_ port: Int) {
+        opencodeServerPortFallback = port
+        for (id, var session) in sessions where session.provider == .opencode && session.serverPort == nil {
+            session.serverPort = port
+            sessions[id] = session
+        }
+        publishState()
+    }
+
+    private func processOpencodeServerPortReceived(sessionId: String, port: Int, version: String?, pid: Int?) {
+        // port 0/negative signals "no HTTP server" (TUI mode without --port).
+        // Ignore so sessions never bind to a fake port.
+        guard port > 0 else {
+            writeDebugLogAsync("[opencode-server] serverPort ignored (no server, port=\(port)) pid=\(pid ?? -1)")
+            return
+        }
+        if let version, !version.isEmpty {
+            opencodePluginVersion = version
+            opencodePluginVersionSubject.send(version)
+        }
+        guard let pid else {
+            // Legacy plugin (no pid) or "?" broadcast: global fallback
+            applyOpencodeFallbackPort(port)
+            return
+        }
+        // Precise instance binding: override whatever fallback/probe assigned,
+        // so each session's serverPort tracks its own pid authoritatively.
+        opencodeServerPorts[pid] = port
+        for (id, var session) in sessions where session.provider == .opencode {
+            if session.pid == pid {
+                session.serverPort = port
+            } else if let sessionPid = session.pid, let known = opencodeServerPorts[sessionPid] {
+                session.serverPort = known
+            }
+            sessions[id] = session
+        }
+        publishState()
+    }
+
+    private func processOpencodePermissionRequested(
+        sessionId: String,
+        cwd: String,
+        permission: String,
+        requestId: String,
+        toolUseId: String?,
+        input: [String: String],
+        inputSummary: String?,
+        alwaysPatterns: [String] = []
+    ) {
+        if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
+            writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration permissionAsked session=\(sessionId.prefix(12)) cwd=\(cwd)")
+            return
+        }
+        var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        enrichOpencodeRuntimeMetadata(session: &session)
+        session.lastActivity = Date()
+        session.completionNotificationAt = nil
+
+        let toolInput = input.mapValues { AnyCodable($0) }
+        let context = PermissionContext(
+            toolUseId: toolUseId ?? "",
+            toolName: permission,
+            toolInput: toolInput.isEmpty ? nil : toolInput,
+            receivedAt: Date(),
+            opencodeRequestId: requestId,
+            alwaysPatterns: alwaysPatterns
+        )
+        // opencode permission prompts use the in-process approval path
+        // (Nook → plugin socket → client.permissionReply). The phase must be
+        // .waitingForApproval (not .waitingForTerminalApproval) so the UI
+        // renders the Allow/Deny/Always buttons that can reply to it.
+        let targetPhase = SessionPhase.waitingForApproval(context)
+        if session.phase.canTransition(to: targetPhase) {
+            session.phase = targetPhase
+        }
+
+        if let toolUseId, !toolUseId.isEmpty {
+            updateToolStatus(in: &session, toolId: toolUseId, status: .waitingForApproval)
+        }
+
+        let trimmedSummary = inputSummary?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nonEmptySummary: String? = {
+            guard let trimmedSummary, !trimmedSummary.isEmpty else { return nil }
+            return trimmedSummary
+        }()
+        session.conversationInfo = ConversationInfo(
+            summary: session.conversationInfo.summary,
+            lastMessage: nonEmptySummary ?? session.conversationInfo.lastMessage,
+            lastMessageRole: "tool",
+            lastToolName: permission,
+            firstUserMessage: session.conversationInfo.firstUserMessage,
+            lastUserMessageDate: session.conversationInfo.lastUserMessageDate,
+            usage: session.conversationInfo.usage
+        )
+        sessions[sessionId] = session
+        // Publish a completion notification so the notch plays the alert
+        // sound and bounces — permission prompts are actionable events
+        // that need the user's attention just like a finished response.
+        publishCompletionNotification(for: session)
+        writeDebugLogAsync("[opencode-permission] permissionAsked session=\(sessionId.prefix(8)) tool=\(permission) requestId=\(requestId.prefix(12)) toolUseId=\(toolUseId ?? "nil") phase=\(String(describing: session.phase))")
     }
 
     // MARK: - Cursor Session Processing
@@ -1049,7 +1425,11 @@ actor SessionStore {
 
         switch update.block {
         case .userPrompt(let text):
-            session.phase = .processing
+            // Don't overwrite waitingForApproval: user shouldn't be submitting
+            // prompts while a permission is pending, but guard defensively.
+            if !session.phase.isWaitingForApproval && !session.phase.isWaitingForTerminalApproval {
+                session.phase = .processing
+            }
             session.completionNotificationAt = nil
             session.conversationInfo = ConversationInfo(
                 summary: session.conversationInfo.summary,
@@ -1071,7 +1451,9 @@ actor SessionStore {
             // tool-end idle gap). For all other providers, the existing
             // hasRunningTools heuristic is fine.
             if session.provider == .opencode {
-                session.phase = .processing
+                if !session.phase.isWaitingForApproval && !session.phase.isWaitingForTerminalApproval {
+                    session.phase = .processing
+                }
             } else {
                 session.phase = hasRunningTools(in: session) ? .processing : .idle
             }
@@ -1097,21 +1479,59 @@ actor SessionStore {
             if update.mutation == .insert {
                 session.toolTracker.startTool(id: update.id, name: tc.name)
                 session.completionNotificationAt = nil
-                session.phase = .processing
+                // Don't overwrite waitingForApproval/waitingForTerminalApproval:
+                // opencode fires message.part.updated(running) immediately after
+                // permission.asked, which surfaces here as a toolCall insert.
+                // Without this guard the phase would flip back to .processing
+                // and the user would never see the approval buttons.
+                //
+                // Also don't overwrite waitingForInput for askUserQuestion tools:
+                // question.asked sets .waitingForInput before the preTool arrives,
+                // and the preTool would incorrectly flip it back to .processing.
+                let isAskQuestion = ToolCallItem.kind(of: tc.name) == .askUserQuestion
+                if !session.phase.isWaitingForApproval && !session.phase.isWaitingForTerminalApproval && !isAskQuestion {
+                    session.phase = .processing
+                }
             } else {
                 session.toolTracker.completeTool(id: update.id, success: !update.isError)
-                // Same opencode carve-out as assistantText above: between
-                // tool calls the session is still alive, so keep .processing
-                // until the explicit .stop event.
-                if session.provider == .opencode {
-                    session.phase = .processing
+
+                // When the tool that was awaiting approval completes (user
+                // approved in TUI, not through Nook), the phase is stuck in
+                // waitingForApproval because the adapter never receives a
+                // permissionApproved event (permission.replied is unhandled).
+                // Detect this: if the completed tool matches the phase context,
+                // advance to next pending or .processing.
+                if case .waitingForApproval(let ctx) = session.phase,
+                   ctx.toolUseId == update.id {
+                    if let nextPending = findNextPendingTool(in: session, excluding: update.id) {
+                        let newPhase = SessionPhase.waitingForApproval(PermissionContext(
+                            toolUseId: nextPending.id,
+                            toolName: nextPending.name,
+                            toolInput: nil,
+                            receivedAt: nextPending.timestamp
+                        ))
+                        session.phase = newPhase
+                    } else if session.phase.canTransition(to: .processing) {
+                        session.phase = .processing
+                    }
+                } else if session.provider == .opencode {
+                    // Same opencode carve-out as assistantText above: between
+                    // tool calls the session is still alive, so keep .processing
+                    // until the explicit .stop event.
+                    if !session.phase.isWaitingForApproval && !session.phase.isWaitingForTerminalApproval {
+                        session.phase = .processing
+                    }
                 } else {
                     session.phase = hasRunningTools(in: session) ? .processing : .idle
                 }
             }
+            // Extract tool input summary for the session list display.
+            // Without this, lastMessage keeps the previous value (e.g. user's
+            // prompt), causing the session list to show [tool name] + [user prompt].
+            let toolInputSummary = Self.extractToolInputSummary(tc)
             session.conversationInfo = ConversationInfo(
                 summary: session.conversationInfo.summary,
-                lastMessage: session.conversationInfo.lastMessage,
+                lastMessage: toolInputSummary.isEmpty ? session.conversationInfo.lastMessage : toolInputSummary,
                 lastMessageRole: "tool",
                 lastToolName: tc.name,
                 firstUserMessage: session.conversationInfo.firstUserMessage,
@@ -1129,6 +1549,23 @@ actor SessionStore {
         return "opencode-bash-\(sessionId)-\(millis)"
     }
 
+    /// Extract a short human-readable summary from a tool call's input dictionary.
+    /// Mirrors Claude's ConversationParser.formatToolInput and OpenCode's
+    /// buildInputSummary logic — show the most meaningful field for each tool type.
+    private static func extractToolInputSummary(_ tc: ChatItemToolCall) -> String {
+        let lower = tc.name.lowercased()
+        if lower == "bash", let cmd = tc.input["command"] { return cmd }
+        if let filePath = tc.input["file_path"] ?? tc.input["filePath"] { return filePath }
+        if let name = tc.input["name"] { return name }
+        if let pattern = tc.input["pattern"] { return pattern }
+        if let description = tc.input["description"] { return String(description.prefix(60)) }
+        if let query = tc.input["query"] { return String(query.prefix(60)) }
+        if let url = tc.input["url"] { return url }
+        if let prompt = tc.input["prompt"] { return String(prompt.prefix(60)) }
+        if let content = tc.input["content"] { return String(content.prefix(60)) }
+        return tc.name
+    }
+
     private func enrichOpencodeRuntimeMetadata(session: inout SessionState) {
         let tree = ProcessTreeBuilder.shared.buildTree()
         guard let process = bestMatchingOpencodeProcess(for: session.cwd, tree: tree) else {
@@ -1138,6 +1575,9 @@ actor SessionStore {
         session.pid = process.pid
         session.tty = process.tty
         session.isInTmux = ProcessTreeBuilder.shared.isInTmux(pid: process.pid, tree: tree)
+        if let port = opencodeServerPorts[process.pid] {
+            session.serverPort = port
+        }
     }
 
     /// Find the most likely OpenCode parent process for the given working directory.
@@ -1569,7 +2009,12 @@ actor SessionStore {
     // MARK: - Permission Processing
 
     private func processPermissionApproved(sessionId: String, toolUseId: String) async {
-        guard var session = sessions[sessionId] else { return }
+        guard var session = sessions[sessionId] else {
+            Self.logger.warning("permissionApproved: session not found sessionId=\(sessionId.prefix(8), privacy: .public)")
+            return
+        }
+
+        Self.logger.info("permissionApproved: processing toolUseId=\(toolUseId.prefix(12), privacy: .public) currentPhase=\(String(describing: session.phase), privacy: .public)")
 
         // Update tool status in chat history first
         updateToolStatus(in: &session, toolId: toolUseId, status: .running)
@@ -1577,6 +2022,7 @@ actor SessionStore {
         // Check if there are other tools still waiting for approval
         if let nextPending = findNextPendingTool(in: session, excluding: toolUseId) {
             // Another tool is waiting - stay in waitingForApproval with that tool's context
+            Self.logger.info("permissionApproved: found next pending tool=\(nextPending.id.prefix(12), privacy: .public) name=\(nextPending.name, privacy: .public)")
             let newPhase = SessionPhase.waitingForApproval(PermissionContext(
                 toolUseId: nextPending.id,
                 toolName: nextPending.name,
@@ -1586,22 +2032,32 @@ actor SessionStore {
             if session.phase.canTransition(to: newPhase) {
                 session.phase = newPhase
                 Self.logger.debug("Switched to next pending tool: \(nextPending.id.prefix(12), privacy: .public)")
+            } else {
+                Self.logger.warning("permissionApproved: cannot transition to next pending tool phase current=\(String(describing: session.phase), privacy: .public) target=\(String(describing: newPhase), privacy: .public)")
             }
         } else {
             // No more pending tools - transition to processing
             if case .waitingForApproval(let ctx) = session.phase, ctx.toolUseId == toolUseId {
                 if session.phase.canTransition(to: .processing) {
                     session.phase = .processing
+                    Self.logger.info("permissionApproved: transitioned to processing")
+                } else {
+                    Self.logger.warning("permissionApproved: cannot transition to processing current=\(String(describing: session.phase), privacy: .public)")
                 }
-            } else if case .waitingForApproval = session.phase {
+            } else if case .waitingForApproval(let ctx) = session.phase {
                 // The approved tool wasn't the one in phase context, but no others pending
                 // This can happen if tools were approved out of order
+                Self.logger.warning("permissionApproved: tool mismatch phaseTool=\(ctx.toolUseId.prefix(12), privacy: .public) approvedTool=\(toolUseId.prefix(12), privacy: .public)")
                 if session.phase.canTransition(to: .processing) {
                     session.phase = .processing
+                    Self.logger.info("permissionApproved: transitioned to processing (out of order)")
                 }
+            } else {
+                Self.logger.warning("permissionApproved: unexpected phase=\(String(describing: session.phase), privacy: .public)")
             }
         }
 
+        Self.logger.info("permissionApproved: final phase=\(String(describing: session.phase), privacy: .public)")
         sessions[sessionId] = session
     }
 
@@ -1987,6 +2443,7 @@ actor SessionStore {
         recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
         pendingCodexStartupSessions.remove(sessionId)
         ignoredCodexSessions.remove(sessionId)
+        unregisterSession(sessionId: sessionId)
     }
 
     // MARK: - History Loading
@@ -2218,6 +2675,7 @@ actor SessionStore {
                 recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
                 pendingCodexStartupSessions.remove(sessionId)
                 ignoredCodexSessions.remove(sessionId)
+                unregisterSession(sessionId: sessionId)
                 stateChanged = true
                 continue
             }
@@ -2231,6 +2689,7 @@ actor SessionStore {
                 recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
                 pendingCodexStartupSessions.remove(sessionId)
                 ignoredCodexSessions.remove(sessionId)
+                unregisterSession(sessionId: sessionId)
                 stateChanged = true
                 continue
             }
@@ -2241,6 +2700,24 @@ actor SessionStore {
                 let quietLimit = hasRunningTools(in: session)
                     ? codexRunningToolQuietExpirationSeconds
                     : codexActiveQuietExpirationSeconds
+
+                // Check transcript for terminal error (e.g. 429 Too Many Requests)
+                // before falling through to quiet expiration. Codex Desktop does not
+                // fire a Stop hook when the API retry limit is exceeded, so the
+                // session would otherwise remain stuck in .processing for 90+ seconds.
+                if let errorMessage = CodexTranscriptParser.detectTerminalError(sessionId: sessionId) {
+                    Self.logger.info("Codex session \(sessionId.prefix(8), privacy: .public) terminated with error: \(errorMessage, privacy: .public)")
+                    writeDebugLogAsync("[codex-lifecycle] terminalErrorDetected session=\(sessionId) error=\(errorMessage) phase=\(String(describing: session.phase))")
+                    markCodexSessionStopped(sessionId: sessionId)
+                    var updatedSession = session
+                    updatedSession.phase = .idle
+                    updatedSession.completionNotificationAt = nil
+                    finishDanglingCodexTools(in: &updatedSession)
+                    updatedSession.toolTracker.inProgress.removeAll()
+                    sessions[sessionId] = updatedSession
+                    stateChanged = true
+                    continue
+                }
 
                 if quietDuration > quietLimit {
                     var updatedSession = session
@@ -2266,6 +2743,7 @@ actor SessionStore {
                     recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
                     pendingCodexStartupSessions.remove(sessionId)
                     ignoredCodexSessions.remove(sessionId)
+                    unregisterSession(sessionId: sessionId)
                     stateChanged = true
                     continue
                 }
@@ -2375,6 +2853,7 @@ actor SessionStore {
         pendingCodexStartupSessions.removeAll()
         ignoredCodexSessions.removeAll()
         blockOrderings.removeAll()
+        provisionalSessionPids.removeAll()
         publishState()
     }
 

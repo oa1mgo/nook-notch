@@ -176,6 +176,13 @@ struct ChatView: View {
                     }
 
                     history = newHistory
+                    let lastAssistantLen: Int = {
+                        for item in newHistory.reversed() {
+                            if case .assistant(let text) = item.type { return text.count }
+                        }
+                        return 0
+                    }()
+                    print("[ChatView] history updated sessionId=\(sessionId) count=\(newHistory.count) lastAssistantLen=\(lastAssistantLen)")
 
                     // Auto-scroll to bottom only if autoscroll is NOT paused
                     if !isAutoscrollPaused && countChanged {
@@ -227,6 +234,14 @@ struct ChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .chatScrollAction)) { notification in
             guard let direction = notification.object as? ChatScrollDirection else { return }
             performKeyboardScroll(direction)
+        }
+        .onReceive(viewModel.$keyboardReplyTrigger) { trigger in
+            guard trigger != nil,
+                  viewModel.contentType == .chat(session),
+                  session.phase == .waitingForInput,
+                  session.provider == .opencode else { return }
+            viewModel.notchOpen(reason: .notification)
+            viewModel.pushTo(.question(session))
         }
     }
 
@@ -283,9 +298,26 @@ struct ChatView: View {
     private var chatInputPlaceholder: String {
         let name = session.provider.displayName
         if canSendMessages {
-            return "Message to \(name)... (⏎ send · ⌃F/⌃B scroll · ⌃G bottom)"
+            switch session.provider {
+            case .opencode:
+                if session.serverPort != nil {
+                    return "Message to \(name) via server... (⏎ send · ⌃F/⌃B scroll · ⌃G bottom)"
+                } else {
+                    return "Message to \(name) via tmux... (⏎ send · ⌃F/⌃B scroll · ⌃G bottom)"
+                }
+            case .claude, .codex, .cursor:
+                return "Message to \(name)... (⏎ send · ⌃F/⌃B scroll · ⌃G bottom)"
+            }
         } else {
-            return "Open \(name) in tmux to enable messaging"
+            switch session.provider {
+            case .opencode:
+                // OpenCode has two ways to enable messaging: tmux (legacy)
+                // or the server API (started with --port). Surface both so
+                // users who don't tmux their agent know they have an option.
+                return "Run \(name) inside tmux or with --port to enable messaging"
+            case .claude, .codex, .cursor:
+                return "Open \(name) in tmux to enable messaging"
+            }
         }
     }
 
@@ -397,9 +429,15 @@ struct ChatView: View {
             }
             .onChange(of: shouldScrollToBottom) { _, shouldScroll in
                 if shouldScroll {
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        // In inverted scroll, use .bottom anchor to scroll to the visual bottom
-                        proxy.scrollTo("bottom", anchor: .bottom)
+                    // Defer scroll to next runloop tick so LazyVStack has a
+                    // chance to lay out newly inserted items. Without this
+                    // delay, scrollTo("bottom") executes before the new
+                    // content has a measured height, causing the last item
+                    // to be partially or fully off-screen.
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
                     }
                     shouldScrollToBottom = false
                     resumeAutoscroll()
@@ -428,9 +466,16 @@ struct ChatView: View {
 
     // MARK: - Input Bar
 
-    /// Can send messages only if session is in tmux
+    /// Can send messages via tmux or server API (OpenCode only)
     private var canSendMessages: Bool {
-        session.isInTmux && session.tty != nil
+        switch session.provider {
+        case .opencode:
+            // OpenCode: tmux or server API
+            return (session.isInTmux && session.tty != nil) || session.serverPort != nil
+        case .claude, .codex, .cursor:
+            // Other providers: tmux only
+            return session.isInTmux && session.tty != nil
+        }
     }
 
     private var inputBar: some View {
@@ -479,7 +524,9 @@ struct ChatView: View {
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
             onApprove: { approvePermission() },
-            onDeny: { denyPermission() }
+            onDeny: { denyPermission() },
+            onApproveAlways: session.provider == .opencode ? { approvePermissionAlways() } : nil,
+            alwaysPatterns: session.activePermission?.alwaysPatterns ?? []
         )
     }
 
@@ -494,6 +541,16 @@ struct ChatView: View {
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
             onGoToTerminal: { focusTerminal() },
+            // For opencode, the question is answered inside Nook's notch UI,
+            // not the terminal. If the user collapsed the notch, this lets
+            // them re-open it from the chat view rather than losing the
+            // question prompt entirely.
+            onOpenQuestionInNotch: session.provider == .opencode
+                ? {
+                    viewModel.notchOpen(reason: .notification)
+                    viewModel.pushTo(.question(session))
+                }
+                : nil,
             focusErrorMessage: focusErrorMessage
         )
     }
@@ -550,86 +607,17 @@ struct ChatView: View {
 
     /// Try every terminal focus method in order; return true on first success.
     /// Order: tmux (yabai) → non-tmux process tree → last-resort bundle ID.
+    /// Logic lives in TerminalFocusHelper so the question panel can reuse it.
     private func tryFocusTerminal() async -> Bool {
-        // tmux path (Claude's default): the Yabai controller walks
-        // `client_pid → terminal` via tmux's own `list-clients` and
-        // focuses the right pane. Skipped silently if yabai isn't
-        // installed.
-        if session.isInTmux, let pid = session.pid {
-            if await YabaiController.shared.focusWindow(forClaudePid: pid) {
-                DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) succeeded")
-                return true
-            }
-            DebugLog.shared.write("[focus] tmux focusWindow(forClaudePid) failed, trying forWorkingDirectory")
-            if await YabaiController.shared.focusWindow(forWorkingDirectory: session.cwd) {
-                DebugLog.shared.write("[focus] tmux focusWindow(forWorkingDirectory) succeeded")
-                return true
-            }
-            DebugLog.shared.write("[focus] tmux path failed, falling through to non-tmux fallback")
-            // Fall through to non-tmux fallback — yabai may not be
-            // installed or the tmux lookup may have failed.
-        }
-        // Non-tmux fallback (e.g. opencode running directly in Ghostty).
-        // Yabai focuses whole windows by PID; for a non-tmux shell we
-        // don't have a window handle, only the shell's PID. Walk the
-        // process tree up to the terminal app's PID and activate it
-        // via NSWorkspace — `activate(ignoringOtherApps:)` brings the
-        // terminal to the front so the user can interact with the
-        // opencode question popup.
-        if let pid = session.pid {
-            if await focusTerminalApp(forChildPid: Int(pid)) {
-                DebugLog.shared.write("[focus] non-tmux focusTerminalApp succeeded")
-                return true
-            }
-            DebugLog.shared.write("[focus] non-tmux focusTerminalApp failed: could not find terminal app for pid=\(pid)")
-            // Last resort: try activating any known terminal app
-            // by bundle ID. Works when the process tree walk fails
-            // (e.g. Ghostty launched via launchd, PID namespace quirks).
-            let terminalBundleIds = ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"]
-            for bundleId in terminalBundleIds {
-                if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
-                    let ok = app.activate()
-                    DebugLog.shared.write("[focus] last-resort activate bundleId=\(bundleId) success=\(ok)")
-                    if ok { return true }
-                }
-            }
-            DebugLog.shared.write("[focus] all focus methods failed")
-        } else {
-            DebugLog.shared.write("[focus] session.pid is nil, cannot focus terminal")
-        }
-        return false
-    }
-
-    /// Walk up the process tree from `childPid` until we hit a known
-    /// terminal app process, then activate that app. Returns true if a
-    /// terminal app was found and activated.
-    private func focusTerminalApp(forChildPid childPid: Int) async -> Bool {
-        let tree = ProcessTreeBuilder.shared.buildTree()
-        guard let terminalPid = ProcessTreeBuilder.shared.findTerminalPid(
-            forProcess: childPid, tree: tree
-        ) else {
-            return false
-        }
-        // NSRunningApplication is the only API that gives us `activate`
-        // and survives app-sandbox quirks for already-running processes.
-        // `processIdentifier` matches the PID we just looked up. Note:
-        // `.activateIgnoringOtherApps` is deprecated in macOS 14 (no-op),
-        // so we call `activate()` plain — on macOS 14+ that's enough to
-        // surface the terminal window.
-        guard let app = NSRunningApplication(processIdentifier: pid_t(terminalPid)),
-              let bundleId = app.bundleIdentifier,
-              TerminalAppRegistry.isTerminalBundle(bundleId) else {
-            // Process found but isn't a known terminal app (e.g. parent
-            // is `login` or some other intermediary). Fall through.
-            return false
-        }
-        let activated = app.activate()
-        DebugLog.shared.write("[focus] activated terminal app pid=\(terminalPid) bundleId=\(bundleId) success=\(activated)")
-        return activated
+        return await TerminalFocusHelper.tryFocusTerminal(for: session)
     }
 
     private func approvePermission() {
         sessionMonitor.approvePermission(sessionId: sessionId)
+    }
+
+    private func approvePermissionAlways() {
+        sessionMonitor.approvePermission(sessionId: sessionId, always: true)
     }
 
     private func denyPermission() {
@@ -702,13 +690,59 @@ struct ChatView: View {
         resumeAutoscroll()
         shouldScrollToBottom = true
 
-        // Don't add to history here - it will be synced from JSONL when UserPromptSubmit event fires
+        // Emit a local fallback event immediately so the user's
+        // prompt appears in the chat even if opencode's
+        // message.part.updated(type=text) never reaches Nook.
         Task {
             await sendToSession(text)
+            await SessionStore.shared.process(.opencodePromptSubmitted(
+                sessionId: sessionId, cwd: session.cwd, prompt: text
+            ))
         }
     }
 
     private func sendToSession(_ text: String) async {
+        switch session.provider {
+        case .opencode:
+            await sendToOpenCode(text)
+        case .claude, .codex, .cursor:
+            await sendToTmux(text)
+        }
+    }
+
+    private func sendToOpenCode(_ text: String) async {
+        // 优先 tmux（OpenCode TUI 模式下唯一可靠的通道）
+        if session.isInTmux, let tty = session.tty,
+           let target = await findTmuxTarget(tty: tty) {
+            DebugLog.shared.write("[ChatView] send via tmux target=\(target) session=\(session.sessionId.prefix(12))")
+            _ = await ToolApprovalHandler.shared.sendMessage(text, to: target)
+            return
+        }
+
+        // fallback: server HTTP API（仅 opencode serve 模式）
+        guard let port = session.serverPort else {
+            DebugLog.shared.write("[ChatView] send FAILED: no tmux and no serverPort session=\(session.sessionId.prefix(12))")
+            return
+        }
+        DebugLog.shared.write("[ChatView] send via server API port=\(port) session=\(session.sessionId.prefix(12))")
+        await sendViaServerAPI(text: text, port: port)
+    }
+
+    private func sendViaServerAPI(text: String, port: Int) async {
+        let url = URL(string: "http://127.0.0.1:\(port)/session/\(session.sessionId)/message")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "parts": [["type": "text", "text": text]]
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
+    private func sendToTmux(_ text: String) async {
         guard session.isInTmux else { return }
         guard let tty = session.tty else { return }
 
@@ -1182,11 +1216,15 @@ struct ToolCallView: View {
 
                 // Expand indicator (only for expandable tools).
                 // AskUserQuestion options are static (parsed from input),
-                // so always allow expanding regardless of status. Other
-                // tools hide the chevron while running/waitingForApproval
+                // so always allow expanding regardless of status.
+                // Subagent containers also keep the chevron visible while
+                // running — otherwise the user has no affordance to collapse
+                // a long-running task, and the list's visibility no longer
+                // reflects the chevron's rotation (see `showsSubagentToolsList`).
+                // Other tools hide the chevron while running/waitingForApproval
                 // because their result content isn't available yet.
                 let isAskQuestion = tool.kind == .askUserQuestion
-                if canExpand && (isAskQuestion || (tool.status != .running && tool.status != .waitingForApproval)) {
+                if canExpand && (isAskQuestion || tool.isSubagentContainer || (tool.status != .running && tool.status != .waitingForApproval)) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .medium))
                         .foregroundColor(secondaryTextColor.opacity(0.8))
@@ -1195,10 +1233,12 @@ struct ToolCallView: View {
                 }
             }
 
-            // Subagent tools list (for Task/Agent tools).
-            // Shows during execution regardless of expansion; after completion,
-            // visibility follows isExpanded so the user can collapse to save space.
-            if tool.isSubagentContainer && !tool.subagentTools.isEmpty && (isExpanded || tool.status == .running) {
+            // Subagent tools list (for Task/Agent tools). Visibility is a
+            // pure function of the user's `isExpanded` toggle — see
+            // `ToolCallItem.showsSubagentToolsList(isExpanded:)` for the
+            // rationale (previously force-shown while running, which made
+            // the fold action invisible and the row appear "stuck" expanded).
+            if tool.showsSubagentToolsList(isExpanded: isExpanded) {
                 SubagentToolsList(tools: tool.subagentTools, primaryTextColor: primaryTextColor, secondaryTextColor: secondaryTextColor)
                     .padding(.leading, 12)
                     .padding(.top, 2)
@@ -1514,6 +1554,12 @@ struct ChatInteractivePromptBar: View {
     let primaryTextColor: Color
     let secondaryTextColor: Color
     let onGoToTerminal: () -> Void
+    /// For opencode, the question is answered inside Nook's notch UI rather
+    /// than the terminal. When non-nil, the button label becomes "Answer in
+    /// Nook" and the click re-opens the notch with the question panel —
+    /// useful when the user collapsed the notch and lost access to the
+    /// question prompt.
+    let onOpenQuestionInNotch: (() -> Void)?
     /// Error message shown when Terminal focus failed on the last click.
     /// Cleared on next click. nil = no error.
     let focusErrorMessage: String?
@@ -1532,7 +1578,7 @@ struct ChatInteractivePromptBar: View {
                     .font(.system(size: 11))
                     .foregroundColor(secondaryTextColor)
                     .lineLimit(1)
-                if !canFocusTerminal {
+                if onOpenQuestionInNotch == nil && !canFocusTerminal {
                     Text(hintSubtitle)
                         .font(.system(size: 10))
                         .foregroundColor(secondaryTextColor.opacity(0.7))
@@ -1554,47 +1600,73 @@ struct ChatInteractivePromptBar: View {
 
             Spacer()
 
-            // Terminal button on right (similar to Allow button).
-            //
-            // Visual style and click both follow `canFocusTerminal` rather
-            // than `isInTmux` alone — non-tmux sessions can still have the
-            // click do something useful (focus the terminal app via
-            // NSWorkspace) and we don't want the button to look broken when
-            // the user IS in a session we can focus.
-            //
-            // When `canFocusTerminal` is false, the button is still rendered
-            // (for layout consistency with the in-tmux path) but clicking
-            // is a no-op and a `.help()` tooltip explains the workaround
-            // (start the agent inside tmux). The `interactivePromptSubtitle`
-            // on the left also gains a hint line in that case so the user
-            // sees the explanation without having to hover.
-            Button {
-                if canFocusTerminal {
-                    onGoToTerminal()
+            // Action button on right. For opencode the question is answered
+            // inside Nook's notch, so the button re-opens the notch with
+            // the question panel. For other providers it falls back to the
+            // existing "focus the terminal app" flow.
+            if let openNotch = onOpenQuestionInNotch {
+                Button {
+                    openNotch()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "questionmark.bubble.fill")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Answer in Nook")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color.orange)
+                    .clipShape(Capsule())
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 11, weight: .medium))
-                    Text("Terminal")
-                        .font(.system(size: 13, weight: .medium))
+                .buttonStyle(.plain)
+                .help("Open the question panel in Nook's notch (⌃R)")
+                .opacity(showButton ? 1 : 0)
+                .scaleEffect(showButton ? 1 : 0.8)
+            } else {
+                // Terminal button on right (similar to Allow button).
+                //
+                // Visual style and click both follow `canFocusTerminal` rather
+                // than `isInTmux` alone — non-tmux sessions can still have the
+                // click do something useful (focus the terminal app via
+                // NSWorkspace) and we don't want the button to look broken when
+                // the user IS in a session we can focus.
+                //
+                // When `canFocusTerminal` is false, the button is still rendered
+                // (for layout consistency with the in-tmux path) but clicking
+                // is a no-op and a `.help()` tooltip explains the workaround
+                // (start the agent inside tmux). The `interactivePromptSubtitle`
+                // on the left also gains a hint line in that case so the user
+                // sees the explanation without having to hover.
+                Button {
+                    if canFocusTerminal {
+                        onGoToTerminal()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Terminal")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundColor(canFocusTerminal ? Color.white : secondaryTextColor)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    // Use a fixed dark background regardless of theme — adaptive
+                    // background mode sets `primaryTextColor` to a dark color
+                    // (e.g. black on light theme), which would make the button
+                    // invisible with the previous black-on-primaryTextColor scheme.
+                    .background(canFocusTerminal ? Color.black.opacity(0.85) : secondaryTextColor.opacity(0.16))
+                    .clipShape(Capsule())
                 }
-                .foregroundColor(canFocusTerminal ? Color.white : secondaryTextColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                // Use a fixed dark background regardless of theme — adaptive
-                // background mode sets `primaryTextColor` to a dark color
-                // (e.g. black on light theme), which would make the button
-                // invisible with the previous black-on-primaryTextColor scheme.
-                .background(canFocusTerminal ? Color.black.opacity(0.85) : secondaryTextColor.opacity(0.16))
-                .clipShape(Capsule())
+                .buttonStyle(.plain)
+                .help(canFocusTerminal
+                      ? "Focus the terminal window running \(providerName)"
+                      : "Start \(providerName) inside tmux to focus the terminal from here")
+                .opacity(showButton ? 1 : 0)
+                .scaleEffect(showButton ? 1 : 0.8)
             }
-            .buttonStyle(.plain)
-            .help(canFocusTerminal
-                  ? "Focus the terminal window running \(providerName)"
-                  : "Start \(providerName) inside tmux to focus the terminal from here")
-            .opacity(showButton ? 1 : 0)
-            .scaleEffect(showButton ? 1 : 0.8)
         }
         .frame(minHeight: 44)  // Consistent height with other bars
         .padding(.horizontal, 16)
@@ -1645,7 +1717,10 @@ struct ChatInteractivePromptBar: View {
 
 // MARK: - Chat Approval Bar
 
-/// Approval bar for the chat view with animated buttons
+/// Approval bar for the chat view with animated buttons.
+/// Supports an inline "Always allow" confirmation: when the user taps
+/// "Always", the bar swaps to a Confirm / Cancel layout with the
+/// allowed patterns displayed, matching opencode TUI's two-step flow.
 struct ChatApprovalBar: View {
     let tool: String
     let toolInput: String?
@@ -1653,61 +1728,191 @@ struct ChatApprovalBar: View {
     let secondaryTextColor: Color
     let onApprove: () -> Void
     let onDeny: () -> Void
+    /// When non-nil, an additional "Always" button is rendered with a warning
+    /// red palette. Only OpenCode sessions wire this up — Claude/Codex leave
+    /// it nil and get the original two-button layout.
+    let onApproveAlways: (() -> Void)?
+    /// Patterns that will be allowed if the user confirms "Always".
+    /// Displayed inline during the confirmation step.
+    let alwaysPatterns: [String]
 
     @State private var showContent = false
     @State private var showAllowButton = false
     @State private var showDenyButton = false
+    @State private var showAlwaysButton = false
+    @State private var isConfirmingAlways = false
+    @State private var localMonitor: Any?
+
+    init(
+        tool: String,
+        toolInput: String?,
+        primaryTextColor: Color,
+        secondaryTextColor: Color,
+        onApprove: @escaping () -> Void,
+        onDeny: @escaping () -> Void,
+        onApproveAlways: (() -> Void)? = nil,
+        alwaysPatterns: [String] = []
+    ) {
+        self.tool = tool
+        self.toolInput = toolInput
+        self.primaryTextColor = primaryTextColor
+        self.secondaryTextColor = secondaryTextColor
+        self.onApprove = onApprove
+        self.onDeny = onDeny
+        self.onApproveAlways = onApproveAlways
+        self.alwaysPatterns = alwaysPatterns
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Tool info
-            VStack(alignment: .leading, spacing: 2) {
-                Text(MCPToolFormatter.formatToolName(tool))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(TerminalColors.amber)
-                if let input = toolInput {
-                    Text(input)
+        VStack(spacing: 6) {
+            if isConfirmingAlways {
+                // Patterns info line
+                if alwaysPatterns.count == 1 && alwaysPatterns[0] == "*" {
+                    Text("This will allow \(MCPToolFormatter.formatToolName(tool)) until OpenCode is restarted.")
                         .font(.system(size: 11))
                         .foregroundColor(secondaryTextColor)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("This will allow the following patterns until OpenCode is restarted:")
+                            .font(.system(size: 11))
+                            .foregroundColor(secondaryTextColor)
+                        ForEach(alwaysPatterns, id: \.self) { pattern in
+                            Text("  - \(pattern)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(secondaryTextColor)
+                                .lineLimit(1)
+                        }
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // Confirm / Cancel buttons
+                HStack(spacing: 12) {
+                    // Tool info (same as normal mode)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(MCPToolFormatter.formatToolName(tool))
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundColor(TerminalColors.amber)
+                        if let input = toolInput {
+                            Text(input)
+                                .font(.system(size: 11))
+                                .foregroundColor(secondaryTextColor)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer()
+
+                    Button {
+                        isConfirmingAlways = false
+                    } label: {
+                        Text("Cancel (Esc)")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white.opacity(0.6))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .help("Cancel (Esc)")
+
+                    Button {
+                        isConfirmingAlways = false
+                        onApproveAlways?()
+                    } label: {
+                        Text("Confirm (C)")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(Color(red: 0.92, green: 0.30, blue: 0.25))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.92))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .help("Confirm (C)")
+                }
+            } else {
+                // Normal three-button layout
+                HStack(spacing: 12) {
+                    // Tool info
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(MCPToolFormatter.formatToolName(tool))
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundColor(TerminalColors.amber)
+                        if let input = toolInput {
+                            Text(input)
+                                .font(.system(size: 11))
+                                .foregroundColor(secondaryTextColor)
+                                .lineLimit(1)
+                        }
+                    }
+                    .opacity(showContent ? 1 : 0)
+                    .offset(x: showContent ? 0 : -10)
+
+                    Spacer()
+
+                    // Deny button
+                    Button {
+                        onDeny()
+                    } label: {
+                        Text("Deny (N)")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white.opacity(0.6))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .opacity(showDenyButton ? 1 : 0)
+                    .scaleEffect(showDenyButton ? 1 : 0.8)
+                    .help("Deny (N)")
+
+                    // Allow button
+                    Button {
+                        onApprove()
+                    } label: {
+                        Text("Allow (Y)")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(Color.black.opacity(0.88))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.92))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .opacity(showAllowButton ? 1 : 0)
+                    .scaleEffect(showAllowButton ? 1 : 0.8)
+                    .help("Approve (Y)")
+
+                    // Always button — only when onApproveAlways is provided.
+                    if onApproveAlways != nil {
+                        Button {
+                            isConfirmingAlways = true
+                        } label: {
+                            Text("Always (A)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(Color(red: 0.92, green: 0.30, blue: 0.25))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.white.opacity(0.92))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .opacity(showAlwaysButton ? 1 : 0)
+                        .scaleEffect(showAlwaysButton ? 1 : 0.8)
+                        .help("Always allow (A)")
+                    }
                 }
             }
-            .opacity(showContent ? 1 : 0)
-            .offset(x: showContent ? 0 : -10)
-
-            Spacer()
-
-            // Deny button
-            Button {
-                onDeny()
-            } label: {
-                Text("Deny")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(primaryTextColor.opacity(0.78))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(secondaryTextColor.opacity(0.16))
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .opacity(showDenyButton ? 1 : 0)
-            .scaleEffect(showDenyButton ? 1 : 0.8)
-
-            // Allow button
-            Button {
-                onApprove()
-            } label: {
-                Text("Allow")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Color.black.opacity(0.88))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(primaryTextColor.opacity(0.92))
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .opacity(showAllowButton ? 1 : 0)
-            .scaleEffect(showAllowButton ? 1 : 0.8)
         }
         .frame(minHeight: 44)  // Consistent height with other bars
         .padding(.horizontal, 16)
@@ -1722,6 +1927,82 @@ struct ChatApprovalBar: View {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.15)) {
                 showAllowButton = true
             }
+            if onApproveAlways != nil {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.2)) {
+                    showAlwaysButton = true
+                }
+            }
+            installKeyboardMonitor()
+        }
+        .onDisappear {
+            removeKeyboardMonitor()
+        }
+    }
+
+    // MARK: - Keyboard (AppKit local monitor — Y/N/A in permission bar)
+
+    private func installKeyboardMonitor() {
+        guard localMonitor == nil else { return }
+        // Make the notch key so the local monitor fires. Permission
+        // requires an explicit response (Y/N/A), so stealing focus here
+        // is the right call — unlike question/notification auto-expand
+        // which can wait. Restoring previous-app focus when the bar
+        // disappears is the user's responsibility (close the notch).
+        NSApp.activate(ignoringOtherApps: false)
+        NSApp.windows.first { $0 is NotchPanel }?.makeKey()
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            self.handleKeyDown(event)
+        }
+    }
+
+    private func removeKeyboardMonitor() {
+        if let monitor = localMonitor {
+            NSEvent.removeMonitor(monitor)
+            localMonitor = nil
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        // Skip when an editable text field is focused (let it handle typing)
+        if let responder = NSApp.keyWindow?.firstResponder,
+           (responder.isKind(of: NSTextView.self) || responder.isKind(of: NSTextField.self)) {
+            return event
+        }
+
+        let mods = event.modifierFlags
+        let hasCtrl = mods.contains(.control)
+        let hasCmd = mods.contains(.command)
+        guard !hasCmd, !hasCtrl else { return event }
+
+        let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+        if isConfirmingAlways {
+            // Confirm step: C confirms, Esc cancels
+            if chars == "c" {
+                isConfirmingAlways = false
+                onApproveAlways?()
+                return nil
+            }
+            if event.keyCode == 53 { // Esc
+                isConfirmingAlways = false
+                return nil
+            }
+            return event
+        }
+
+        // Main buttons
+        switch chars {
+        case "y":
+            onApprove()
+            return nil
+        case "n":
+            onDeny()
+            return nil
+        case "a" where onApproveAlways != nil:
+            isConfirmingAlways = true
+            return nil
+        default:
+            return event
         }
     }
 }

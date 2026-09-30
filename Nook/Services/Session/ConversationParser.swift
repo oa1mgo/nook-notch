@@ -955,7 +955,9 @@ actor ConversationParser {
                 return QuestionItem(
                     question: question,
                     header: q["header"] as? String,
-                    options: options
+                    options: options,
+                    multiple: q["multiple"] as? Bool ?? false,
+                    custom: q["custom"] as? Bool ?? true
                 )
             }
         }

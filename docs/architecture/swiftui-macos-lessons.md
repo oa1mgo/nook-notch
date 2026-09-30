@@ -138,4 +138,4 @@ adapter 里有 `// TODO(#82): keep this log until Bug J's root cause is fully un
 
 ---
 
-**维护策略**:这 7 条是 Nook 实战踩出来的,不是教科书。建议每个新加入的 SwiftUI/macOS 项目都过一遍这 7 条,挑项目里中枪的 1-2 条放 CLAUDE.md 或 README。
+**维护策略**:这 7 条是 Nook 实战踩出来的,不是教科书。建议每个新加入的 SwiftUI/macOS 项目都过一遍这 7 条,挑项目里中枪的 1-2 条放 AGENTS.md 或 README。

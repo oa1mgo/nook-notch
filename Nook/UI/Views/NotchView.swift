@@ -349,6 +349,28 @@ struct NotchView: View {
         viewModel.status != .opened && showMusicActivity
     }
 
+    private var showCompactQuestionChip: Bool {
+        viewModel.status != .opened &&
+        sessionMonitor.instances.contains {
+            $0.phase == .waitingForInput && $0.pendingQuestionContext != nil
+        }
+    }
+
+    private var isCurrentlyViewingWaitingChat: Bool {
+        guard viewModel.status == .opened, case .chat(let s) = viewModel.contentType else { return false }
+        return s.phase == .waitingForInput || s.phase.isWaitingForTerminalApproval
+    }
+
+    /// Idempotency guard for question auto-expand: if the notch is already open
+    /// and showing the question panel for THIS session, a repeat change event
+    /// must not push a duplicate `.question` onto the nav stack.
+    private func isAlreadyShowingQuestion(for session: SessionState) -> Bool {
+        guard viewModel.status == .opened, case .question(let current) = viewModel.contentType else {
+            return false
+        }
+        return current.sessionId == session.sessionId
+    }
+
     private var hasArtworkThemeSource: Bool {
         musicManager.albumArt != nil && musicManager.hasArtworkGradient
     }
@@ -707,7 +729,22 @@ struct NotchView: View {
 
     @ViewBuilder
     private var headerRow: some View {
-        if showCompactMusicActivity {
+        if showCompactQuestionChip {
+            CompactQuestionActivityView(
+                sessionMonitor: sessionMonitor,
+                onTap: {
+                    if let s = sessionMonitor.instances
+                        .filter({ $0.phase == .waitingForInput && $0.pendingQuestionContext != nil })
+                        .sorted(by: { $0.lastActivity > $1.lastActivity })
+                        .first {
+                        viewModel.notchOpen(reason: .notification)
+                        viewModel.pushTo(.question(s))
+                    }
+                }
+            )
+            .frame(width: closedContentWidth, height: closedNotchSize.height, alignment: .leading)
+            .frame(height: closedNotchSize.height)
+        } else if showCompactMusicActivity {
             CompactMusicActivityView(
                 musicManager: musicManager,
                 realSpectrumLevels: musicAudioReactiveGlowEnabled && musicAudioAnalyzer.isRunning
@@ -791,7 +828,15 @@ struct NotchView: View {
                         }
 
                         if hasPendingPermission {
-                            PermissionIndicatorIcon(size: 16, color: Color(red: 0.85, green: 0.47, blue: 0.34))
+                            let pendingProvider: SessionProvider = {
+                                switch activePendingPermissionActivityType ?? .none {
+                                case .codex: return .codex
+                                case .opencode: return .opencode
+                                case .cursor: return .cursor
+                                case .claude, .none: return .claude
+                                }
+                            }()
+                            PermissionIndicatorIcon(size: 16, color: SessionLoadingStyle.tint(for: pendingProvider))
                                 .padding(1)
                                 .matchedGeometryEffect(id: "status-indicator", in: activityNamespace, isSource: showHeaderAgentActivity)
                         }
@@ -907,6 +952,7 @@ struct NotchView: View {
                 )
             case .agents:
                 AgentSettingsView(
+                    sessionMonitor: sessionMonitor,
                     viewModel: viewModel,
                     primaryTextColor: expandedPrimaryTextColor,
                     secondaryTextColor: expandedSecondaryTextColor,
@@ -945,6 +991,23 @@ struct NotchView: View {
                     primaryTextColor: expandedPrimaryTextColor,
                     secondaryTextColor: expandedSecondaryTextColor
                 )
+            case .question(let session):
+                QuestionPanelView(
+                    session: session,
+                    replyProvider: (try? QuestionReplyProviderRegistry.shared.provider(for: session))
+                        ?? TerminalFallbackProvider(provider: session.provider),
+                    viewModel: viewModel,
+                    onClose: { viewModel.navigateBack() }
+                )
+                // Question panel sizes to its content.  The ViewModel's
+                // openedSize.question uses questionContentHeight() which
+                // is computed from the actual question data (option count,
+                // custom-input flag), so the window height already matches
+                // the content — no maxHeight frame needed.  When options
+                // overflow, the ScrollView inside QuestionPanelView scrolls
+                // within the panel's natural height.  Removing the frame
+                // prevents the VStack from forcing the panel to fill the
+                // full notchSize.height allocation when content is short.
             }
         }
         .frame(width: notchSize.width - 24) // Fixed width to prevent text reflow
@@ -1059,13 +1122,42 @@ struct NotchView: View {
         let currentIds = Set(sessions.map { $0.stableId })
         let newPendingIds = currentIds.subtracting(previousPendingIds)
 
-        if !newPendingIds.isEmpty &&
-           viewModel.status == .closed &&
-           !TerminalVisibilityDetector.isTerminalVisibleOnCurrentSpace() {
-            viewModel.notchOpen(reason: .notification)
+        if !newPendingIds.isEmpty && viewModel.status == .closed {
+            // Permission auto-expand: a session that newly entered
+            // `.waitingForApproval` / `.waitingForTerminalApproval` →
+            // open the notch and land on its chat view so the user can
+            // approve/reject without hunting for the right session.
+            // Unlike question auto-expand (which lets the user keep
+            // typing in the terminal), permission needs an explicit
+            // click/keystroke — so we always steal focus here, even if
+            // a terminal is visible on the current space. Questions are
+            // excluded (handleWaitingForInputChange owns that path).
+            let newPermissionSession = sessions
+                .filter { $0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval }
+                .filter { newPendingIds.contains($0.stableId) }
+                .max(by: { $0.lastActivity < $1.lastActivity })
+            if let permissionSession = newPermissionSession,
+               !isCurrentlyViewingWaitingChat,
+               !isAlreadyShowingPermissionChat(for: permissionSession) {
+                viewModel.notchOpen(reason: .notification)
+                viewModel.pushTo(.chat(permissionSession))
+            } else if newPermissionSession != nil {
+                viewModel.notchOpen(reason: .notification)
+            }
         }
 
         previousPendingIds = currentIds
+    }
+
+    /// Idempotency guard for permission auto-expand: if the notch is
+    /// already open and showing the chat view for THIS session, a
+    /// repeat change event must not push a duplicate `.chat` onto the
+    /// nav stack.
+    private func isAlreadyShowingPermissionChat(for session: SessionState) -> Bool {
+        guard viewModel.status == .opened, case .chat(let current) = viewModel.contentType else {
+            return false
+        }
+        return current.sessionId == session.sessionId
     }
 
     private func handleWaitingForInputChange(_ instances: [SessionState]) {
@@ -1124,6 +1216,18 @@ struct NotchView: View {
             playNotificationSoundIfNeeded(forPids: newlyCompletedSessions.map(\.pid), debugContext: debugContext)
             triggerNotificationBounce()
 
+            // Question auto-expand: newly-waiting session carrying an actual
+            // AskUserQuestion context → open notch + push question panel.
+            // Skip if the user is already looking at a waiting chat session.
+            if let questionSession = newlyWaitingSessions
+                .filter({ $0.phase == .waitingForInput && $0.pendingQuestionContext != nil })
+                .max(by: { $0.lastActivity < $1.lastActivity }),
+                !isCurrentlyViewingWaitingChat,
+                !isAlreadyShowingQuestion(for: questionSession) {
+                viewModel.notchOpen(reason: .notification)
+                viewModel.pushTo(.question(questionSession))
+            }
+
             // Schedule hiding the checkmark after 30 seconds
             DispatchQueue.main.asyncAfter(deadline: .now() + displayDuration) { [self] in
                 // Trigger a UI update to re-evaluate hasWaitingForInput
@@ -1133,6 +1237,8 @@ struct NotchView: View {
 
         previousWaitingForInputIds = currentIds
         previousCompletionNotificationMarkers = currentCompletionMarkers
+
+        handleProcessingChange()
     }
 
     private func handleCompletionNotification(_ notification: SessionCompletionNotification) {

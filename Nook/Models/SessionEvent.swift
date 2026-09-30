@@ -49,18 +49,33 @@ enum SessionEvent: Sendable {
     /// Codex stopped the current turn
     case codexStopped(sessionId: String, cwd: String)
 
-    /// An OpenCode session was created or resumed
-    case opencodeSessionStarted(sessionId: String, cwd: String)
+    /// An OpenCode session was created or resumed.
+    /// `provisional` marks a plugin session.list() storage guess (see
+    /// OpencodeSessionEvent.sessionStart); `pid` is the plugin-injected
+    /// opencode instance pid used to match provisional cleanup.
+    case opencodeSessionStarted(sessionId: String, cwd: String, provisional: Bool = false, pid: Int? = nil)
 
     /// OpenCode session entered a working state (thinking or running a tool)
     case opencodeProcessingStarted(sessionId: String, cwd: String)
 
     /// OpenCode is showing an interactive prompt (ask_user_question) and
     /// waiting for the user to pick an option before the model can continue.
-    case opencodeWaitingForUserInput(sessionId: String, cwd: String)
+    /// `requestId` (format `que_xxx`) is required to reply via the plugin
+    /// command socket; `questions` carries the renderable options.
+    case opencodeWaitingForUserInput(sessionId: String, cwd: String, toolUseId: String, questions: [QuestionItem], requestId: String?)
 
     /// OpenCode stopped the current turn
     case opencodeStopped(sessionId: String, cwd: String)
+
+    /// OpenCode is asking for user permission to run a tool. Unlike Claude/Codex
+    /// where approval is sent back through the hook socket, OpenCode requires a
+    /// reply via the plugin's command socket using the `requestId` carried here.
+    case opencodePermissionRequested(sessionId: String, cwd: String, permission: String, requestId: String, toolUseId: String?, input: [String: String], inputSummary: String?, alwaysPatterns: [String])
+
+    /// OpenCode server port received from plugin. Used for HTTP API communication.
+    /// `version` is the running plugin version reported by OpenCode, used to detect
+    /// stale plugin loads.
+    case opencodeServerPortReceived(sessionId: String, port: Int, version: String?, pid: Int?)
 
     /// Cursor composer conversation was created or resumed
     case cursorSessionStarted(sessionId: String, cwd: String)
@@ -90,6 +105,14 @@ enum SessionEvent: Sendable {
     /// A provider adapter produced live-stream chat item operations that
     /// should also drive lifecycle effects such as phase/tool tracking.
     case realtimeChatItemBatch([ChatItemUpdate])
+
+    // MARK: - OpenCode Fallback Events
+
+    /// OpenCode's `message.part.updated(type=text)` event for user
+    /// messages never arrives at Nook (socket transport drops it).
+    /// This event is emitted locally from ChatView as a fallback so
+    /// the user's prompt appears in the chat immediately.
+    case opencodePromptSubmitted(sessionId: String, cwd: String, prompt: String)
 
     // MARK: - Permission Events (user actions)
 
@@ -287,14 +310,18 @@ extension SessionEvent: CustomStringConvertible {
             return "codexSubagentStopped(session: \(sessionId.prefix(8)))"
         case .codexStopped(let sessionId, _):
             return "codexStopped(session: \(sessionId.prefix(8)))"
-        case .opencodeSessionStarted(let sessionId, _):
+        case .opencodeSessionStarted(let sessionId, _, _, _):
             return "opencodeSessionStarted(session: \(sessionId.prefix(8)))"
         case .opencodeProcessingStarted(let sessionId, _):
             return "opencodeProcessingStarted(session: \(sessionId.prefix(8)))"
-        case .opencodeWaitingForUserInput(let sessionId, _):
+        case .opencodeWaitingForUserInput(let sessionId, _, _, _, _):
             return "opencodeWaitingForUserInput(session: \(sessionId.prefix(8)))"
         case .opencodeStopped(let sessionId, _):
             return "opencodeStopped(session: \(sessionId.prefix(8)))"
+        case .opencodePermissionRequested(let sessionId, _, let permission, let requestId, _, _, _, _):
+            return "opencodePermissionRequested(session: \(sessionId.prefix(8)), permission: \(permission), requestId: \(requestId.prefix(12)))"
+        case .opencodeServerPortReceived(let sessionId, let port, let version, let pid):
+            return "opencodeServerPortReceived(session: \(sessionId.prefix(8)), port: \(port), pid: \(pid ?? -1), version: \(version ?? "-"))"
         case .cursorSessionStarted(let sessionId, _):
             return "cursorSessionStarted(session: \(sessionId.prefix(8)))"
         case .cursorProcessingStarted(let sessionId, _):
@@ -341,6 +368,8 @@ extension SessionEvent: CustomStringConvertible {
             return "chatItemBatch(count: \(updates.count))"
         case .realtimeChatItemBatch(let updates):
             return "realtimeChatItemBatch(count: \(updates.count))"
+        case .opencodePromptSubmitted(let sessionId, _, let prompt):
+            return "opencodePromptSubmitted(session: \(sessionId.prefix(8)), prompt: \(prompt.prefix(40)))"
         }
     }
 }

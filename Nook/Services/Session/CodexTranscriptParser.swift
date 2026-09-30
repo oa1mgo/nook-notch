@@ -469,4 +469,39 @@ enum CodexTranscriptParser {
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }
+
+    /// Detect terminal error from Codex transcript file.
+    /// Reads the tail of the transcript for a `event_msg/task_complete` event
+    /// carrying an `error` field (e.g. "exceeded retry limit, last status: 429").
+    /// Returns the error message if found, nil otherwise.
+    nonisolated static func detectTerminalError(sessionId: String, root: URL = sessionsDirectory) -> String? {
+        guard let url = transcriptURLs(for: sessionId, root: root).last else { return nil }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        let fileSize = (try? handle.seekToEnd()) ?? 0
+        guard fileSize > 0 else { return nil }
+
+        let readOffset = fileSize > 2048 ? fileSize - 2048 : 0
+        try? handle.seek(toOffset: readOffset)
+        guard let data = try? handle.readToEnd() else { return nil }
+        guard let content = String(data: data, encoding: .utf8) else { return nil }
+
+        for line in content.components(separatedBy: "\n").reversed() {
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedLine.isEmpty else { continue }
+            guard let lineData = trimmedLine.data(using: .utf8),
+                  let raw = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  raw["type"] as? String == "event_msg",
+                  let payload = raw["payload"] as? [String: Any],
+                  payload["type"] as? String == "task_complete",
+                  let error = payload["error"] as? [String: Any],
+                  let errorMessage = error["message"] as? String,
+                  !errorMessage.isEmpty else {
+                continue
+            }
+            return errorMessage
+        }
+        return nil
+    }
 }

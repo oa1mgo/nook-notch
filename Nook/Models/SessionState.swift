@@ -23,6 +23,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
     var pid: Int?
     var tty: String?
     var isInTmux: Bool
+    var serverPort: Int?
 
     // MARK: - State Machine
 
@@ -54,6 +55,11 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// This removes pre-/clear items that no longer exist in the JSONL
     var needsClearReconciliation: Bool
 
+    // MARK: - Pending Question
+
+    /// Context for an AskUserQuestion tool call awaiting an answer
+    var pendingQuestionContext: AskUserQuestionContext?
+
     // MARK: - Timestamps
 
     var completionNotificationAt: Date?
@@ -74,6 +80,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         pid: Int? = nil,
         tty: String? = nil,
         isInTmux: Bool = false,
+        serverPort: Int? = nil,
         phase: SessionPhase = .idle,
         chatItems: [ChatHistoryItem] = [],
         toolTracker: ToolTracker = ToolTracker(),
@@ -83,6 +90,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
             lastToolName: nil, firstUserMessage: nil, lastUserMessageDate: nil
         ),
         needsClearReconciliation: Bool = false,
+        pendingQuestionContext: AskUserQuestionContext? = nil,
         completionNotificationAt: Date? = nil,
         lastActivity: Date = Date(),
         createdAt: Date = Date()
@@ -94,12 +102,14 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.pid = pid
         self.tty = tty
         self.isInTmux = isInTmux
+        self.serverPort = serverPort
         self.phase = phase
         self.chatItems = chatItems
         self.toolTracker = toolTracker
         self.subagentState = subagentState
         self.conversationInfo = conversationInfo
         self.needsClearReconciliation = needsClearReconciliation
+        self.pendingQuestionContext = pendingQuestionContext
         self.completionNotificationAt = completionNotificationAt
         self.lastActivity = lastActivity
         self.createdAt = createdAt

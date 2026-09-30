@@ -1,6 +1,6 @@
 {
   "name": "nook",
-  "version": "1.0.0",
+  "version": "1.5.1",
   "description": "Forwards OpenCode lifecycle events to the Nook dynamic island",
   "type": "module",
   "main": "index.js",

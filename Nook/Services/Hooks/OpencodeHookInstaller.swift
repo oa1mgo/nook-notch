@@ -52,10 +52,14 @@ struct OpencodeHookInstaller {
 
     /// Install the plugin when all conditions are met:
     ///   • OpenCode is installed (config dir exists)
-    ///   • Plugin isn't already installed
+    ///   • Plugin isn't already installed, or the bundled plugin has changed
     static func installIfNeeded() {
         guard AgentPathsResolver.isInstalled(.opencode) else { return }
-        guard !isInstalled() else { return }
+
+        let needsInstall = !isInstalled()
+        let needsUpdate = isInstalled() && !isUpToDate()
+
+        guard needsInstall || needsUpdate else { return }
 
         copyPluginFiles()
 
@@ -95,6 +99,33 @@ struct OpencodeHookInstaller {
             return false
         }
         return config.contains(pluginDir.path)
+    }
+
+    /// Returns true when the installed plugin matches the bundled version.
+    /// Compares index.js content; if they differ the bundled plugin has
+    /// been updated and needs to be re-copied.
+    static func isUpToDate() -> Bool {
+        guard let bundledIndex = bundledIndexPath(),
+              let bundledContent = try? String(contentsOf: bundledIndex, encoding: .utf8),
+              let installedContent = try? String(contentsOf: pluginIndex, encoding: .utf8) else {
+            return false
+        }
+        return bundledContent == installedContent
+    }
+
+    /// Locate the bundled index.js inside the app Resources.
+    private static func bundledIndexPath() -> URL? {
+        guard let res = Bundle.main.resourceURL else { return nil }
+        let candidates = [
+            res.appendingPathComponent("opencode-plugin/index.js"),
+            res.appendingPathComponent("index.js"),
+        ]
+        for url in candidates {
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+        return nil
     }
 
     // MARK: - Plugin File Copy

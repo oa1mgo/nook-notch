@@ -196,6 +196,13 @@ struct QuestionItem: Equatable, Sendable {
     let question: String
     let header: String?
     let options: [QuestionOption]
+    /// Allow selecting multiple choices. Defaults to false when not provided
+    /// (matches opencode SDK gen/types.gen.d.ts QuestionInfo.multiple which
+    /// is optional `boolean`).
+    let multiple: Bool
+    /// Allow typing a custom answer. Defaults to true when not provided
+    /// (matches opencode SDK QuestionInfo.custom which defaults to true).
+    let custom: Bool
 }
 
 struct QuestionOption: Equatable, Sendable {
@@ -406,4 +413,23 @@ struct ToolStatusDisplay {
             return ToolStatusDisplay(text: "Completed", isRunning: false)
         }
     }
+}
+
+// MARK: - Question Context Types
+
+struct AskUserQuestionContext: Equatable, Sendable {
+    let sessionId: String
+    let toolUseId: String
+    let questions: [QuestionItem]
+    let requestId: String?
+    let provider: SessionProvider
+}
+
+struct PendingQuestion: Identifiable, Equatable, Sendable {
+    let id: String
+    let questionText: String
+    let header: String?
+    let options: [QuestionOption]
+    let multiple: Bool
+    let custom: Bool
 }

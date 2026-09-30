@@ -35,6 +35,9 @@ final class NowPlayingController: MediaControllerProtocol {
     private var streamTask: Task<Void, Never>?
     private var initialRefreshTask: Task<Void, Never>?
     private var pendingOptimisticToggle: PendingOptimisticToggle?
+    /// Guards against rapid double-click on play/pause: while a toggle adapter
+    /// process is in-flight, subsequent toggle commands are dropped.
+    private var pendingToggleTask: Task<Void, Never>?
 
     var playbackStatePublisher: AnyPublisher<PlaybackState, Never> {
         subject.removeDuplicates().eraseToAnyPublisher()
@@ -218,7 +221,17 @@ private extension NowPlayingController {
     }
 
     private func sendCommand(_ command: AdapterCommand, displayedTime: TimeInterval? = nil) {
-        Task { @MainActor [weak self] in
+        // For togglePlayPause, drop the command if one is already in-flight.
+        // This prevents the double-tap race where two toggle adapter processes
+        // execute concurrently and flip the system state twice.
+        if command == .togglePlayPause {
+            if let existing = pendingToggleTask, !existing.isCancelled {
+                logger.debug("togglePlayPause dropped – previous toggle still in-flight")
+                return
+            }
+        }
+
+        let task = Task { @MainActor [weak self] in
             guard let self else { return }
             self.logger.debug(
                 "sendCommand command=\(command.rawValue) displayedTime=\(String(describing: displayedTime), privacy: .public) currentTime=\(self.subject.value.currentTime, privacy: .public) isPlaying=\(self.subject.value.isPlaying, privacy: .public) lastUpdated=\(self.subject.value.lastUpdated.ISO8601Format(), privacy: .public)"
@@ -228,16 +241,23 @@ private extension NowPlayingController {
                 arguments: ["send", String(command.rawValue)],
                 context: "send-\(command.rawValue)"
             ) else {
+                if command == .togglePlayPause { self.pendingToggleTask = nil }
                 return
             }
 
             guard result.terminationStatus == 0 else {
                 self.logger.error("Adapter command \(command.rawValue) failed with status \(result.terminationStatus)")
+                if command == .togglePlayPause { self.pendingToggleTask = nil }
                 return
             }
 
             try? await Task.sleep(for: .milliseconds(200))
+            if command == .togglePlayPause { self.pendingToggleTask = nil }
             self.refresh()
+        }
+
+        if command == .togglePlayPause {
+            pendingToggleTask = task
         }
     }
 

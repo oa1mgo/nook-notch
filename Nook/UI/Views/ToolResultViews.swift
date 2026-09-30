@@ -82,7 +82,13 @@ struct ToolResultContent: View {
                     return QuestionOption(label: label, description: opt["description"] as? String)
                 }
             }
-            return QuestionItem(question: question, header: q["header"] as? String, options: options)
+            return QuestionItem(
+                question: question,
+                header: q["header"] as? String,
+                options: options,
+                multiple: q["multiple"] as? Bool ?? false,
+                custom: q["custom"] as? Bool ?? true
+            )
         }
 
         guard !questions.isEmpty else { return nil }
@@ -949,14 +955,24 @@ struct SimpleDiffView: View {
     let newString: String
     var filename: String? = nil
 
+    /// Maximum `(oldLines.count + 1) * (newLines.count + 1)` for which we
+    /// run the full O(m·n) LCS. Beyond this, the LCS DP table alone is
+    /// many MB and the backtrack is hundreds of millions of string
+    /// comparisons — synchronously on the main thread, repeated on every
+    /// ancestor state change. A 2000×2000 edit (4 M cells × ~50-char
+    /// lines × 3 calls per body) ran for ~3 s on a fast Mac, freezing
+    /// the chat view. We trade the full diff for a placeholder so the
+    /// app stays responsive. Chosen so a balanced 224×224 edit (the
+    /// largest "click to inspect" diff a user is likely to author by
+    /// hand) still gets the full diff in well under 100 ms.
+    private static let maxLCSComplexity = 50_000
+
     /// Compute diff using LCS algorithm
-    private var diffLines: [DiffLine] {
-        let oldLines = oldString.components(separatedBy: "\n")
-        let newLines = newString.components(separatedBy: "\n")
-
-        // Compute LCS to find matching lines
-        let lcs = computeLCS(oldLines, newLines)
-
+    private func buildDiffLines(
+        oldLines: [String],
+        newLines: [String],
+        lcs: [String]
+    ) -> [DiffLine] {
         var result: [DiffLine] = []
         var oldIdx = 0
         var newIdx = 0
@@ -987,7 +1003,9 @@ struct SimpleDiffView: View {
         return result
     }
 
-    /// Compute Longest Common Subsequence of two string arrays
+    /// Compute Longest Common Subsequence of two string arrays.
+    /// O(m·n) time and O(m·n) memory; caller must guard with
+    /// `oldLines.count * newLines.count <= maxLCSComplexity` first.
     private func computeLCS(_ a: [String], _ b: [String]) -> [String] {
         let m = a.count
         let n = b.count
@@ -1023,22 +1041,49 @@ struct SimpleDiffView: View {
         return lcs.reversed()
     }
 
-    private var hasMoreChanges: Bool {
-        let oldLines = oldString.components(separatedBy: "\n")
-        let newLines = newString.components(separatedBy: "\n")
-        let lcs = computeLCS(oldLines, newLines)
-        let totalChanges = (oldLines.count - lcs.count) + (newLines.count - lcs.count)
-        return totalChanges > 12
+    /// Result of a single body evaluation's diff work. Computed once
+    /// per `body` call so that the three derived properties below share
+    /// a single LCS run, instead of running it three times as the pre-fix
+    /// computed properties did.
+    private struct DiffPlan {
+        let diffLines: [DiffLine]
+        let hasMoreChanges: Bool
+        let hasLinesBefore: Bool
+        /// True when we bailed out because the input was too large for
+        /// the full LCS. Body shows a "diff too large" placeholder in
+        /// that case.
+        let isTruncated: Bool
     }
 
-    /// Whether there are lines before the first diff line
-    private var hasLinesBefore: Bool {
-        guard let firstLine = diffLines.first else { return false }
-        return firstLine.lineNumber > 1
+    private func plan(oldLines: [String], newLines: [String]) -> DiffPlan {
+        let complexity = oldLines.count * newLines.count
+        guard complexity <= Self.maxLCSComplexity else {
+            // Bail out: render an empty diff and a placeholder footer.
+            return DiffPlan(
+                diffLines: [],
+                hasMoreChanges: false,
+                hasLinesBefore: false,
+                isTruncated: true
+            )
+        }
+        let lcs = computeLCS(oldLines, newLines)
+        let diffLines = buildDiffLines(oldLines: oldLines, newLines: newLines, lcs: lcs)
+        let totalChanges = (oldLines.count - lcs.count) + (newLines.count - lcs.count)
+        let hasLinesBefore = diffLines.first?.lineNumber ?? 0 > 1
+        return DiffPlan(
+            diffLines: diffLines,
+            hasMoreChanges: totalChanges > 12,
+            hasLinesBefore: hasLinesBefore,
+            isTruncated: false
+        )
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let oldLines = oldString.components(separatedBy: "\n")
+        let newLines = newString.components(separatedBy: "\n")
+        let diffPlan = plan(oldLines: oldLines, newLines: newLines)
+
+        return VStack(alignment: .leading, spacing: 0) {
             // Filename header
             if let name = filename {
                 HStack(spacing: 6) {
@@ -1057,7 +1102,7 @@ struct SimpleDiffView: View {
             }
 
             // Top overflow indicator
-            if hasLinesBefore {
+            if diffPlan.hasLinesBefore {
                 Text("...")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
@@ -1069,9 +1114,9 @@ struct SimpleDiffView: View {
             }
 
             // Diff lines
-            ForEach(Array(diffLines.enumerated()), id: \.offset) { index, line in
-                let isFirst = index == 0 && filename == nil && !hasLinesBefore
-                let isLast = index == diffLines.count - 1 && !hasMoreChanges
+            ForEach(Array(diffPlan.diffLines.enumerated()), id: \.offset) { index, line in
+                let isFirst = index == 0 && filename == nil && !diffPlan.hasLinesBefore
+                let isLast = index == diffPlan.diffLines.count - 1 && !diffPlan.hasMoreChanges
                 DiffLineView(
                     line: line.text,
                     type: line.type,
@@ -1081,8 +1126,11 @@ struct SimpleDiffView: View {
                 )
             }
 
-            // Bottom overflow indicator
-            if hasMoreChanges {
+            // Bottom overflow indicator. Show the regular "..." when the
+            // diff was computed but capped at 12 lines; show an explicit
+            // "too large" placeholder when the LCS was skipped entirely
+            // so the user knows the diff is intentionally empty.
+            if diffPlan.hasMoreChanges {
                 Text("...")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
@@ -1091,6 +1139,15 @@ struct SimpleDiffView: View {
                     .padding(.vertical, 3)
                     .background(Color.white.opacity(0.06))
                     .clipShape(RoundedCorner(radius: 6, corners: [.bottomLeft, .bottomRight] as RoundedCorner.RectCorner))
+            } else if diffPlan.isTruncated {
+                Text("(diff omitted — \(oldLines.count) lines too large to render)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.3))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(RoundedCorner(radius: 6, corners: filename == nil ? [.allCorners] as RoundedCorner.RectCorner : [.bottomLeft, .bottomRight] as RoundedCorner.RectCorner))
             }
         }
     }

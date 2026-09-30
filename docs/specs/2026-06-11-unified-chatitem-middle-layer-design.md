@@ -285,9 +285,12 @@ enum ChatItemSorter {
         case (.filePosition(let mi1, let bi1), .filePosition(let mi2, let bi2)):
             return (mi1, bi1) < (mi2, bi2)
         case (.messageRelative(let m1, let p1, let b1), .messageRelative(let m2, let p2, let b2)):
-            // typePriority enforces causal ordering within a message
+            // typePriority enforces reasoning-first within a message;
+            // action vs response falls through to blockIndex (arrival order
+            // = model output order, so text-preamble lands before tool_use).
             if m1 == m2 {
-                if p1 != p2 { return p1.rawValue < p2.rawValue }
+                if p1 == .reasoning && p2 != .reasoning { return true }
+                if p1 != .reasoning && p2 == .reasoning { return false }
                 return b1 < b2
             }
             return m1 < m2  // messageID 字典序通常等于时间序

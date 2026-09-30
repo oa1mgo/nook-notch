@@ -84,6 +84,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
 
     /// sessionID → cwd from session.created / session.updated
     private static var sessionCwd: [String: String] = [:]
+    /// sessionID → Date when session was last stopped (to avoid re-creation on race conditions)
+    private static var recentlyStoppedSessions: [String: Date] = [:]
     /// sessionID → messageID of the most recent user message awaiting its text part
     private static var latestUserMsgID: [String: String] = [:]
     /// messageID → accumulating assistant text (from message.part.delta chunks,
@@ -159,6 +161,11 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     /// field (see opencode/src/tool/task.ts:75-76). We use it to keep the subagent
     /// out of the instance list and route its activity into the parent's chat view.
     private static var subagentToParent: [String: String] = [:]
+    /// child sessionIDs that have been finalized (cleanupState called).
+    /// After finalization, any late-arriving events (e.g. session.idle)
+    /// must be dropped to prevent them from falling through to per-session
+    /// handlers and creating phantom top-level SessionState entries.
+    private static var completedSubagentChildren: Set<String> = []
     /// child sessionID → the parent session's `task` tool callID. Established when
     /// the parent's `preTool(tool=task)` arrives and the child session is already
     /// known; used to tag subsequent subagent tool events with the right task id.
@@ -232,6 +239,20 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             return adaptSubagentEvent(envelope: envelope, props: props, childId: sessionId, parentId: parentID)
         }
 
+        // Late-arriving events for a subagent child that was already
+        // finalized. After `finalizeSubagent` runs, `subagentToParent`
+        // is cleared, so subsequent events (e.g. session.idle arriving
+        // after session.status=idle) would fall through to per-session
+        // handlers and create phantom top-level SessionState entries
+        // (cwd="" → displayTitle="/"). Drop them here.
+        lock.lock()
+        let isCompletedChild = completedSubagentChildren.contains(sessionId)
+        lock.unlock()
+        if isCompletedChild {
+            Self.logNotice("→ subagent completed, dropping late event session=\(sessionId) envelopeType=\(envelope.type)")
+            return []
+        }
+
         // DIAGNOSTIC (#79): events whose sessionId isn't yet in
         // `subagentToParent` fall through to the per-session handlers below.
         // For sessions that turn out to be subagents (registered later via
@@ -246,24 +267,94 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.unlock()
         }
 
+        // Self-heal (option B): a business event can arrive for a session Nook
+        // hasn't registered yet — a resume instance whose session.created/
+        // session.updated never fire, or whose plugin `session.started` is
+        // delayed while opencode loads history (observed: ~36s for a heavy
+        // resume). The plugin injects `cwd` on every forwarded event, so we
+        // can register the session on first sighting and never drop the event
+        // as "pre-registration" (which previously hid permission popups right
+        // after a Nook/opencode restart).
+        let healEvents: [OpencodeSessionEvent]
+        if ["permission.asked", "question.asked", "session.status",
+            "message.updated", "message.part.updated", "message.part.delta"].contains(envelope.type) {
+            let fallbackCwd = (props["cwd"]?.value as? String) ?? ""
+            healEvents = ensureSessionRegistered(sessionId, fallbackCwd: fallbackCwd, pid: instancePid(from: props))
+        } else {
+            healEvents = []
+        }
+
+        let handled: [OpencodeSessionEvent]
         switch envelope.type {
         case "session.created", "session.updated":
-            return handleSessionCreatedOrUpdated(props)
+            handled = handleSessionCreatedOrUpdated(props)
+        case "session.started":
+            handled = handleSessionStarted(props)
         case "session.status":
-            return handleSessionStatus(props)
+            handled = handleSessionStatus(props)
         case "session.idle":
-            return handleSessionIdle(props)
+            handled = handleSessionIdle(props)
         case "question.asked":
-            return handleQuestionAsked(props)
+            handled = handleQuestionAsked(props)
+        case "question.replied":
+            // User answered in TUI or Nook. opencode processes the reply and
+            // fires question.replied before the model resumes. Without this
+            // handler the phase stays .waitingForInput until the (often delayed)
+            // session.status=busy arrives, leaving the question UI visible for
+            // seconds/minutes after the user already answered.
+            let cwd: String = {
+                lock.lock()
+                let v = sessionCwd[sessionId] ?? ""
+                lock.unlock()
+                return v
+            }()
+            Self.logNotice("→ question.replied session=\(sessionId) — transitioning to processing")
+            handled = [.processingStarted(sessionId: sessionId, cwd: cwd)]
+        case "permission.asked":
+            handled = handlePermissionAsked(props)
+        case "serverPort":
+            handled = handleServerPort(props, sessionId: sessionId)
         case "message.updated":
-            return handleMessageUpdated(props)
+            handled = handleMessageUpdated(props)
         case "message.part.updated":
-            return handlePartUpdated(props)
+            handled = handlePartUpdated(props)
         case "message.part.delta":
-            return handlePartDelta(props)
+            handled = handlePartDelta(props)
         default:
-            return []
+            handled = []
         }
+        return healEvents + handled
+    }
+
+    /// Extract the plugin-injected opencode instance pid from event
+    /// properties. The plugin merges `pid` into every forwarded event;
+    /// depending on the transport/JSON round-trip it arrives as either an
+    /// Int or a String, so accept both.
+    private static func instancePid(from props: [String: AnyCodable]) -> Int? {
+        guard let raw = props["pid"]?.value else { return nil }
+        return (raw as? Int) ?? Int(raw as? String ?? "")
+    }
+
+    /// Self-heal registration for a session Nook hasn't seen yet. Business
+    /// events carry an injected `cwd` (plugin side), so on first sighting we
+    /// register the session and emit `.sessionStart`. Mirrors `handleSessionStarted`:
+    /// it bypasses the `recentlyStopped` guard so a genuinely re-activated
+    /// session always self-heals instead of being suppressed by a prior idle.
+    private static func ensureSessionRegistered(_ sessionId: String, fallbackCwd: String, pid: Int? = nil) -> [OpencodeSessionEvent] {
+        guard sessionId != "?", !sessionId.isEmpty else { return [] }
+        guard !fallbackCwd.isEmpty else { return [] }
+        lock.lock()
+        let isNew = sessionCwd[sessionId] == nil
+        if isNew {
+            sessionCwd[sessionId] = fallbackCwd
+            recentlyStoppedSessions.removeValue(forKey: sessionId)
+        }
+        lock.unlock()
+        if isNew {
+            Self.logNotice("→ sessionStart (event-driven self-heal) session=\(sessionId) cwd=\(fallbackCwd)")
+            return [.sessionStart(sessionId: sessionId, cwd: fallbackCwd, pid: pid)]
+        }
+        return []
     }
 
     /// Read-only lookup that does NOT insert. We need to distinguish "this
@@ -296,25 +387,54 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             }
             return handleSubagentToolPart(childId: childId, parentId: parentId, part: part)
 
-        case "session.status", "session.idle":
-            // Subagent session is going idle — flush any text/reasoning buffers
-            // that were accidentally accumulated for the child (shouldn't happen
-            // now that we route early, but the safety net is cheap and prevents
-            // stale buffers from bleeding into the parent on next start).
-            let cwd: String = {
-                lock.lock()
-                let v = sessionCwd[childId] ?? ""
-                lock.unlock()
-                return v
-            }()
-            let flushed = flushPendingText(forSession: childId, cwd: cwd)
-            cleanupState(forSession: childId)
-            Self.logNotice("→ subagent stop routed to parent child=\(childId) parent=\(parentId) flushed=\(flushed.count)")
-            return flushed
+        case "session.status":
+            // session.status fires for both busy (work started) and idle
+            // (between ops or truly ended). Only the *terminal* idle should
+            // clear the subagent mapping — `session.status=busy` is the
+            // subagent starting work, and clearing then would drop the
+            // mapping while the subagent is still alive, letting every
+            // subsequent event leak through to the per-session handlers
+            // (handlePartUpdated / handleMessageUpdated) and create a
+            // phantom top-level SessionState in SessionStore.
+            let statusType = (props["status"]?.value as? [String: Any])?["type"] as? String ?? ""
+            guard statusType == "idle" else { return [] }
+            return finalizeSubagent(childId: childId, parentId: parentId)
+
+        case "session.idle":
+            // Legacy compatibility event — subagent has truly terminated.
+            return finalizeSubagent(childId: childId, parentId: parentId)
+
+        case "permission.asked":
+            // Permission requests from subagents must be routed to the
+            // parent session — the user approves/denies via the parent's
+            // chat view. Rewrite sessionId to parentId so the event lands
+            // in the parent's SessionState.
+            return handleSubagentPermissionAsked(props: props, childId: childId, parentId: parentId)
 
         default:
             return []
         }
+    }
+
+    /// Final cleanup path for a subagent that has truly terminated. Flushes
+    /// any text/reasoning buffers the child may have accumulated (shouldn't
+    /// happen now that we route early, but the safety net is cheap and
+    /// prevents stale buffers bleeding into the parent on next start),
+    /// then clears the child's bookkeeping from `subagentToParent` etc.
+    private static func finalizeSubagent(childId: String, parentId: String) -> [OpencodeSessionEvent] {
+        let cwd: String = {
+            lock.lock()
+            let v = sessionCwd[childId] ?? ""
+            lock.unlock()
+            return v
+        }()
+        let flushed = flushPendingText(forSession: childId, cwd: cwd)
+        cleanupState(forSession: childId)
+        lock.lock()
+        completedSubagentChildren.insert(childId)
+        lock.unlock()
+        Self.logNotice("→ subagent stop routed to parent child=\(childId) parent=\(parentId) flushed=\(flushed.count)")
+        return flushed
     }
 
     /// Convert a subagent's tool part into a subagentToolExecuted /
@@ -364,6 +484,54 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         }
     }
 
+    /// Handle a `permission.asked` event from a subagent session. Rewrite the
+    /// sessionId to parentId so the permission request lands in the parent's
+    /// SessionState and the user sees the Allow/Deny buttons in the parent's
+    /// chat view.
+    private static func handleSubagentPermissionAsked(props: [String: AnyCodable], childId: String, parentId: String) -> [OpencodeSessionEvent] {
+        let cwd: String = {
+            lock.lock()
+            let v = sessionCwd[parentId] ?? ""
+            lock.unlock()
+            return v
+        }()
+        guard let requestId = props["id"]?.value as? String, !requestId.isEmpty else {
+            Self.logNotice("→ subagent permissionAsked dropped (no id) child=\(childId) parent=\(parentId)")
+            return []
+        }
+        let tool = props["tool"]?.value as? [String: Any]
+        let callId = tool?["callID"] as? String
+        let permission = (props["permission"]?.value as? String) ?? "tool"
+        let patterns: [String] = {
+            guard let arr = props["patterns"]?.value as? [Any] else { return [] }
+            return arr.compactMap { $0 as? String }
+        }()
+        let metadata = props["metadata"]?.value as? [String: Any] ?? [:]
+        let alwaysPatterns: [String] = {
+            guard let arr = props["always"]?.value as? [Any] else { return [] }
+            return arr.compactMap { $0 as? String }
+        }()
+
+        var inputMap: [String: String] = [:]
+        if let cmd = metadata["command"] as? String { inputMap["command"] = cmd }
+        if let filePath = metadata["filepath"] as? String ?? metadata["file_path"] as? String {
+            inputMap["file_path"] = filePath
+        }
+        if let diff = metadata["diff"] as? String { inputMap["diff"] = diff }
+        if let url = metadata["url"] as? String { inputMap["url"] = url }
+        if !patterns.isEmpty { inputMap["patterns"] = patterns.joined(separator: ", ") }
+
+        let inputSummary = buildInputSummary(toolName: permission, input: metadata)
+
+        Self.logNotice("→ subagent permissionAsked routed to parent child=\(childId) parent=\(parentId) requestId=\(requestId) tool=\(permission) callID=\(callId ?? "-") summary=\(inputSummary) always=\(alwaysPatterns)")
+        return [.permissionAsked(
+            sessionId: parentId, cwd: cwd, requestId: requestId,
+            toolName: permission, toolUseId: callId,
+            input: inputMap, inputSummary: inputSummary,
+            alwaysPatterns: alwaysPatterns
+        )]
+    }
+
     // MARK: - Session Handlers
 
     private static func handleSessionCreatedOrUpdated(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
@@ -407,13 +575,52 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         lock.lock()
         let isNew = sessionCwd[sessionId] == nil
         sessionCwd[sessionId] = cwd
+        // Track when we last saw this session idle/stopped to avoid re-creating
+        // it when a late-arriving session.updated races with session.idle.
+        let recentlyStopped = recentlyStoppedSessions[sessionId] != nil
+        lock.unlock()
+
+        let pid = instancePid(from: props)
+        if isNew && !recentlyStopped {
+            Self.logNotice("→ sessionStart (first sighting) session=\(sessionId) cwd=\(cwd)")
+            return [.sessionStart(sessionId: sessionId, cwd: cwd, pid: pid)]
+        }
+        Self.logNotice("→ session.updated (known) session=\(sessionId) cwd=\(cwd) recentlyStopped=\(recentlyStopped)")
+        return []
+    }
+
+    /// Handle a `session.started` event emitted by the plugin when an opencode
+    /// instance resumes a pre-existing session without opencode itself ever
+    /// sending `session.created`/`session.updated` (the resume path stays
+    /// silent on the bus). Without this, Nook would never register the session
+    /// and would drop every subsequent event as "pre-registration".
+    ///
+    /// This is an explicit "session is live now" signal, so it bypasses the
+    /// `recentlyStopped` guard that suppresses late `session.updated` events
+    /// racing with `session.idle` — a prior idle must not prevent a real
+    /// re-activation from self-healing.
+    private static func handleSessionStarted(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
+        guard let sessionId = props["sessionID"]?.value as? String, !sessionId.isEmpty else { return [] }
+        let cwd = props["cwd"]?.value as? String ?? ""
+        // The plugin tags session.started events whose id came from the
+        // session.list() storage guess (status() was empty) with
+        // source=list-fallback. Those entries are provisional — they may not
+        // be the session the TUI will actually use (`--port` connect often
+        // creates a new session instead of resuming the guessed one).
+        let provisional = (props["source"]?.value as? String) == "list-fallback"
+        let pid = instancePid(from: props)
+
+        lock.lock()
+        let isNew = sessionCwd[sessionId] == nil
+        if !cwd.isEmpty { sessionCwd[sessionId] = cwd }
+        recentlyStoppedSessions.removeValue(forKey: sessionId)
         lock.unlock()
 
         if isNew {
-            Self.logNotice("→ sessionStart (first sighting) session=\(sessionId) cwd=\(cwd)")
-            return [.sessionStart(sessionId: sessionId, cwd: cwd)]
+            Self.logNotice("→ session.started (first sighting) session=\(sessionId) cwd=\(cwd) provisional=\(provisional)")
+            return [.sessionStart(sessionId: sessionId, cwd: cwd, provisional: provisional, pid: pid)]
         }
-        Self.logNotice("→ session.updated (known) session=\(sessionId) cwd=\(cwd)")
+        Self.logNotice("→ session.started (known) session=\(sessionId) cwd=\(cwd)")
         return []
     }
 
@@ -430,6 +637,20 @@ final class OpencodeHookAdapter: @unchecked Sendable {
 
         switch type {
         case "busy":
+            // Recovery: if this session was recently stopped, clear the flag now.
+            // session.status=busy is an authoritative signal that the session is
+            // active again. Without this, the flag set by handleSessionIdle would
+            // forever block handleSessionCreatedOrUpdated from re-emitting
+            // .sessionStart — plugin's reportCurrentSession only probes once at
+            // opencode startup (30 attempts) and never re-fires, so this path is
+            // the only way to recover. Symptoms: chat items accumulate in
+            // earlyChatItemBuffer forever after a single session.idle/busy cycle.
+            lock.lock()
+            let wasRecentlyStopped = recentlyStoppedSessions.removeValue(forKey: sessionId) != nil
+            lock.unlock()
+            if wasRecentlyStopped {
+                Self.logNotice("→ busy: cleared recentlyStopped for session=\(sessionId)")
+            }
             Self.logNotice("→ processingStarted (session.status=busy) session=\(sessionId) cwd=\(cwd)")
             return [.processingStarted(sessionId: sessionId, cwd: cwd)]
         case "idle":
@@ -460,6 +681,11 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             lock.unlock()
             return v
         }()
+        // Mark session as recently stopped to prevent re-creation if session.updated
+        // arrives after session.idle (race condition).
+        lock.lock()
+        recentlyStoppedSessions[sessionId] = Date()
+        lock.unlock()
         cleanupState(forSession: sessionId)
         Self.logNotice("→ stop (legacy session.idle) session=\(sessionId)")
         return [.stop(sessionId: sessionId, cwd: cwd)]
@@ -494,6 +720,9 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             reasoningFinalizedMessageIds.remove(messageId)
             consumedUserMessageIDs.remove(messageId)
         }
+        // Clean up old recently stopped entries (older than 30 seconds)
+        let cutoff = Date().addingTimeInterval(-30)
+        recentlyStoppedSessions = recentlyStoppedSessions.filter { $0.value > cutoff }
         lock.unlock()
         if !messagesToRemove.isEmpty {
             Self.logNotice("→ cleanup session=\(sessionId) messages=\(messagesToRemove.count)")
@@ -502,6 +731,27 @@ final class OpencodeHookAdapter: @unchecked Sendable {
 
     private static func handleQuestionAsked(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
         guard let sessionId = props["sessionID"]?.value as? String else { return [] }
+        // The `question.asked` bus payload IS the question `Request` schema
+        // (opencode/src/question/index.ts → QuestionV1.Request), which carries
+        // everything the notch needs at asked-time:
+        //   {
+        //     "id": "que_xxx",             // request id (== top-level event.id)
+        //     "sessionID": "...",
+        //     "questions": [ { "question", "header",
+        //                      "options": [ { "label", "description" } ] } ],
+        //     "tool": { "messageID", "callID" }   // optional, when from a tool call
+        //   }
+        // Verified against opencode `packages/schema/src/v1/question.ts`. The
+        // plugin already forwards `properties` (this payload), so no plugin
+        // change is required to reach these fields.
+        //
+        // requestId: prefer the payload's own `id` (guaranteed `que_` prefix,
+        // identical to the top-level bus `event.id`). opencode's event envelope
+        // id is not forwarded by the plugin, so `properties.id` is the reliable
+        // source here.
+        let requestId = props["id"]?.value as? String
+        let toolUseId = ((props["tool"]?.value as? [String: Any])?["callID"] as? String) ?? ""
+        let questions = Self.buildQuestionItems(from: props["questions"]?.value)
         let cwd: String = {
             lock.lock()
             let v = sessionCwd[sessionId] ?? ""
@@ -543,13 +793,106 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         if let tool = props["tool"]?.value as? [String: Any],
            let messageId = tool["messageID"] as? String,
            !messageId.isEmpty {
-            lock.lock()
-            suppressedTextMessages.insert(messageId)
-            lock.unlock()
-            Self.logNotice("→ suppressed question parent text session=\(sessionId) messageID=\(messageId)")
+            // `handleQuestionAsked` is invoked exclusively for the
+            // question tool, so the parent message's preceding text IS
+            // the assistant's actual response (commit message, analysis,
+            // etc.) — not meta-content. Keep it in the chat history so
+            // the user has full context around the question dialog.
+            // (Other tools' suppression lives in handleToolPart; question
+            // never needs it because the question dialog itself shows
+            // the question text separately.)
+            Self.logNotice("→ question tool parent text KEPT session=\(sessionId) messageID=\(messageId)")
         }
-        Self.logNotice("→ waitingForUserInput (question.asked) session=\(sessionId) cwd=\(cwd)")
-        return [.waitingForUserInput(sessionId: sessionId, cwd: cwd)]
+        Self.logNotice("→ waitingForUserInput (question.asked) session=\(sessionId) cwd=\(cwd) requestID=\(requestId ?? "<nil>") questions=\(questions.count)")
+        return [.waitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: toolUseId, questions: questions, requestId: requestId)]
+    }
+
+    /// Handle opencode's `permission.asked` event. opencode fires this when a
+    /// tool requires user approval (e.g. bash command, file edit). The payload
+    /// carries a permission request id (e.g. "per_xxx") which Nook uses to
+    /// reply via /tmp/nook-command.sock. Unlike Claude/Codex where Nook answers
+    /// through the hook socket, opencode requires an explicit in-process reply
+    /// via the plugin's command socket.
+    ///
+    /// Payload shape (opencode/src/permission/index.ts):
+    ///   {
+    ///     "sessionID": "...",
+    ///     "id": "per_xxx",        // permission request id
+    ///     "tool": { "callID": "..." },   // optional, ties to message part
+    ///     "permission": "bash",    // tool name
+    ///     "patterns": [...],
+    ///     "metadata": { "filepath": "...", "diff": "...", "url": "..." }
+    ///   }
+    private static func handlePermissionAsked(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
+        guard let sessionId = props["sessionID"]?.value as? String else { return [] }
+        let cwd: String = {
+            lock.lock()
+            let v = sessionCwd[sessionId] ?? ""
+            lock.unlock()
+            return v
+        }()
+        guard let requestId = props["id"]?.value as? String, !requestId.isEmpty else {
+            Self.logNotice("→ permissionAsked dropped (no id) session=\(sessionId)")
+            return []
+        }
+        let tool = props["tool"]?.value as? [String: Any]
+        let callId = tool?["callID"] as? String
+        let permission = (props["permission"]?.value as? String) ?? "tool"
+        let patterns: [String] = {
+            guard let arr = props["patterns"]?.value as? [Any] else { return [] }
+            return arr.compactMap { $0 as? String }
+        }()
+        let metadata = props["metadata"]?.value as? [String: Any] ?? [:]
+        let alwaysPatterns: [String] = {
+            guard let arr = props["always"]?.value as? [Any] else { return [] }
+            return arr.compactMap { $0 as? String }
+        }()
+
+        // Build the input map mirroring handleToolPart's stringifyInput so
+        // downstream consumers (ChatItemToolCall.input, MCPToolFormatter) can
+        // render the same details as a preTool event.
+        var inputMap: [String: String] = [:]
+        if let cmd = metadata["command"] as? String { inputMap["command"] = cmd }
+        if let filePath = metadata["filepath"] as? String ?? metadata["file_path"] as? String {
+            inputMap["file_path"] = filePath
+        }
+        if let diff = metadata["diff"] as? String { inputMap["diff"] = diff }
+        if let url = metadata["url"] as? String { inputMap["url"] = url }
+        if !patterns.isEmpty { inputMap["patterns"] = patterns.joined(separator: ", ") }
+
+        let inputSummary = buildInputSummary(toolName: permission, input: metadata)
+
+        Self.logNotice("→ permissionAsked session=\(sessionId) requestId=\(requestId) tool=\(permission) callID=\(callId ?? "-") summary=\(inputSummary) always=\(alwaysPatterns)")
+        return [.permissionAsked(
+            sessionId: sessionId, cwd: cwd, requestId: requestId,
+            toolName: permission, toolUseId: callId,
+            input: inputMap, inputSummary: inputSummary,
+            alwaysPatterns: alwaysPatterns
+        )]
+    }
+
+    private static func handleServerPort(_ props: [String: AnyCodable], sessionId: String) -> [OpencodeSessionEvent] {
+        // Plugin may send the port as a number or a string (URL.port is a string).
+        guard let raw = props["port"]?.value, let port = (raw as? Int) ?? Int(raw as? String ?? "") else {
+            Self.logNotice("→ serverPort dropped (no port) session=\(sessionId)")
+            return []
+        }
+        // port 0 signals "no HTTP server" (TUI mode without --port) — do not
+        // treat it as a real server, otherwise sessions bind to a fake port.
+        guard port > 0 else {
+            Self.logNotice("→ serverPort dropped (no server, port=0) session=\(sessionId)")
+            return []
+        }
+        let version = props["version"]?.value as? String
+        let pid = instancePid(from: props)
+        let cwd: String = {
+            lock.lock()
+            let v = sessionCwd[sessionId] ?? ""
+            lock.unlock()
+            return v
+        }()
+        Self.logNotice("→ serverPort session=\(sessionId) port=\(port) pid=\(pid ?? -1) version=\(version ?? "-")")
+        return [.serverPortReceived(sessionId: sessionId, port: port, version: version, pid: pid)]
     }
 
     // MARK: - Message Handlers
@@ -683,9 +1026,15 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         guard let messageId = props["messageID"]?.value as? String else { return [] }
         guard !messageId.isEmpty else { return [] }
         guard let sessionId = props["sessionID"]?.value as? String else { return [] }
-        guard let field = props["field"]?.value as? String else { return [] }
-        guard field == "text" || field == "reasoning" else { return [] }
-        guard let delta = props["delta"]?.value as? String else { return [] }
+        guard let field = props["field"]?.value as? String else {
+            Self.logNotice("→ delta dropped (no field) session=\(sessionId) messageID=\(messageId)")
+            return [] }
+        guard field == "text" || field == "reasoning" else {
+            Self.logNotice("→ delta dropped (field=\(field)) session=\(sessionId) messageID=\(messageId)")
+            return [] }
+        guard let delta = props["delta"]?.value as? String else {
+            Self.logNotice("→ delta dropped (no delta) session=\(sessionId) messageID=\(messageId) availableKeys=\(Array(props.keys).joined(separator: ","))")
+            return [] }
         guard !delta.isEmpty else { return [] }
 
         lock.lock()
@@ -710,10 +1059,20 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         let isReasoningFinalized = reasoningFinalizedMessageIds.contains(messageId)
         let isKnownReasoning = knownReasoningMessageIds.contains(messageId)
         if !isReasoningFinalized && (isKnownReasoning || field == "reasoning") {
+            // NOTE: lock is already held from line 979 — do NOT re-acquire
+            // (NSLock is not reentrant → deadlock).
             pendingReasoningByMessage[messageId, default: ""] += delta
             messageSession[messageId] = sessionId
+            let accumulated = pendingReasoningByMessage[messageId] ?? ""
+            let cwd = sessionCwd[sessionId] ?? ""
+            if !accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                emittedReasoningMessages.insert(messageId)
+            }
             lock.unlock()
-            return []
+            Self.logNotice("→ reasoningDelta session=\(sessionId) messageID=\(messageId) deltaChars=\(delta.count) accumChars=\(accumulated.count)")
+            guard !accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+            Self.logNotice("→ reasoningStreaming session=\(sessionId) messageID=\(messageId) chars=\(accumulated.count)")
+            return [.assistantThinkingStreaming(sessionId: sessionId, cwd: cwd, text: accumulated, messageId: messageId)]
         }
 
         // Trailing-echo detection on the delta path (Bug H extension).
@@ -753,8 +1112,24 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         lock.lock()
         pendingTextByMessage[messageId, default: ""] += delta
         messageSession[messageId] = sessionId
+        // Stream the accumulated text to the chat view on every delta. The
+        // question-parent suppression check happens here too: a messageID
+        // tagged by handleQuestionAsked must keep accumulating (the stop-time
+        // flush still consults suppressedTextMessages) but never stream.
+        let isSuppressed = suppressedTextMessages.contains(messageId)
+        if !isSuppressed {
+            // Pre-mark as emitted so the finish=stop flush and the session-idle
+            // safety net skip this messageID — the streaming path has already
+            // delivered the full text. Also lets handleQuestionAsked detect
+            // "already streamed" when it needs to retract the item.
+            emittedTextMessages.insert(messageId)
+        }
+        let accumulated = pendingTextByMessage[messageId] ?? ""
+        let cwd = sessionCwd[sessionId] ?? ""
         lock.unlock()
-        return []
+        guard !isSuppressed else { return [] }
+        Self.logNotice("→ textStreaming session=\(sessionId) messageID=\(messageId) chars=\(accumulated.count)")
+        return [.assistantTextStreaming(sessionId: sessionId, cwd: cwd, text: accumulated, messageId: messageId)]
     }
 
     // MARK: - Text / Tool Part Handlers
@@ -1073,7 +1448,14 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // its event model, or the plugin socket drops the event, the
             // list view still gets the correct phase.
             if toolName.lowercased() == "question" || toolName.lowercased() == "askuserquestion" {
-                return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd)]
+                // Defensive fallback: derive questions from the tool call input
+                // (state.input.questions, same shape as the question.asked
+                // Request.questions). requestId stays nil — this is a
+                // `message.part.updated` event, whose top-level id is NOT a
+                // `que_` question request id. If `question.asked` also arrives
+                // (normal operation) SessionStore merges the requestId in.
+                let questions = Self.buildQuestionItems(from: input?["questions"])
+                return [preToolEvent, .waitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: callId ?? "", questions: questions, requestId: nil)]
             }
             return [preToolEvent]
         case "completed":
@@ -1132,6 +1514,30 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    /// Build `[QuestionItem]` from an opencode question payload. Accepts the
+    /// raw `Any` value pulled either from `question.asked` `properties["questions"]`
+    /// or the `question` tool's `state.input["questions"]` (both decode to an
+    /// `[[String: Any]]` of `QuestionV1.Info` structs: `{ question, header,
+    /// options: [{ label, description }] }`). Returns [] for nil / malformed /
+    /// empty input so the panel simply renders no options rather than crashing.
+    static func buildQuestionItems(from raw: Any?) -> [QuestionItem] {
+        guard let array = raw as? [[String: Any]] else { return [] }
+        return array.compactMap { q in
+            guard let question = q["question"] as? String else { return nil }
+            let options = (q["options"] as? [[String: Any]])?.compactMap { opt -> QuestionOption? in
+                guard let label = opt["label"] as? String else { return nil }
+                return QuestionOption(label: label, description: opt["description"] as? String)
+            } ?? []
+            return QuestionItem(
+                question: question,
+                header: q["header"] as? String,
+                options: options,
+                multiple: q["multiple"] as? Bool ?? false,
+                custom: q["custom"] as? Bool ?? true
+            )
+        }
+    }
 
     private static func buildInputSummary(toolName: String, input: [String: Any]?) -> String {
         guard let input, !input.isEmpty else { return toolName }
@@ -1220,10 +1626,11 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     /// - Base64 payload is empty or contains invalid characters
     private static func parseImageDataURI(_ uri: String) -> ImageDataURI? {
         guard uri.hasPrefix("data:") else { return nil }
-        guard let commaIndex = uri.firstIndex(of: ",") else { return nil }
+        let afterData = uri.index(uri.startIndex, offsetBy: 5) // skip "data:"
+        guard let commaIndex = uri[afterData...].firstIndex(of: ",") else { return nil }
 
         // Parse header: "data:image/png;base64"
-        let header = String(uri[uri.index(after: uri.startIndex)..<commaIndex])
+        let header = String(uri[afterData..<commaIndex])
         let parts = header.split(separator: ";")
         guard let contentType = parts.first, !contentType.isEmpty else { return nil }
 
@@ -1293,6 +1700,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             return events
         }
         Self.logNotice("→ assistantText session=\(sessionId) messageID=\(messageId) textChars=\(text.count) trigger=\(trigger)")
+        Self.logNotice("→ assistantText preview session=\(sessionId) messageID=\(messageId) first20=\"\(text.prefix(20))\" last20=\"\(text.suffix(20))\"")
         events.append(.assistantText(sessionId: sessionId, cwd: cwd, text: text, messageId: messageId))
         return events
     }

@@ -9,14 +9,18 @@
 import AppKit
 import Combine
 import Foundation
+import os.log
 
 @MainActor
 class SessionMonitor: ObservableObject {
     @Published var instances: [SessionState] = []
     @Published var pendingInstances: [SessionState] = []
     @Published var completionNotification: SessionCompletionNotification?
+    /// Running OpenCode plugin version (nil until the plugin handshake).
+    @Published var opencodePluginVersion: String?
 
     private nonisolated static let codexHookEventQueue = AsyncHookEventQueue()
+    private static let logger = Logger(subsystem: "com.celestial.Nook", category: "SessionMonitor")
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -32,6 +36,13 @@ class SessionMonitor: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
                 self?.completionNotification = notification
+            }
+            .store(in: &cancellables)
+
+        SessionStore.shared.opencodePluginVersionPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] version in
+                self?.opencodePluginVersion = version
             }
             .store(in: &cancellables)
 
@@ -93,15 +104,19 @@ class SessionMonitor: ObservableObject {
                 // Chat-item events are handled via onOpencodeChatItems below.
                 Task {
                     switch event {
-                    case .sessionStart(let sessionId, let cwd):
-                        await SessionStore.shared.process(.opencodeSessionStarted(sessionId: sessionId, cwd: cwd))
+                    case .sessionStart(let sessionId, let cwd, let provisional, let pid):
+                        await SessionStore.shared.process(.opencodeSessionStarted(sessionId: sessionId, cwd: cwd, provisional: provisional, pid: pid))
                     case .processingStarted(let sessionId, let cwd):
                         await SessionStore.shared.process(.opencodeProcessingStarted(sessionId: sessionId, cwd: cwd))
-                    case .waitingForUserInput(let sessionId, let cwd):
-                        await SessionStore.shared.process(.opencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd))
+                    case .waitingForUserInput(let sessionId, let cwd, let toolUseId, let questions, let requestId):
+                        await SessionStore.shared.process(.opencodeWaitingForUserInput(sessionId: sessionId, cwd: cwd, toolUseId: toolUseId, questions: questions, requestId: requestId))
                     case .stop(let sessionId, let cwd):
                         OpencodeChatItemAdapter.shared.clearSession(sessionId)
                         await SessionStore.shared.process(.opencodeStopped(sessionId: sessionId, cwd: cwd))
+                    case .permissionAsked(let sessionId, let cwd, let requestId, let toolName, let toolUseId, let input, let inputSummary, let alwaysPatterns):
+                        await SessionStore.shared.process(.opencodePermissionRequested(sessionId: sessionId, cwd: cwd, permission: toolName, requestId: requestId, toolUseId: toolUseId, input: input, inputSummary: inputSummary, alwaysPatterns: alwaysPatterns))
+                    case .serverPortReceived(let sessionId, let port, let version, let pid):
+                        await SessionStore.shared.process(.opencodeServerPortReceived(sessionId: sessionId, port: port, version: version, pid: pid))
                     case .subagentStarted(let sessionId, let taskToolId):
                         // sessionId is already the parent's — the adapter
                         // rewrites child session ids before emitting.
@@ -112,7 +127,8 @@ class SessionMonitor: ObservableObject {
                         await SessionStore.shared.process(.subagentToolCompleted(sessionId: sessionId, toolId: toolId, status: status))
                     case .subagentStopped(let sessionId, let taskToolId):
                         await SessionStore.shared.process(.subagentStopped(sessionId: sessionId, taskToolId: taskToolId))
-                    case .userPromptSubmitted, .assistantThinking, .assistantText,
+                    case .userPromptSubmitted, .assistantThinking, .assistantThinkingStreaming,
+                         .assistantText, .assistantTextStreaming, .assistantStreamingCancelled,
                          .preTool, .postTool, .image:
                         // These are now routed through OpencodeChatItemAdapter
                         // → onOpencodeChatItems → realtimeChatItemBatch.
@@ -193,6 +209,27 @@ class SessionMonitor: ObservableObject {
         Task {
             guard let session = await SessionStore.shared.session(for: sessionId),
                   let permission = session.activePermission else {
+                Self.logger.warning("approvePermission: session or permission not found sessionId=\(sessionId.prefix(8), privacy: .public)")
+                return
+            }
+
+            Self.logger.info("approvePermission: sessionId=\(sessionId.prefix(8), privacy: .public) toolUseId=\(permission.toolUseId.prefix(12), privacy: .public) requestId=\(permission.opencodeRequestId ?? "nil", privacy: .public)")
+
+            // OpenCode permission prompts are replied to via the plugin's
+            // command socket (per_xxx id), not the Claude hook socket. When
+            // the active permission carries an opencodeRequestId, route the
+            // approval there and skip the Claude/Codex hook response.
+            if let requestId = permission.opencodeRequestId {
+                Self.logger.info("approvePermission: sending permission.reply to opencode requestId=\(requestId, privacy: .public) pid=\(session.pid ?? -1, privacy: .public) cwd=\(session.cwd, privacy: .public)")
+                OpencodeCommandSocket.shared.sendCommand([
+                    "cmd": "permission.reply",
+                    "requestId": requestId,
+                    "reply": "once",
+                    "directory": session.cwd,
+                ], pid: session.pid)
+                await SessionStore.shared.process(
+                    .permissionApproved(sessionId: sessionId, toolUseId: permission.toolUseId)
+                )
                 return
             }
 
@@ -207,10 +244,57 @@ class SessionMonitor: ObservableObject {
         }
     }
 
+    /// Approve a permission prompt with the option to remember the decision
+    /// for the rest of the session. Only meaningful for OpenCode sessions —
+    /// Claude/Codex fall back to the single-shot approvePermission path.
+    func approvePermission(sessionId: String, always: Bool) {
+        Task {
+            guard let session = await SessionStore.shared.session(for: sessionId),
+                  let permission = session.activePermission else {
+                return
+            }
+
+            // OpenCode path: send the reply through the command socket with
+            // "once" or "always". If there's no opencodeRequestId (Claude/Codex
+            // session), fall back to the standard single-shot path.
+            guard let requestId = permission.opencodeRequestId else {
+                if !always {
+                    approvePermission(sessionId: sessionId)
+                }
+                return
+            }
+
+            OpencodeCommandSocket.shared.sendCommand([
+                "cmd": "permission.reply",
+                "requestId": requestId,
+                "reply": always ? "always" : "once",
+                "directory": session.cwd,
+            ], pid: session.pid)
+
+            await SessionStore.shared.process(
+                .permissionApproved(sessionId: sessionId, toolUseId: permission.toolUseId)
+            )
+        }
+    }
+
     func denyPermission(sessionId: String, reason: String?) {
         Task {
             guard let session = await SessionStore.shared.session(for: sessionId),
                   let permission = session.activePermission else {
+                return
+            }
+
+            // OpenCode deny path — reply "reject" through the command socket.
+            if let requestId = permission.opencodeRequestId {
+                OpencodeCommandSocket.shared.sendCommand([
+                    "cmd": "permission.reply",
+                    "requestId": requestId,
+                    "reply": "reject",
+                    "directory": session.cwd,
+                ], pid: session.pid)
+                await SessionStore.shared.process(
+                    .permissionDenied(sessionId: sessionId, toolUseId: permission.toolUseId, reason: reason)
+                )
                 return
             }
 

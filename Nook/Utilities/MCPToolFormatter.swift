@@ -40,6 +40,17 @@ struct MCPToolFormatter {
         // Shared (both providers)
         "task": "Agent",
         "skill": "Skill",
+        // OpenCode permission categories — these appear as the "tool name"
+        // in permission.asked events. Map them to friendly action labels
+        // so the user sees "External /etc/hosts" instead of the raw
+        // "external_directory /etc/hosts".
+        "external_directory": "External",
+        "bash": "Bash",
+        "read": "Read",
+        "edit": "Edit",
+        "write": "Write",
+        "grep": "Grep",
+        "glob": "Glob",
     ]
 
     /// Checks if tool name is in MCP format (e.g., "mcp__deepwiki__ask_question")

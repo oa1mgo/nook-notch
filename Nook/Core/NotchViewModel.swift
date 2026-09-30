@@ -64,6 +64,7 @@ enum NotchContentType: Equatable {
     case betaFeatures
     case performance(PerformanceSection)
     case chat(SessionState)
+    case question(SessionState)
 
     var id: String {
         switch self {
@@ -75,6 +76,7 @@ enum NotchContentType: Equatable {
         case .betaFeatures: return "betaFeatures"
         case .performance(let section): return "performance-\(section.rawValue)"
         case .chat(let session): return "chat-\(session.sessionId)"
+        case .question: return "question"
         }
     }
 }
@@ -91,6 +93,11 @@ enum ChatScrollDirection {
 
 @MainActor
 class NotchViewModel: ObservableObject {
+    /// Most recently initialized view model. WindowManager owns exactly one
+    /// NotchWindowController (recreated on screen changes), so the latest init
+    /// is always the active one. Weak so it never extends the view model's
+    /// lifetime. Needed by service-side callers (question providers, notch
+    /// auto-expand) that run outside the SwiftUI environment.
     // MARK: - Published State
 
     @Published var status: NotchStatus = .closed
@@ -113,6 +120,9 @@ class NotchViewModel: ObservableObject {
     @Published var keyboardSelectedIndex: Int = -1
     /// Trigger to activate the currently keyboard-selected session
     @Published var keyboardActivateTrigger: UUID?
+    /// Trigger to open the question panel for the currently keyboard-selected
+    /// session (only effective when that session is in `.waitingForInput`).
+    @Published var keyboardReplyTrigger: UUID?
 
     /// Focused row index for keyboard navigation on settings pages (menu, shortcuts).
     @Published var settingsFocusedIndex: Int = -1
@@ -265,6 +275,21 @@ class NotchViewModel: ObservableObject {
                 width: min(screenRect.width * 0.4, 480),
                 height: instancesPageOpenedHeight
             )
+        case .question(let session):
+            // Panel height driven by question data: back-row, title,
+            // N option rows, divider, bottom action row.  Each option row
+            // is a fixed-height HStack (circle 20pt + label + checkmark),
+            // so the total is deterministic per question.  The panel
+            // shrinks for few-option questions and caps at a maximum
+            // when the option count grows.
+            let headerHeight = settingsPageHeaderHeight(for: geometry)
+            let contentHeight = questionContentHeight(session: session)
+            let raw = contentHeight + headerHeight + 12
+            let maxHeight = max(0, geometry.windowHeight - panelBottomMargin)
+            return CGSize(
+                width: min(screenRect.width * 0.4, 480),
+                height: min(raw, maxHeight)
+            )
         }
     }
 
@@ -331,6 +356,50 @@ class NotchViewModel: ObservableObject {
         }
 
         return chromeHeight + performanceBlockHeight + musicBlockHeight + contentHeight
+    }
+
+    /// Compute the question-panel content height from the pending question
+    /// data.  Each row has a deterministic height (derived from NSFont
+    /// metrics), so the total is exact — no GeometryReader feedback loop
+    /// needed.  The panel shrinks for few-option questions and caps when
+    /// the option count grows large.
+    private func questionContentHeight(session: SessionState) -> CGFloat {
+        let questions = session.pendingQuestionContext?.questions ?? []
+        guard !questions.isEmpty else { return 416 }
+
+        // Back row: HStack { MenuRow (~35pt) + Spacer + pager chevrons (24pt) }
+        // .padding(.vertical, 14) → HStack + 28pt
+        let backRowHeight: CGFloat = 63
+        // Divider after back row
+        let backDividerHeight: CGFloat = 1
+        // questionTitle: font 14pt semibold ≈ 17pt line height + spacing → ~30pt
+        let questionTitleHeight: CGFloat = 30
+        // Option row: circle 20×20 + label 11.5pt + padding(.vertical,6)×2 = 32pt
+        let optionRowHeight: CGFloat = 32
+        // Spacing between options in VStack(spacing: 4)
+        let optionSpacing: CGFloat = 4
+        // bottomActionRow: freeFormInput ~34pt or sendButton ~28pt
+        let bottomRowHeight: CGFloat = 34
+        // Inner dividers (thin lines)
+        let innerDividerHeight: CGFloat = 1
+
+        // Use the longest question's option count (panel must fit all
+        // questions when the user paginates).
+        let maxOptionCount = questions.map(\.options.count).max() ?? 0
+        let optionsHeight = CGFloat(maxOptionCount) * optionRowHeight
+            + max(0, CGFloat(maxOptionCount) - 1) * optionSpacing
+
+        // content VStack (spacing: 12): title + divider + options + divider + bottom
+        // 5 children → 4 gaps of 12pt = 48pt
+        let contentVStackHeight = questionTitleHeight
+            + innerDividerHeight
+            + optionsHeight
+            + innerDividerHeight
+            + bottomRowHeight
+            + 12 * 4
+
+        // Back section + outer padding (.padding(.vertical, 14) → 28pt)
+        return backRowHeight + backDividerHeight + contentVStackHeight + 28
     }
 
     private var resolvedRowHeight: CGFloat {
@@ -470,6 +539,7 @@ class NotchViewModel: ObservableObject {
 
         // Clear stale keyboard activation signal to avoid re-trigger on view re-subscription
         keyboardActivateTrigger = nil
+        keyboardReplyTrigger = nil
 
         // Save the frontmost app before we steal focus
         if reason != .notification, previousActiveApp == nil {
@@ -547,6 +617,10 @@ class NotchViewModel: ObservableObject {
             agentsClaudeDirPickerExpanded = false
             agentsContentHeight = agentsBaseHeight
         }
+        // Same stale-UUID clear as `exitChat`/`navigateBack` — SessionListView
+        // re-subscribes on remount and @Published would replay it.
+        keyboardActivateTrigger = nil
+        keyboardReplyTrigger = nil
         contentType = contentType == .menu ? .instances : .menu
     }
 
@@ -566,6 +640,7 @@ class NotchViewModel: ObservableObject {
     /// Go back to instances list and clear saved chat state
     func exitChat() {
         keyboardActivateTrigger = nil
+        keyboardReplyTrigger = nil
         currentChatSession = nil
         contentType = .instances
     }
@@ -596,6 +671,11 @@ class NotchViewModel: ObservableObject {
     /// Navigate back from a sub-page (e.g. shortcuts) to the previous page
     func navigateBack() {
         keyboardActivateTrigger = nil
+        // Clear the reply trigger here too: SessionListView re-subscribes to
+        // $keyboardReplyTrigger on re-mount, and @Published replays the current
+        // value — a stale UUID would immediately bounce back into the question
+        // panel (the "⌃H flashed back to question" bug, 2026-09-28).
+        keyboardReplyTrigger = nil
         // See `pushTo` — same reset applies when leaving agents via Back.
         if self.contentType == .agents {
             agentsClaudeDirPickerExpanded = false
@@ -667,6 +747,10 @@ class NotchViewModel: ObservableObject {
             // ⌃N/P are "previous/next session" — semantically navigation,
             // not scrolling — so they don't scroll chat here.
             break
+        case .question:
+            // Question panel drives its own option selection (Task 15+);
+            // settings-page keyboard nav does not apply here.
+            break
         }
     }
 
@@ -726,12 +810,22 @@ class NotchViewModel: ObservableObject {
         case .chat:
             // See `selectPreviousItem` — chat scroll is hardcoded in ShortcutManager.
             break
+        case .question:
+            // See `selectPreviousItem` — question panel handles its own keys.
+            break
         }
     }
 
     /// Activate the currently keyboard-selected item
     func activateSelectedItem() {
         keyboardActivateTrigger = UUID()
+    }
+
+    /// Open the question panel for the resolved target (0/1/2+ rule —
+    /// SessionListView listens to this trigger and resolves via
+    /// KeyboardTargetResolver; 1 waiting session is entered regardless of highlight).
+    func activateReplyToQuestion() {
+        keyboardReplyTrigger = UUID()
     }
 
     /// Total focusable items in the menu page
@@ -778,7 +872,15 @@ class NotchViewModel: ObservableObject {
         switch action {
         case .toggleNotch:
             if status == .opened {
-                notchClose(restorePreviousApp: true)
+                // If panel is open but window isn't key, bring focus to it
+                // (so keyboard shortcuts work). Only close if already focused.
+                let notchWindow = NSApp.windows.first { $0 is NotchPanel }
+                if NSApp.keyWindow === notchWindow {
+                    notchClose(restorePreviousApp: true)
+                } else {
+                    NSApp.activate(ignoringOtherApps: false)
+                    notchWindow?.makeKey()
+                }
             } else {
                 notchOpen(reason: .click)
             }
@@ -790,6 +892,8 @@ class NotchViewModel: ObservableObject {
             selectNextItem()
         case .enterSession:
             activateSelectedItem()
+        case .replyToQuestion:
+            activateReplyToQuestion()
         case .navigateBack:
             navigateBack()
         case .openSettings:

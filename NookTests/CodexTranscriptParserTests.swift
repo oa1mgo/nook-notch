@@ -2,6 +2,43 @@ import XCTest
 @testable import Nook
 
 final class CodexTranscriptParserTests: XCTestCase {
+    func testDetectTerminalErrorReturnsMessageFor429() throws {
+        let sessionId = "test-session-\(UUID().uuidString.prefix(8))"
+        let root = try makeCodexTestDirectory()
+        _ = try writeCodexFragment(
+            in: root,
+            name: "rollout-\(sessionId).jsonl",
+            sessionId: sessionId,
+            rows: [#"{"timestamp":"2026-07-30T02:51:57.863Z","type":"event_msg","payload":{"type":"task_complete","error":{"message":"exceeded retry limit, last status: 429 Too Many Requests"}}}"#]
+        )
+
+        let error = CodexTranscriptParser.detectTerminalError(sessionId: sessionId, root: root)
+        XCTAssertEqual(error, "exceeded retry limit, last status: 429 Too Many Requests")
+    }
+
+    func testDetectTerminalErrorReturnsNilWhenNoError() throws {
+        let sessionId = "test-session-\(UUID().uuidString.prefix(8))"
+        let root = try makeCodexTestDirectory()
+        _ = try writeCodexFragment(
+            in: root,
+            name: "rollout-\(sessionId).jsonl",
+            sessionId: sessionId,
+            rows: [#"{"timestamp":"2026-07-30T02:51:57.863Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"done"}}"#]
+        )
+
+        let error = CodexTranscriptParser.detectTerminalError(sessionId: sessionId, root: root)
+        XCTAssertNil(error)
+    }
+
+    func testDetectTerminalErrorReturnsNilForEmptyTranscript() throws {
+        let sessionId = "test-session-\(UUID().uuidString.prefix(8))"
+        let root = try makeCodexTestDirectory()
+        _ = try writeCodexFragment(in: root, name: "rollout-\(sessionId).jsonl", sessionId: sessionId, rows: [])
+
+        let error = CodexTranscriptParser.detectTerminalError(sessionId: sessionId, root: root)
+        XCTAssertNil(error)
+    }
+
     func testDesktopUserMessageBoundaryExcludesModelContext() throws {
         let url = try writeTemporaryJSONL("""
         {"timestamp":"2026-09-15T09:33:27.702Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>private context</environment_context>"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["environments.environment_context"]}}}

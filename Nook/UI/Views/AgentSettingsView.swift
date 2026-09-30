@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct AgentSettingsView: View {
+    @ObservedObject var sessionMonitor: SessionMonitor
     @ObservedObject var viewModel: NotchViewModel
     let primaryTextColor: Color
     let secondaryTextColor: Color
@@ -56,6 +57,20 @@ struct AgentSettingsView: View {
     private var codexInstalled: Bool { AgentPathsResolver.isInstalled(.codex) }
     private var opencodeInstalled: Bool { AgentPathsResolver.isInstalled(.opencode) }
     private var cursorInstalled: Bool { AgentPathsResolver.isInstalled(.cursor) }
+
+    /// Version of the Nook OpenCode plugin installed in
+    /// `~/.config/opencode/plugins/nook/package.json`. nil when the plugin
+    /// isn't installed or the file can't be parsed.
+    private var opencodePluginVersion: String? {
+        let pkgPath = AgentPathsResolver.directory(for: .opencode)
+            .appendingPathComponent("plugins/nook/package.json")
+        guard let data = try? Data(contentsOf: pkgPath),
+              let pkg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = pkg["version"] as? String else {
+            return nil
+        }
+        return version
+    }
 
     // MARK: - Keyboard nav indices
     //
@@ -487,9 +502,11 @@ struct AgentSettingsView: View {
         // OpenCode uses a plugin mechanism (installed via `opencode plugin --global`),
         // not a hooks one. The other three providers use real hooks. Show the
         // mechanism that matches the implementation.
-        let label: String = (provider == .opencode) ? "Plugin" : "Hooks"
-        return SettingsSubToggleRow(
-            label: label,
+        if provider == .opencode {
+            return AnyView(opencodePluginToggleRow(hooksOn: hooksOn, focusedIndex: focusedIndex))
+        }
+        return AnyView(SettingsSubToggleRow(
+            label: "Hooks",
             isOn: hooksOn,
             primaryTextColor: primaryTextColor,
             secondaryTextColor: secondaryTextColor,
@@ -498,6 +515,42 @@ struct AgentSettingsView: View {
         ) {
             withAnimation {
                 toggleHooks(provider: provider, currentlyOn: hooksOn)
+            }
+        })
+    }
+
+    /// OpenCode's plugin toggle row. Shows the version of the installed
+    /// plugin next to the label (read from the installed package.json), so
+    /// you can confirm which plugin build is on disk.
+    private func opencodePluginToggleRow(hooksOn: Bool, focusedIndex: Int?) -> some View {
+        let installedVersion = opencodePluginVersion
+
+        return HStack(spacing: 8) {
+            Text("Plugin")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(primaryTextColor.opacity(0.82))
+
+            if let version = installedVersion {
+                Text("v\(version)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(secondaryTextColor)
+            }
+
+            Spacer()
+
+            Circle()
+                .fill(hooksOn ? TerminalColors.green : Color.white.opacity(0.2))
+                .frame(width: 6, height: 6)
+            Text(hooksOn ? "On" : "Off")
+                .font(.system(size: 11))
+                .foregroundColor(secondaryTextColor)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation {
+                toggleHooks(provider: .opencode, currentlyOn: hooksOn)
             }
         }
     }
