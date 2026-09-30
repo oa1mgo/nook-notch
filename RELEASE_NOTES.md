@@ -4,11 +4,19 @@
 
 What's New
 
-  - Question Tool Notch Prompt — when an agent asks a question via `AskUserQuestion`, the notch now expands into a dedicated answer panel instead of silently showing a checkmark. The closed notch shows a three-segment chip (question mark · provider + question summary · music wave). Options render as tappable A/B/C cards; a free-text field accepts custom answers. Multiple concurrent questions use a left/right swiper. For OpenCode, tapping an option or sending free text replies over the plugin command socket (`question.reply` → opencode `/session/{id}/question/{requestID}/reply`). Claude / Codex / Cursor keep the existing "Go to Terminal" flow in this phase (Phase 2 will add tmux `sendKeys` inline replies). Introduces a `QuestionReplyProvider` protocol so the UI is provider-agnostic. See `docs/specs/2026-09-02-question-tool-notch-prompt-design.md`.
+  - Question Answer Panel — OpenCode questions appear in a dedicated notch panel with single-choice or multiple-choice options, optional custom text, and navigation between questions. Selections persist when switching cards. Choose the answers, then click Send or press Enter to submit through the bundled plugin. The collapsed notch shows a question indicator; Claude Code, Codex, and Cursor offer Go to Terminal for answering.
 
   - Session List Reply Shortcut Target — pressing ⌃R in the session list resolves its target through a shared 0/1/2+ rule: with no waiting session it does nothing, with exactly one it enters that session's question page regardless of the highlight (previously required a selected row), and with two or more the highlighted row must be a waiting one. The permission Y/N/A shortcuts use the same resolver, and stale keyboard-trigger replays across menu navigation are cleared so an old ⌃R cannot bounce you back into the question page.
 
-  - Terminal Focus Extraction — `ChatView`'s three-tier terminal-focus logic (yabai/tmux → process tree → bundle-ID fallback) is extracted into a reusable `TerminalFocusHelper`, so the question panel and other callers can focus a terminal without a view dependency.
+  - Keyboard Answers and Approvals — use arrows or Ctrl+N/P for question options, Space for multi-select, Tab for custom input, and Ctrl+[/] to switch questions. Permission controls support Y/N for approve once/reject and, for OpenCode, A followed by C to review and confirm Always allow. Escape cancels the Always confirmation.
+
+  - OpenCode Multi-Instance Support — permission and question replies follow the owning process and project. Live text/reasoning updates, session registration, and reply routing are improved; chat input supports tmux or an OpenCode HTTP server started with --port.
+
+  - Conversation and Playback Fixes — large Edit diffs use bounded rendering to avoid expansion freezes, subagent tool visibility follows the setting, and rapid play/pause clicks no longer launch overlapping toggle commands. Codex transcript monitoring also recognizes terminal errors such as exhausted retries after rate limiting.
+
+  - Universal Release Package — release builds explicitly include Apple Silicon and Intel architectures, with app version, architecture, signature and installer checks before upload.
+
+  - Documentation and Release — English and Chinese READMEs explain the new controls and agent-specific support. Nook 1.5.0 (build 4). Thanks to @wuruofan for PR #19. After upgrading, restart OpenCode to load the updated bundled plugin.
 
 ## 1.4.3
 

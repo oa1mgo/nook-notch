@@ -35,6 +35,7 @@ Nook turns the MacBook notch into a compact desktop control layer. The home view
 | --- | --- |
 | Agent sessions | Monitor Claude Code, Codex, OpenCode, and Cursor from local hook events. |
 | Session detail | Show prompts, thinking, tool calls, tool results, approvals, user questions, completion state, and token usage. |
+| Questions and approvals | Answer OpenCode questions in the notch, review permissions, and use keyboard shortcuts to respond. |
 | Music | Display artwork, source app, track metadata, progress, playback controls, and artwork-colored glow with optional audio-reactive effects. |
 | System status | Surface CPU, memory, battery, and network status with configurable performance detail pages. |
 | Settings | Configure screen selection, notification sound, agent hooks, shortcuts, glow effects, launch at login, accessibility, and opt-in Beta features. |
@@ -46,8 +47,31 @@ Nook normalizes local agent events into a shared session timeline.
 
 - Claude Code: hooks, transcript parsing, status tracking, interrupt detection, permission handling, and tmux-aware terminal focus.
 - Codex: live direct-user and assistant messages, complete multi-file transcript history, terminal approval state, compacting/subagent events, and stable completed sessions. Injected memory and system context stay out of the conversation.
-- OpenCode: event-stream integration with live tool placeholders, user-input state, subagent tracking, and idle/completion transitions.
+- OpenCode: live text, reasoning and tool updates, inline permission decisions and question answers, subagent tracking, and replies routed to the owning process and project when multiple instances are running.
 - Cursor: session lifecycle, processing/compacting state, thought and response updates, tool calls, and session cleanup.
+
+## Questions and Approvals
+
+Click a session to open its conversation. When an agent needs an answer, the collapsed notch shows a question indicator; OpenCode questions can open a dedicated answer panel with single-choice or multiple-choice options. Questions that allow a custom answer also show a text field. Choose your answers, then press `Enter` or click Send to submit. Each question keeps its selection when you navigate between cards.
+
+OpenCode supports answering directly in Nook through its bundled plugin. Claude Code, Codex, and Cursor use `Go to Terminal` to continue answering in the agent's terminal. Enable the matching integration in Nook's agent settings; after upgrading, restart OpenCode so it loads the updated plugin.
+
+To send new chat messages to OpenCode from the conversation view, run it inside tmux or start it with an HTTP listening port (`--port`).
+
+The default shortcuts are:
+
+| Context | Shortcut | Action |
+| --- | --- | --- |
+| Session list | `Ctrl+R` | Open a waiting session's question panel. |
+| Session list / permission bar | `Y` / `N` | Approve once / reject an eligible request. |
+| OpenCode permission bar | `A`, then `C` | Review the displayed patterns, then confirm Always allow; `Esc` cancels this confirmation. |
+| Question options | `↑` / `↓` or `Ctrl+P` / `Ctrl+N` | Move between options; single-choice selection follows focus. |
+| Multiple-choice question | `Space` | Toggle the focused option. |
+| Question with custom input | `Tab` | Switch between options and the text field. |
+| Multiple questions | `Ctrl+[` / `Ctrl+]` | Previous / next question. |
+| Answer panel | `Enter` | Submit the answers. |
+
+In the session list, reply and approval shortcuts act directly when there is exactly one eligible waiting session, even without a highlighted row. With several eligible sessions, highlight the one you want first; with none, the shortcut does nothing. Permission shortcuts do not act while you are typing in a text field.
 
 ## Appearance
 
@@ -117,6 +141,7 @@ For building and validating the drag-to-install disk image, see [DMG packaging](
 - `Nook/Services/Hooks`: hook installers and Unix socket ingress for agent events.
 - `Nook/Services/Session`: transcript parsing, status watching, and session monitoring.
 - `Nook/Services/State`: central session store and tool-event processing.
+- `Nook/Services/Question`: agent-specific question reply providers and terminal fallback.
 - `Nook/Services/Music`: now playing integration, media controls, artwork colors, and opt-in system-audio analysis for reactive glow and music bars.
 - `Nook/Services/System`: performance sampling.
 - `Nook/UI`: notch shell, session list, chat detail, music, performance, and settings views.
@@ -127,3 +152,5 @@ Nook was shaped by ideas from:
 
 - [farouqaldori/claude-island](https://github.com/farouqaldori/claude-island)
 - [TheBoredTeam/boring.notch](https://github.com/TheBoredTeam/boring.notch)
+
+Thanks to [@wuruofan](https://github.com/wuruofan) for the question panel, keyboard interactions, and OpenCode improvements in [PR #19](https://github.com/oa1mgo/nook-notch/pull/19).

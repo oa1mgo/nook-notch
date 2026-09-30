@@ -26,7 +26,8 @@ Requires macOS, Xcode selected with `xcode-select` or `DEVELOPER_DIR`, Python 3.
 
 ```sh
 xcodebuild -project Nook.xcodeproj -scheme Nook -configuration Release \
-  -destination 'platform=macOS' -derivedDataPath build/ReleaseValidation build
+  -destination 'generic/platform=macOS' ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO \
+  -derivedDataPath build/ReleaseValidation build
 
 python3 -m venv build/DMGTools
 build/DMGTools/bin/python -m pip install --require-hashes --only-binary=:all: \
@@ -69,6 +70,17 @@ files, background artwork/directories, picture/color metadata, stale image
 aliases, incorrect positions/labels, oversized windows, visible toolbars,
 unsupported grids, nonzero scroll offsets, rearrangement, and output overwrites.
 Release CI runs these tests and validates the actual mounted DMG before upload.
+
+## Universal release builds (1.5.0)
+
+Use the generic macOS destination and explicit `arm64 x86_64` architectures for
+distribution. A current-Mac destination can produce an arm64-only application
+even when the project's Release settings list both architectures. The release
+workflow now requires the built app version to match the tag and verifies both
+architectures with `lipo -verify_arch arm64 x86_64` before packaging. The bundled
+MediaRemoteAdapter also contains both architectures. Local app tests and launch
+checks run on Apple Silicon; the architecture check does not claim an Intel
+hardware runtime test.
 
 ## Retina scaling fix (2026-09-14)
 
