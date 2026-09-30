@@ -3,9 +3,11 @@
 > Last updated: 2026-09-30
 
 ## 🎯 Current Focus
-- [2026-09-30] **1.5.0 README + release** — Both READMEs/release notes updated; 186 app tests, 16 packaging tests, Debug launch and universal Release/DMG checks passed. CI now verifies both architectures and the app version. Done when: changes are merged and release/1.5.0's published DMG is downloaded and verified. Live question/approval e2e and Intel hardware checks remain unverified.
+
+Release 1.5.0 is complete; no new development task has been started.
 
 ## Completed
+- [2026-09-30] **1.5.0 published and verified** — PR #20 merged; both READMEs updated for PR #19. 186 app tests, 16 packaging tests, Debug launch and universal Release/DMG checks passed. GitHub CI succeeded; the actual 1.5.0 build 4 download passed digest, signature, layout, architecture and plugin checks. [Release evidence](docs/packaging.md#release-150-verification).
 - [2026-09-30] PR #19 merged — question panel, session-list reply/approval shortcuts and OpenCode improvements are on main (`6b7ee7b`); 1.5.0 build 4 set by the contributor. [PR #19](https://github.com/oa1mgo/nook-notch/pull/19).
 - **Codex history recovery / 1.4.3 published** — PR #18 merged into main; release/1.4.3 (build 3) published and downloaded DMG verified. 116 app tests, 16 packaging tests and exact 65-message real replay passed during that release; automated UI opening remained unverified. [Evidence and compatibility](docs/debug/2026-09-15-codex-direct-history.md).
 

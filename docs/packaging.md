@@ -130,3 +130,28 @@ The pinned packaging-only dependencies and hashes live in
 `tools/dmg/requirements.txt`. [dmgbuild](https://github.com/dmgbuild/dmgbuild)
 writes the Finder metadata without needing a GUI session, so CI does not require
 Finder automation permission. See its [settings reference](https://dmgbuild.readthedocs.io/en/latest/settings.html).
+
+## Release 1.5.0 verification
+
+Published on September 30, 2026 from main commit
+`23e5adff4858a2423bca5d8378fd18aaedf3ac71`, after
+[PR #20](https://github.com/oa1mgo/nook-notch/pull/20) updated both READMEs and
+release notes for the features merged in PR #19. The
+[release workflow](https://github.com/oa1mgo/nook-notch/actions/runs/36695788403)
+passed the universal build, app-version/architecture/signature checks, all 16
+packaging tests, and mounted-DMG validation before publishing
+[release/1.5.0](https://github.com/oa1mgo/nook-notch/releases/tag/release/1.5.0).
+Local verification also passed 186 app tests, the Debug build/process launch and
+the universal Release build. Live agent question/approval flows and Intel
+hardware runtime were not exercised in this release pass.
+
+The actual published `Nook-1.5.0.dmg` was downloaded and verified separately from
+the local package: **14,371,946 bytes**, SHA-256
+`bf8dc3d5e1c5d774d7fc3b071780839e9144e354634b51fb3048f292ace91bc6`,
+matching GitHub's asset digest. The disk-image checksum, mounted app signature,
+native Finder layout, Applications link, version **1.5.0 / build 4**, both
+`arm64` and `x86_64` slices, and bundled OpenCode plugin contents passed.
+The published bundle's minimum OS metadata is 15.5; this is not a lowest-OS
+hardware acceptance test. Distribution retains the existing ad-hoc signing
+policy; signature-integrity checks do not establish Developer ID trust or
+notarization.
