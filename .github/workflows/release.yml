@@ -84,9 +84,25 @@ jobs:
           set -euo pipefail
 
           xcodebuild -scheme Nook -configuration Release \
+            -destination 'generic/platform=macOS' \
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
             MACOSX_DEPLOYMENT_TARGET=15.5 \
             -derivedDataPath build \
             build
+
+      - name: Validate release app
+        run: |
+          set -euo pipefail
+
+          APP_PATH="build/Build/Products/Release/Nook.app"
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP_PATH}/Contents/Info.plist")"
+          if [[ "${APP_VERSION}" != "${VERSION}" ]]; then
+            echo "::error::Built app version ${APP_VERSION} does not match release ${VERSION}."
+            exit 1
+          fi
+
+          /usr/bin/lipo "${APP_PATH}/Contents/MacOS/Nook" -verify_arch arm64 x86_64
+          /usr/bin/codesign --verify --deep --strict "${APP_PATH}"
 
       - uses: actions/setup-python@v5
         with:

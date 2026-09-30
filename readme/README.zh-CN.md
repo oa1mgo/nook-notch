@@ -35,6 +35,7 @@ Nook 会把 MacBook notch 变成一个轻量的桌面控制层。主页集中展
 | --- | --- |
 | Agent 会话 | 通过本地 hook 监控 Claude Code、Codex、OpenCode、Cursor。 |
 | 会话详情 | 展示 prompt、thinking、工具调用、工具结果、审批、问题、完成状态和 token 用量。 |
+| 问题与审批 | 在 notch 内回答 OpenCode 问题、处理权限请求，支持键盘快捷操作。 |
 | 音乐 | 展示封面、来源 App、歌曲信息、进度和播放控制，支持封面配色光晕与可选的真实音频响应。 |
 | 系统状态 | 展示 CPU、内存、电池、网络概览，并提供可配置的性能详情页。 |
 | 设置 | 支持屏幕选择、提示音、agent hooks、快捷键、glow、开机启动、辅助功能和独立开启的 Beta 功能入口。 |
@@ -46,8 +47,31 @@ Nook 会把不同 agent 的本地事件整理成统一的会话时间线。
 
 - Claude Code：hook、transcript 解析、状态追踪、中断检测、权限处理、tmux 终端聚焦。
 - Codex：实时展示用户直接输入和助手消息、完整读取分段历史、terminal approval 状态、compacting/subagent 事件、完成会话保留；不混入 memory 和系统注入上下文。
-- OpenCode：事件流接入、实时工具占位、用户输入状态、subagent 追踪、idle/完成状态转换。
+- OpenCode：实时文字、推理和工具更新，直接处理权限审批与问题回答，追踪 subagent；多实例运行时，将回复发送到对应的进程和项目。
 - Cursor：会话生命周期、processing/compacting 状态、thought/response 更新、工具调用和会话清理。
+
+## 问题回答与权限审批
+
+点击会话即可打开对话。当 agent 等待回答时，收起态 notch 会显示问题提示；OpenCode 问题可打开独立回答面板，支持单选、多选，以及问题允许时的自定义输入。选好答案后，按 `Enter` 或点击 Send 提交。切换问题卡片时，各题会保留自己的选择。
+
+OpenCode 通过内置插件支持直接在 Nook 中回答。Claude Code、Codex 和 Cursor 使用 `Go to Terminal` 返回对应终端作答。请在 Nook 的 agent 设置中启用对应集成；升级后重启 OpenCode，让它加载更新后的插件。
+
+如果要在对话详情中向 OpenCode 发送新的聊天消息，请在 tmux 内运行它，或通过 `--port` 启动 HTTP 监听端口。
+
+默认快捷键：
+
+| 使用位置 | 快捷键 | 操作 |
+| --- | --- | --- |
+| 会话列表 | `Ctrl+R` | 打开等待回答的会话的问题面板。 |
+| 会话列表 / 权限栏 | `Y` / `N` | 对可处理的请求允许一次 / 拒绝。 |
+| OpenCode 权限栏 | `A`，再按 `C` | 查看显示的权限范围，再确认始终允许；`Esc` 取消这一步确认。 |
+| 问题选项 | `↑` / `↓` 或 `Ctrl+P` / `Ctrl+N` | 移动焦点；单选题随焦点选中。 |
+| 多选题 | `Space` | 切换当前选项的选中状态。 |
+| 允许自定义输入的问题 | `Tab` | 在选项与输入框之间切换。 |
+| 多个问题 | `Ctrl+[` / `Ctrl+]` | 上一题 / 下一题。 |
+| 回答面板 | `Enter` | 提交答案。 |
+
+在会话列表里，同类操作只有一个可处理的等待会话时，无需先高亮，快捷键会直接作用于它；有多个时，需要先高亮目标会话；没有时不执行操作。在输入框打字时，权限快捷键不会触发审批。
 
 ## 外观样式
 
@@ -117,6 +141,7 @@ xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug -deriv
 - `Nook/Services/Hooks`：agent hook 安装和本地 Unix socket 事件接入。
 - `Nook/Services/Session`：transcript 解析、状态监听和会话监控。
 - `Nook/Services/State`：中心化会话状态和工具事件处理。
+- `Nook/Services/Question`：各 agent 的问题回复通道和返回终端的处理。
 - `Nook/Services/Music`：音乐状态、播放控制、封面颜色，以及可选的系统音频分析、响应式光晕和音柱。
 - `Nook/Services/System`：性能采样。
 - `Nook/UI`：notch 外壳、会话列表、聊天详情、音乐、性能和设置界面。
@@ -127,3 +152,5 @@ Nook 的方向受到这些项目启发：
 
 - [farouqaldori/claude-island](https://github.com/farouqaldori/claude-island)
 - [TheBoredTeam/boring.notch](https://github.com/TheBoredTeam/boring.notch)
+
+感谢 [@wuruofan](https://github.com/wuruofan) 在 [PR #19](https://github.com/oa1mgo/nook-notch/pull/19) 中贡献的问题面板、键盘交互与 OpenCode 改进。

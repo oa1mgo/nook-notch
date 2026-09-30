@@ -3,7 +3,11 @@
 > Last updated: 2026-09-30
 
 ## 🎯 Current Focus
-- **Codex history recovery / 1.4.3 ready to publish** — Direct Desktop inputs, multi-file cursors, and lifecycle-safe live sync implemented. 116 app tests, 16 packaging tests, exact 65-message real replay, Debug launch, Release build and mounted DMG validation pass. User approved main merge and release; automated UI opening remains unverified. [Evidence and compatibility](docs/debug/2026-09-15-codex-direct-history.md).
+- [2026-09-30] **1.5.0 README + release** — Both READMEs/release notes updated; 186 app tests, 16 packaging tests, Debug launch and universal Release/DMG checks passed. CI now verifies both architectures and the app version. Done when: changes are merged and release/1.5.0's published DMG is downloaded and verified. Live question/approval e2e and Intel hardware checks remain unverified.
+
+## Completed
+- [2026-09-30] PR #19 merged — question panel, session-list reply/approval shortcuts and OpenCode improvements are on main (`6b7ee7b`); 1.5.0 build 4 set by the contributor. [PR #19](https://github.com/oa1mgo/nook-notch/pull/19).
+- **Codex history recovery / 1.4.3 published** — PR #18 merged into main; release/1.4.3 (build 3) published and downloaded DMG verified. 116 app tests, 16 packaging tests and exact 65-message real replay passed during that release; automated UI opening remained unverified. [Evidence and compatibility](docs/debug/2026-09-15-codex-direct-history.md).
 
 ## Open
 - [2026-09-30] chat 历史回填决策 — app 重启丢历史 + sessionStart 断档根因已确认（docs/debug/2026-09-30-app-restart-chat-history-loss.md）。Done when: 用户拍板 A 不修（关闭本条）或 B 立项走 spec
@@ -13,7 +17,6 @@
 - [2026-09-22] yabai 缺失 UX 提示 — fallback 可用但精度低无提示。Done when: 设置页说明或失败一次性提示落地
 
 ## Verify
-- [2026-09-30] upstream sync + 1.5.0 + PR — upstream 134 commits 合入（merge `c260262`，4 冲突 union 解，`detectTerminalError` 迁 `transcriptURLs` API），186 全绿，1.5.0 bump `d272e2c`，已 push + PR #19（oa1mgo/nook-notch）。Awaiting: PR review/merge（无 CI checks）
 - [2026-09-30] session list ⌃R 单一 pending 直达 — ea309a6..5e1e5d7 + 3908360（resolver+11 新测试，95 全绿，双 review 通过，已随 PR #19 上送）。Awaiting: Task 5 手测 6 项（清单见 plan §Task 5，Nook 已重启到 1.5.0）
 - [2026-09-24] session list Y/N/A shortcuts — c1d7d25..1cd5e3b，用户确认 N 可响应（重启 Nook 后）。Awaiting: Esc 不关 notch、2+ pending 需高亮、通知不抢焦点
 - [2026-09-22] Ctrl+R 打开 question panel — bc3d053/0ed93de，session list + chat view 双路径。Awaiting: 用户手测
