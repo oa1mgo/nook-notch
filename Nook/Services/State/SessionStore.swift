@@ -110,11 +110,9 @@ actor SessionStore {
     /// ordering metadata so removal and conversation resets stay isolated.
     private var blockOrderings: [String: [String: BlockOrdering]] = [:]
 
-    /// Sessions that have been explicitly opened via a `SessionStarted`
-    /// event (or via Claude's hook path). The `realtimeChatItemBatch` /
-    /// `chatItemBatch` / `chatItemUpdate` entry points filter against this
-    /// set: chat-item updates for unknown sessionIds are dropped instead of
-    /// being auto-promoted to a top-level `SessionState`. This is the
+    /// Sessions opened through an authorized provider lifecycle path.
+    /// Chat-item entry points buffer unknown identities briefly without
+    /// promoting them to a top-level `SessionState`. This is the
     /// contract that keeps subagent child sessions (which never emit a
     /// SessionStarted because `OpencodeHookAdapter.adaptSubagentEvent`
     /// short-circuits subagent events) from materializing as standalone
@@ -129,16 +127,10 @@ actor SessionStore {
     /// with unknown pid are never recorded (conservatively never removed).
     private var provisionalSessionPids: [String: Int] = [:]
 
-    /// Buffer for chat-item updates that arrive before their session is registered.
-    /// Subagent child sessions are intentionally never registered (they don't emit
-    /// SessionStarted), so their buffered updates are naturally dropped. Top-level
-    /// sessions get registered via processOpencodeSessionStart and flush their buffer.
-    private struct BufferedChatItemUpdate {
-        let update: ChatItemUpdate
-        let appliesLifecycleEffects: Bool
-    }
-
-    private var earlyChatItemBuffer: [String: [BufferedChatItemUpdate]] = [:]
+    /// Unknown identities retain content only within the registration budget.
+    /// In particular, unregistered child sessions expire without becoming visible.
+    private var earlyChatItemBuffer: PendingChatItemBuffer
+    private let pendingChatItemClock: @Sendable () -> TimeInterval
 
     // MARK: - Published State (for UI)
 
@@ -174,10 +166,16 @@ actor SessionStore {
 
     init(
         claudeReader: any ClaudeConversationReading = ConversationParser.shared,
-        claudeSyncDebounceNs: UInt64 = 100_000_000
+        claudeSyncDebounceNs: UInt64 = 100_000_000,
+        pendingChatItemPolicy: PendingChatItemBuffer.Policy = .init(),
+        pendingChatItemClock: @escaping @Sendable () -> TimeInterval = {
+            Foundation.ProcessInfo.processInfo.systemUptime
+        }
     ) {
         self.claudeReader = claudeReader
         self.claudeSyncDebounceNs = claudeSyncDebounceNs
+        self.earlyChatItemBuffer = PendingChatItemBuffer(policy: pendingChatItemPolicy)
+        self.pendingChatItemClock = pendingChatItemClock
     }
 
     // MARK: - Event Processing
@@ -191,7 +189,6 @@ actor SessionStore {
             await processHookEvent(hookEvent)
 
         case .codexSessionStarted(let sessionId, let cwd, let source):
-            registerSession(sessionId: sessionId)
             processCodexSessionStart(sessionId: sessionId, cwd: cwd, source: source)
             scheduleCodexTranscriptSync(sessionId: sessionId)
 
@@ -240,7 +237,6 @@ actor SessionStore {
             scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .opencodeSessionStarted(let sessionId, let cwd, let provisional, let pid):
-            registerSession(sessionId: sessionId)
             processOpencodeSessionStart(sessionId: sessionId, cwd: cwd, provisional: provisional, pid: pid)
 
         case .opencodeProcessingStarted(let sessionId, let cwd):
@@ -267,7 +263,6 @@ actor SessionStore {
             processOpencodeServerPortReceived(sessionId: sessionId, port: port, version: version, pid: pid)
 
         case .cursorSessionStarted(let sessionId, let cwd):
-            registerSession(sessionId: sessionId)
             processCursorSessionStart(sessionId: sessionId, cwd: cwd)
 
         case .cursorProcessingStarted(let sessionId, let cwd):
@@ -350,19 +345,28 @@ actor SessionStore {
 
     // MARK: - Session Registration
 
-    /// Mark a sessionId as a known top-level session. Called from each
-    /// `SessionStarted` branch in `process(_:)` and from `processHookEvent`
-    /// (Claude) when it first creates a session. See `registeredSessionIds`.
-    private func registerSession(sessionId: String) {
+    /// Provider lifecycle code establishes the owner before granting replay.
+    /// Callers receive the latest state, including any buffered content, before
+    /// applying their current prompt/stop/permission event.
+    private func registerNewSession(_ session: SessionState) -> SessionState {
+        let sessionId = session.sessionId
+        sessions[sessionId] = session
         registeredSessionIds.insert(sessionId)
-        // Flush any chat-item updates that arrived before session registration.
-        // This handles the race condition where opencode sends chat items
-        // (e.g. image) before the sessionStart event.
-        if let buffered = earlyChatItemBuffer.removeValue(forKey: sessionId) {
-            writeDebugLogAsync("[chat-item-update] flushing \(buffered.count) buffered updates for session=\(sessionId.prefix(12))")
-            for entry in buffered {
-                applyChatItemUpdate(entry.update, appliesLifecycleEffects: entry.appliesLifecycleEffects)
-            }
+        let drained = earlyChatItemBuffer.drain(
+            provider: session.provider, sessionId: sessionId, now: pendingChatItemClock()
+        )
+        logPendingChatItemDiscards(drained.discards)
+        for entry in drained.entries {
+            applyChatItemUpdate(
+                entry.update, appliesLifecycleEffects: entry.appliesLifecycleEffects
+            )
+        }
+        return sessions[sessionId] ?? session
+    }
+
+    private func logPendingChatItemDiscards(_ discards: [PendingChatItemBuffer.Discard]) {
+        for discard in discards {
+            writeDebugLogAsync("[chat-item-buffer] discarded reason=\(discard.reason.rawValue) provider=\(discard.identity.provider.rawValue) session=\(discard.identity.sessionId.prefix(12)) count=\(discard.count)")
         }
     }
 
@@ -370,31 +374,28 @@ actor SessionStore {
     /// session is removed (processSessionEnd, claude `status=ended`, etc.).
     private func unregisterSession(sessionId: String) {
         registeredSessionIds.remove(sessionId)
-        earlyChatItemBuffer.removeValue(forKey: sessionId)
+        earlyChatItemBuffer.remove(sessionId: sessionId)
         provisionalSessionPids.removeValue(forKey: sessionId)
     }
 
-    /// Filtered wrapper around `applyChatItemUpdate`: drops updates for
-    /// sessionIds that have never been explicitly registered, instead of
-    /// letting `applyChatItemUpdate`'s auto-create path materialize a fresh
-    /// top-level `SessionState`. Subagent child sessions rely on this to
-    /// stay invisible — they leak chat-item events (e.g. reasoning parts)
-    /// when `OpencodeHookAdapter`'s `cleanupState` fires prematurely, and
-    /// we must not promote those leaks to standalone sessions.
+    /// Only registered provider owners receive content. Unknown identities
+    /// are buffered briefly; child events cannot create top-level sessions.
     private func applyChatItemUpdateIfRegistered(
         _ update: ChatItemUpdate,
         appliesLifecycleEffects: Bool = false
     ) {
+        if let session = sessions[update.sessionId] {
+            guard session.provider == update.provider else {
+                writeDebugLogAsync("[chat-item-update] ignored provider-mismatch session=\(update.sessionId.prefix(12)) existingProvider=\(session.provider.rawValue) updateProvider=\(update.provider.rawValue)")
+                return
+            }
+        }
         if !registeredSessionIds.contains(update.sessionId) {
-            // Buffer early chat-item updates instead of dropping them.
-            // They will be flushed when the session is registered via processOpencodeSessionStart.
-            // Subagent child sessions are never registered, so their buffers
-            // are never flushed (and get cleaned up on session end).
-            earlyChatItemBuffer[update.sessionId, default: []].append(BufferedChatItemUpdate(
-                update: update,
-                appliesLifecycleEffects: appliesLifecycleEffects
-            ))
-            writeDebugLogAsync("[chat-item-update] buffered for unregistered session=\(update.sessionId.prefix(12)) id=\(update.id.prefix(16)) bufferCount=\(earlyChatItemBuffer[update.sessionId]?.count ?? 0)")
+            let discards = earlyChatItemBuffer.enqueue(
+                .init(update: update, appliesLifecycleEffects: appliesLifecycleEffects),
+                now: pendingChatItemClock()
+            )
+            logPendingChatItemDiscards(discards)
             return
         }
         applyChatItemUpdate(update, appliesLifecycleEffects: appliesLifecycleEffects)
@@ -422,7 +423,6 @@ actor SessionStore {
         // Track new session in Mixpanel
         if isNewSession {
             mixpanel?.track(event: "Session Started")
-            registerSession(sessionId: sessionId)
         }
 
         session.pid = event.pid
@@ -470,8 +470,7 @@ actor SessionStore {
     }
 
     private func createSession(from event: HookEvent) -> SessionState {
-        registerSession(sessionId: event.sessionId)
-        return SessionState(
+        let session = SessionState(
             sessionId: event.sessionId,
             provider: .claude,
             cwd: event.cwd,
@@ -481,17 +480,18 @@ actor SessionStore {
             isInTmux: false,  // Will be updated
             phase: .idle
         )
+        return registerNewSession(session)
     }
 
     private func createCodexSession(sessionId: String, cwd: String) -> SessionState {
-        registerSession(sessionId: sessionId)
-        return SessionState(
+        let session = SessionState(
             sessionId: sessionId,
             provider: .codex,
             cwd: cwd,
             projectName: URL(fileURLWithPath: cwd).lastPathComponent,
             phase: .idle
         )
+        return registerNewSession(session)
     }
 
     private func shouldIgnoreCodexSession(_ sessionId: String) -> Bool {
@@ -602,7 +602,7 @@ actor SessionStore {
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = now
         session.completionNotificationAt = nil
-        if isNewSession || !session.phase.isActive {
+        if !session.phase.isActive {
             session.phase = .idle
         }
         sessions[sessionId] = session
@@ -940,8 +940,7 @@ actor SessionStore {
     // MARK: - OpenCode Session Processing
 
     private func createOpencodeSession(sessionId: String, cwd: String) -> SessionState {
-        registerSession(sessionId: sessionId)
-        return SessionState(
+        let session = SessionState(
             sessionId: sessionId,
             provider: .opencode,
             cwd: cwd,
@@ -949,6 +948,7 @@ actor SessionStore {
             serverPort: nil,
             phase: .idle
         )
+        return registerNewSession(session)
     }
 
     // No session-id-based ignore hook for opencode: subagent sessions are
@@ -960,6 +960,7 @@ actor SessionStore {
     // (mirroring `shouldIgnoreCodexSession`'s transcript-based filter).
 
     private func processOpencodeSessionStart(sessionId: String, cwd: String, provisional: Bool = false, pid: Int? = nil) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "sessionStart") else { return }
         // A real (non-provisional) session start on a known pid invalidates
         // any inactive provisional guess from the same instance — the plugin's
         // session.list() fallback picked a storage session the TUI did not
@@ -969,11 +970,8 @@ actor SessionStore {
         }
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
-        // When the session was auto-created by applyChatItemUpdate
-        // (chat items arrived ~1ms before session.updated), the cwd is
-        // a placeholder "". Since cwd/projectName are `let`, we rebuild
-        // the session struct with the real values, preserving all
-        // mutable state (chatItems, toolTracker, phase, etc.).
+        // A lifecycle fallback may have lacked cwd. Rebuild immutable
+        // identity metadata once known, preserving the conversation.
         if session.cwd.isEmpty, !cwd.isEmpty {
             session = SessionState(
                 sessionId: session.sessionId,
@@ -994,7 +992,7 @@ actor SessionStore {
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
         session.completionNotificationAt = nil
-        if isNewSession || !session.phase.isActive {
+        if !session.phase.isActive {
             session.phase = .idle
         }
         sessions[sessionId] = session
@@ -1009,10 +1007,6 @@ actor SessionStore {
             provisionalSessionPids.removeValue(forKey: sessionId)
         }
 
-        // Track "Session Started" even for auto-created sessions —
-        // applyChatItemUpdate fires the Mixpanel event on first creation
-        // but processOpencodeSessionStart may be the first real session
-        // start if the chat-item auto-create was for a different session.
         if isNewSession {
             mixpanel?.track(event: "Session Started", properties: ["provider": "opencode"])
         }
@@ -1042,6 +1036,7 @@ actor SessionStore {
     }
 
     private func processOpencodeProcessingStarted(sessionId: String, cwd: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "processingStarted") else { return }
         if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration processingStarted session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
@@ -1082,6 +1077,7 @@ actor SessionStore {
     }
 
     private func processOpencodeWaitingForUserInput(sessionId: String, cwd: String, toolUseId: String, questions: [QuestionItem], requestId: String?) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "waitingForUserInput") else { return }
         if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration waitingForUserInput session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
@@ -1124,6 +1120,7 @@ actor SessionStore {
     }
 
     private func processOpencodeStop(sessionId: String, cwd: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "stop") else { return }
         if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration stop session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
@@ -1164,9 +1161,9 @@ actor SessionStore {
     }
 
     private func processOpencodePromptSubmitted(sessionId: String, cwd: String, prompt: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "userPromptSubmit") else { return }
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else { return }
-        registerSession(sessionId: sessionId)
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -1286,6 +1283,7 @@ actor SessionStore {
         inputSummary: String?,
         alwaysPatterns: [String] = []
     ) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "permissionAsked") else { return }
         if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration permissionAsked session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
@@ -1371,6 +1369,19 @@ actor SessionStore {
             return
         }
 
+        let wasMissing = sessions[sessionId] == nil
+        if wasMissing {
+            switch event {
+            case .sessionStart(let cwd), .processingStarted(let cwd),
+                 .compactingStarted(let cwd), .stop(let cwd, _):
+                // Cursor can first appear through a fallback lifecycle event.
+                // Replay older content before applying that event's phase.
+                _ = registerNewSession(SessionState(sessionId: sessionId, provider: .cursor, cwd: cwd))
+            case .sessionEnd:
+                break
+            }
+        }
+
         let result = CursorSessionStateReducer.reduce(
             existingSession: sessions[sessionId],
             sessionId: sessionId,
@@ -1385,7 +1396,7 @@ actor SessionStore {
             writeDebugLogAsync(debugMessage)
         }
 
-        if result.didCreateSession {
+        if wasMissing && result.session != nil {
             mixpanel?.track(event: "Session Started", properties: ["provider": "cursor"])
         }
     }
@@ -1405,14 +1416,11 @@ actor SessionStore {
     /// After each mutation, chatItems are re-sorted using ChatItemSorter
     /// to maintain correct display order based on BlockOrdering keys.
     ///
-    /// Session auto-creation: live event streams can deliver chat updates
-    /// before the session-start lifecycle event. Rather than dropping those
-    /// items, create a minimal placeholder and let the provider lifecycle
-    /// path enrich cwd/pid/tty metadata when it arrives.
+    /// Content cannot create sessions. Provider lifecycle paths establish the
+    /// owner before replaying buffered updates or applying their own content.
     private func applyChatItemUpdate(
         _ update: ChatItemUpdate,
-        appliesLifecycleEffects: Bool = false,
-        allowSessionCreation: Bool = true
+        appliesLifecycleEffects: Bool = false
     ) {
         if let existingSession = sessions[update.sessionId],
            existingSession.provider != update.provider {
@@ -1420,25 +1428,12 @@ actor SessionStore {
             return
         }
 
-        if sessions[update.sessionId] == nil, !allowSessionCreation {
+        guard var session = sessions[update.sessionId] else {
             writeDebugLogAsync("[chat-item-update] ignored missing-session session=\(update.sessionId) updateProvider=\(update.provider.rawValue) id=\(update.id)")
             return
         }
 
         let now = Date()
-        var session = sessions[update.sessionId] ?? SessionState(
-            sessionId: update.sessionId,
-            provider: update.provider,
-            cwd: ""  // placeholder — filled by the imminent sessionStart
-        )
-        let isNewSession = sessions[update.sessionId] == nil
-        if isNewSession {
-            DebugLog.shared.write("[chat-item-update] auto-created session for \(update.sessionId) (pre-sessionStart chat item)")
-            // Fire Mixpanel immediately on auto-create so we never miss
-            // the "Session Started" event even if sessionStart passthrough
-            // arrives later and finds the session already existing.
-            mixpanel?.track(event: "Session Started", properties: ["provider": update.provider.rawValue])
-        }
 
         let didApply = ChatItemUpdateReducer.apply(
             update,
@@ -2660,6 +2655,7 @@ actor SessionStore {
 
     /// Recheck status of all active sessions
     private func recheckAllSessions() {
+        logPendingChatItemDiscards(earlyChatItemBuffer.prune(now: pendingChatItemClock()))
         var stateChanged = false
         let now = Date()
 
@@ -2867,7 +2863,7 @@ actor SessionStore {
         ids.formUnion(ignoredCodexSessions)
         ids.formUnion(blockOrderings.keys)
         ids.formUnion(registeredSessionIds)
-        ids.formUnion(earlyChatItemBuffer.keys)
+        ids.formUnion(earlyChatItemBuffer.sessionIds)
         ids.formUnion(provisionalSessionPids.keys)
         return ids
     }

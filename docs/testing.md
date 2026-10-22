@@ -26,6 +26,10 @@ tests share store and adapter singleton state.
 New store tests should construct their own `SessionStore()` and inject it into
 consumers such as `ChatHistoryManager(store:)`. Runtime lifecycle tests inject
 only lifecycle effects, so they do not start production watchers or sockets.
+Ingress tests also inject an async event sink and hold its first submission
+behind a continuation gate, then verify batch order and admission across restart.
+Registration buffer tests inject a monotonic clock and small budgets, so expiry
+and eviction do not depend on real time or a live provider.
 Claude read tests inject `ClaudeConversationReading` and a zero debounce into
 `SessionStore`; continuation gates control I/O completion, and bounded waits
 observe specific requests or pending state. Parser fixtures inject a temporary
@@ -58,6 +62,8 @@ branch protection or publish releases.
   - `OpencodeChatItemAdapterTests` covers opencode raw bus envelopes through
     the chat-item adapter boundary, including message-relative ordering and
     bash metadata error detection.
+  - `OpencodeIngressAdapterTests` covers synchronous stop cleanup and the next
+    turn's message/block context while older Store submissions are suspended.
 - Shared state pipeline:
   - `ChatItemUpdateReducerTests` covers insert/update ordering, duplicate
     prompt preservation, and tool status updates.
@@ -66,6 +72,10 @@ branch protection or publish releases.
     notification behavior.
   - `SessionStoreLifecycleTests` covers session resource ownership, ordering
     isolation, buffered content/lifecycle semantics, and complete test reset.
+  - `PendingChatItemBufferTests` covers provider ownership, fixed TTL, whole-bucket
+    eviction, suppression, count budgets, and removal without real-time sleeps.
+  - `SessionStoreRegistrationTests` covers authorized registration and replay,
+    startup suppression, current-event precedence, and periodic buffer cleanup.
   - `SessionStoreClaudeReadTests` covers suspended reads across end/recreation,
     reset and clear, single-flight coalescing, content-only history, current hook
     and subagent state preservation, and result-only tool completion.
@@ -75,8 +85,14 @@ branch protection or publish releases.
   - `AppRuntimeEnvironmentTests` covers XCTest detection and inert host bootstrap.
   - `SessionRuntimeTests` covers idempotent lifecycle effects, ordered polling
     transitions, and UI projection recreation without replacing watcher delegates.
+  - `SessionEventIngressTests` covers whole-batch and cross-provider ordering,
+    accepted work draining across restart, stale callbacks, and final Store state.
   - `HookSocketServerLifecycleTests` exercises queued start/stop and listener
     restart using temporary socket paths, without touching `/tmp/nook.sock`.
+  - `HookSocketServerBatchTests` sends provider fixtures over a temporary socket
+    and verifies content/lifecycle are delivered together.
+  - `HookSocketPermissionCleanupTests` keeps temporary permission connections
+    open and verifies Stop/PostToolUse close only the intended pending sockets.
 
 ## Adding Tests
 
