@@ -134,6 +134,7 @@ class HookSocketServer {
     static let shared = HookSocketServer()
     static let socketPath = "/tmp/nook.sock"
 
+    private let boundSocketPath: String
     private var serverSocket: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private var eventHandler: HookEventHandler?
@@ -155,7 +156,9 @@ class HookSocketServer {
     private var toolUseIdCache: [String: [String]] = [:]
     private let cacheLock = NSLock()
 
-    private init() {}
+    init(socketPath: String = HookSocketServer.socketPath) {
+        self.boundSocketPath = socketPath
+    }
 
     /// Start the socket server
     func start(
@@ -199,7 +202,7 @@ class HookSocketServer {
         cursorChatItemsHandler = onCursorChatItems
         permissionFailureHandler = onPermissionFailure
 
-        unlink(Self.socketPath)
+        unlink(boundSocketPath)
 
         serverSocket = socket(AF_UNIX, SOCK_STREAM, 0)
         guard serverSocket >= 0 else {
@@ -212,7 +215,7 @@ class HookSocketServer {
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        Self.socketPath.withCString { ptr in
+        boundSocketPath.withCString { ptr in
             withUnsafeMutablePointer(to: &addr.sun_path) { pathPtr in
                 let pathBufferPtr = UnsafeMutableRawPointer(pathPtr)
                     .assumingMemoryBound(to: CChar.self)
@@ -233,7 +236,7 @@ class HookSocketServer {
             return
         }
 
-        chmod(Self.socketPath, 0o600)
+        chmod(boundSocketPath, 0o600)
 
         guard listen(serverSocket, 10) == 0 else {
             logger.error("Failed to listen: \(errno)")
@@ -242,26 +245,46 @@ class HookSocketServer {
             return
         }
 
-        logger.notice("Listening on \(Self.socketPath)")
+        logger.notice("Listening on \(self.boundSocketPath)")
 
         acceptSource = DispatchSource.makeReadSource(fileDescriptor: serverSocket, queue: queue)
         acceptSource?.setEventHandler { [weak self] in
             self?.acceptConnection()
         }
-        acceptSource?.setCancelHandler { [weak self] in
-            if let fd = self?.serverSocket, fd >= 0 {
-                close(fd)
-                self?.serverSocket = -1
-            }
+        // The cancellation handler can run after a restart. It owns this
+        // descriptor only, never the next generation's serverSocket.
+        let listeningSocket = serverSocket
+        acceptSource?.setCancelHandler {
+            close(listeningSocket)
         }
         acceptSource?.resume()
     }
 
-    /// Stop the socket server
+    /// Finish pending socket work before teardown, including an asynchronous
+    /// start that has not run yet. Called by the app's MainActor runtime owner.
     func stop() {
+        queue.sync {
+            stopServer()
+        }
+    }
+
+    /// Queue barrier for isolated socket lifecycle tests; never connects to the
+    /// production listener or sends a provider event.
+    func isListeningForTesting() async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                continuation.resume(returning: serverSocket >= 0)
+            }
+        }
+    }
+
+    private func stopServer() {
         acceptSource?.cancel()
         acceptSource = nil
-        unlink(Self.socketPath)
+        serverSocket = -1
+        unlink(boundSocketPath)
+        eventHandler = nil
+        permissionFailureHandler = nil
         codexEventHandler = nil
         opencodeChatItemsHandler = nil
         opencodeEventHandler = nil
@@ -274,6 +297,10 @@ class HookSocketServer {
         }
         pendingPermissions.removeAll()
         permissionsLock.unlock()
+
+        cacheLock.lock()
+        toolUseIdCache.removeAll()
+        cacheLock.unlock()
     }
 
     /// Respond to a pending permission request by toolUseId

@@ -231,7 +231,6 @@ struct NotchView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             viewModel.closedNotchExpansionWidth = expansionWidth
-            sessionMonitor.startMonitoring()
             performanceMonitor.setActive(performanceMonitorEnabled)
             syncInstancesPageLayoutState()
             handleProcessingChange()
