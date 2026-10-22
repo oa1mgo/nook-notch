@@ -125,11 +125,6 @@ enum SessionEvent: Sendable {
     /// Permission socket failed (connection died before response)
     case permissionSocketFailed(sessionId: String, toolUseId: String)
 
-    // MARK: - File Events (from ConversationParser)
-
-    /// JSONL file was updated with new content
-    case fileUpdated(FileUpdatePayload)
-
     // MARK: - Tool Completion Events (from JSONL parsing)
 
     /// A tool was detected as completed via JSONL result
@@ -171,11 +166,11 @@ enum SessionEvent: Sendable {
     /// Request to load initial history from file
     case loadHistory(sessionId: String, cwd: String)
 
-    /// History load completed
-    case historyLoaded(sessionId: String, messages: [ChatMessage], completedTools: Set<String>, toolResults: [String: ConversationParser.ToolResult], structuredResults: [String: ToolResultData], conversationInfo: ConversationInfo)
+    /// Request a full Claude file sync through the Store's lifetime-checked reader.
+    case syncHistory(sessionId: String, cwd: String)
 }
 
-/// Payload for file update events
+/// Parsed content passed to the Claude adapter; never an unversioned Store event.
 struct FileUpdatePayload: Sendable {
     let sessionId: String
     let cwd: String
@@ -338,8 +333,6 @@ extension SessionEvent: CustomStringConvertible {
             return "permissionDenied(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .permissionSocketFailed(let sessionId, let toolUseId):
             return "permissionSocketFailed(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
-        case .fileUpdated(let payload):
-            return "fileUpdated(session: \(payload.sessionId.prefix(8)), messages: \(payload.messages.count))"
         case .interruptDetected(let sessionId):
             return "interruptDetected(session: \(sessionId.prefix(8)))"
         case .clearDetected(let sessionId):
@@ -348,8 +341,8 @@ extension SessionEvent: CustomStringConvertible {
             return "sessionEnded(session: \(sessionId.prefix(8)))"
         case .loadHistory(let sessionId, _):
             return "loadHistory(session: \(sessionId.prefix(8)))"
-        case .historyLoaded(let sessionId, let messages, _, _, _, _):
-            return "historyLoaded(session: \(sessionId.prefix(8)), messages: \(messages.count))"
+        case .syncHistory(let sessionId, _):
+            return "syncHistory(session: \(sessionId.prefix(8)))"
         case .toolCompleted(let sessionId, let toolUseId, let result):
             return "toolCompleted(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)), status: \(result.status))"
         case .subagentStarted(let sessionId, let taskToolId):

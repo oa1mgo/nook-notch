@@ -26,6 +26,10 @@ tests share store and adapter singleton state.
 New store tests should construct their own `SessionStore()` and inject it into
 consumers such as `ChatHistoryManager(store:)`. Runtime lifecycle tests inject
 only lifecycle effects, so they do not start production watchers or sockets.
+Claude read tests inject `ClaudeConversationReading` and a zero debounce into
+`SessionStore`; continuation gates control I/O completion, and bounded waits
+observe specific requests or pending state. Parser fixtures inject a temporary
+`projectsRoot` and never read the user's Claude history.
 This isolates those boundaries; it does not make every legacy parser/process
 lookup test independent of the local environment.
 
@@ -41,6 +45,8 @@ branch protection or publish releases.
 ## Current Coverage
 
 - Provider adapters:
+  - `ClaudeConversationReaderTests` covers candidate cursor replay, `/clear`,
+    full-path isolation, result-only appends, and injected subagent paths.
   - `ClaudeChatItemAdapterTests` covers Claude JSONL/history conversion, tool
     status propagation, and rejected `AskUserQuestion` structured fallback.
   - `CodexHookAdapterTests` covers Codex hook alias decoding, provider error
@@ -60,6 +66,9 @@ branch protection or publish releases.
     notification behavior.
   - `SessionStoreLifecycleTests` covers session resource ownership, ordering
     isolation, buffered content/lifecycle semantics, and complete test reset.
+  - `SessionStoreClaudeReadTests` covers suspended reads across end/recreation,
+    reset and clear, single-flight coalescing, content-only history, current hook
+    and subagent state preservation, and result-only tool completion.
   - `ChatHistoryManagerTests` covers full-snapshot removal, reused session IDs,
     and subagent tool filtering without mutating the source store.
 - Application runtime:

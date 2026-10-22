@@ -4,7 +4,7 @@
 
 值得做结构性治理，但当前不宜把整个应用改写为多 package，也不应仅按文件长度拆文件。已有 `SessionEvent → SessionStore → ChatItemUpdateReducer → UI` 主干、provider adapter 和确定性测试可以保留；优先补齐资源所有权与生命周期边界，让后续拆分有可靠的验证基础。
 
-本轮在 `feature/architecture-governance` 实施一期。用户已确认历史回填决策、问答/权限手测等旧待办暂不处理；不改变 provider 协议、权限策略、窗口布局公式或历史持久化产品行为。
+一期在 `feature/architecture-governance` 实施；同分支的 [二期 Claude 读取治理](2026-10-22-claude-read-lifecycle.md) 已补齐下面列出的在途读取边界。用户已确认历史回填决策、问答/权限手测等旧待办暂不处理；不改变 provider 协议、权限策略、窗口布局公式或历史持久化产品行为。
 
 以下判断来自源码与现有测试的静态审查，描述结构性风险，不代表已通过真实 agent 会话复现线上故障。
 
@@ -18,7 +18,7 @@
 | P1 | `AppDelegate` 测试启动也可能安装 hooks、创建窗口、启动 socket 与遥测；现有 CI 仅在 release tag 运行 | 自动化验证与真实运行环境耦合；合并前缺少回归反馈 | 一期：隔离测试宿主启动副作用，加入 PR/main 的 Debug 测试检查 |
 | P2 | `SessionStore` 同时承担多个 provider 状态机、I/O 调度、进程匹配和发布 | actor 内职责集中，后续 provider 变更容易扩大审查面 | 后续：按 provider 抽纯状态 reducer，并把 I/O 作为显式 effect；每迁移一个 provider 保持端到端 fixture 测试 |
 | P2 | OpenCode/Cursor 生命周期与 chat item 入口各自创建异步 Task，早到事件 buffer 无明确容量策略 | 跨入口顺序与未知会话缓存寿命的契约尚不完整 | 后续：先定义顺序、缓冲和丢弃策略，再统一 ingress；保留 PRIMARY/DEFENSIVE 双路径 |
-| P2 | Claude 文件同步在 `await parse` 前持有 session 快照，返回后继续提交；取消检查不覆盖全部 await 边界 | 移除、重建同 ID 会话或 reset 与在途读取相交时，旧结果仍可能回写 | 下一期优先：为读取引入 session generation，使用可挂起的假 parser 验证旧结果拒绝与当前状态合并 |
+| P2 | Claude 文件同步在 `await parse` 前持有 session 快照，返回后继续提交；取消检查不覆盖全部 await 边界 | 移除、重建同 ID 会话或 reset 与在途读取相交时，旧结果仍可能回写 | 二期已实施：generation + Store 持有候选游标 + 单飞读取；使用可挂起 reader 验证旧结果拒绝与当前状态合并 |
 | P2 | Xcode 27.1 构建仍报告现有模型/adapter 的 MainActor 隔离诊断，项目使用 Swift 5 language mode | 部分告警在 Swift 6 mode 会成为错误 | 后续：先为纯值模型与纯计算明确隔离，再分模块启用严格并发检查；本期修正新 runtime 的隔离诊断 |
 | P3 | 旧 `FileSyncScheduler` 与 store 内调度并存；部分 Core/UI 与 service 使用 singleton | 有未完成的抽象和隐式依赖 | 后续：围绕真实调用边界逐步注入依赖，删除证明无调用的抽象；不增加通用框架 |
 
@@ -50,7 +50,7 @@ flowchart LR
 - 区分需要保留的 Codex 迟到事件 tombstone 与应释放的 session 数据；不能把停止（idle）与移除（ended）混为一谈。
 - 排序元数据按 session 隔离，在会话重置或移除时释放；只清理目标会话，不影响其他会话。
 - 测试重置清理完整状态并取消后台任务，确保测试间不存在 registration、buffer、port/version 残留。
-- 上述清理覆盖 store 当前持有的资源和任务句柄；原有 Claude parser 在途结果的代际失效尚未解决，不能把这次清理等同于全部异步 I/O 的事务隔离。
+- 上述清理覆盖 store 当前持有的资源和任务句柄；一期没有解决 Claude parser 在途结果的代际失效；这部分现由二期的读取契约保障，不能把一般资源清理等同于全部异步 I/O 的事务隔离。
 - `ChatHistoryManager` 是 store 的派生投影；缺席于完整快照的会话不继续保留 history、description 或 loaded 标记。
 - 注册前缓冲同时保存事件原有的 lifecycle policy；历史批次回放保持 content-only，实时批次保持既有生命周期效果。
 

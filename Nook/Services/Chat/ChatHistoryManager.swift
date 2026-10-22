@@ -44,25 +44,7 @@ class ChatHistoryManager: ObservableObject {
     }
 
     func syncFromFile(sessionId: String, cwd: String) async {
-        let messages = await ConversationParser.shared.parseFullConversation(
-            sessionId: sessionId,
-            cwd: cwd
-        )
-        let completedTools = await ConversationParser.shared.completedToolIds(for: sessionId)
-        let toolResults = await ConversationParser.shared.toolResults(for: sessionId)
-        let structuredResults = await ConversationParser.shared.structuredResults(for: sessionId)
-
-        let payload = FileUpdatePayload(
-            sessionId: sessionId,
-            cwd: cwd,
-            messages: messages,
-            isIncremental: false,  // Full sync
-            completedToolIds: completedTools,
-            toolResults: toolResults,
-            structuredResults: structuredResults
-        )
-
-        await store.process(.fileUpdated(payload))
+        await store.process(.syncHistory(sessionId: sessionId, cwd: cwd))
     }
 
     func clearHistory(for sessionId: String) {

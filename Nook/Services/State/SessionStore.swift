@@ -24,8 +24,34 @@ actor SessionStore {
     /// All sessions keyed by sessionId
     private var sessions: [String: SessionState] = [:]
 
-    /// Pending file syncs (debounced)
-    private var pendingSyncs: [String: Task<Void, Never>] = [:]
+    /// A Claude cursor advances only with an accepted Store commit. Requests
+    /// share one flight per lifetime; new hooks ask for another pass.
+    private struct ClaudeReadRequest {
+        var fullHistory: Bool
+        var appliesSyncEffects: Bool
+    }
+
+    private struct ClaudeReadState {
+        let generation = UUID()
+        let cwd: String
+        var cursor: ClaudeConversationCursor?
+        var pending: ClaudeReadRequest?
+    }
+
+    private struct ClaudeReadBaseline {
+        let toolStarts: [String: Date]
+        let taskStarts: [String: Date]
+    }
+
+    private struct ClaudeSubagentRead {
+        let agentId: String
+        let tools: [ConversationParser.SubagentToolInfo]
+    }
+
+    private let claudeReader: any ClaudeConversationReading
+    private let claudeSyncDebounceNs: UInt64
+    private var claudeReads: [String: ClaudeReadState] = [:]
+    private var claudeSyncTasks: [String: Task<Void, Never>] = [:]
 
     /// Content sync is separate from hook-driven lifecycle effects.
     private var codexTranscriptLowerBounds: [String: Date] = [:]
@@ -146,7 +172,13 @@ actor SessionStore {
 
     // MARK: - Initialization
 
-    init() {}
+    init(
+        claudeReader: any ClaudeConversationReading = ConversationParser.shared,
+        claudeSyncDebounceNs: UInt64 = 100_000_000
+    ) {
+        self.claudeReader = claudeReader
+        self.claudeSyncDebounceNs = claudeSyncDebounceNs
+    }
 
     // MARK: - Event Processing
 
@@ -275,9 +307,6 @@ actor SessionStore {
         case .permissionSocketFailed(let sessionId, let toolUseId):
             await processSocketFailure(sessionId: sessionId, toolUseId: toolUseId)
 
-        case .fileUpdated(let payload):
-            await processFileUpdate(payload)
-
         case .interruptDetected(let sessionId):
             await processInterrupt(sessionId: sessionId)
 
@@ -290,18 +319,12 @@ actor SessionStore {
         case .loadHistory(let sessionId, let cwd):
             await loadHistoryFromFile(sessionId: sessionId, cwd: cwd)
 
-        case .historyLoaded(let sessionId, let messages, let completedTools, let toolResults, let structuredResults, let conversationInfo):
-            await processHistoryLoaded(
-                sessionId: sessionId,
-                messages: messages,
-                completedTools: completedTools,
-                toolResults: toolResults,
-                structuredResults: structuredResults,
-                conversationInfo: conversationInfo
-            )
+        case .syncHistory(let sessionId, let cwd):
+            let task = requestClaudeRead(sessionId: sessionId, cwd: cwd, fullHistory: true, appliesSyncEffects: true)
+            await task?.value
 
         case .toolCompleted(let sessionId, let toolUseId, let result):
-            await processToolCompleted(sessionId: sessionId, toolUseId: toolUseId, result: result)
+            processToolCompleted(sessionId: sessionId, toolUseId: toolUseId, result: result)
 
         // MARK: - Subagent Events
 
@@ -2087,7 +2110,7 @@ actor SessionStore {
 
     /// Process a tool completion event (from JSONL detection)
     /// This is the authoritative handler for tool completions - ensures consistent state updates
-    private func processToolCompleted(sessionId: String, toolUseId: String, result: ToolCompletionResult) async {
+    private func processToolCompleted(sessionId: String, toolUseId: String, result: ToolCompletionResult) {
         guard var session = sessions[sessionId] else { return }
 
         // Check if this tool is already completed (avoid duplicate processing)
@@ -2216,164 +2239,111 @@ actor SessionStore {
         sessions[sessionId] = session
     }
 
-    // MARK: - File Update Processing
+    // MARK: - Claude Read Commit
 
-    private func processFileUpdate(_ payload: FileUpdatePayload) async {
-        guard var session = sessions[payload.sessionId] else { return }
-
-        DebugLog.shared.write("[claude-file-update] session=\(payload.sessionId) msgs=\(payload.messages.count) incremental=\(payload.isIncremental) completedTools=\(payload.completedToolIds.count)")
-
-        // Update conversationInfo from JSONL (summary, lastMessage, etc.)
-        let conversationInfo = await ConversationParser.shared.parse(
-            sessionId: payload.sessionId,
-            cwd: session.cwd
-        )
-        session.conversationInfo = conversationInfo
-
-        // Handle /clear reconciliation - remove items that no longer exist in parser state
-        if session.needsClearReconciliation {
-            // Build set of valid IDs from the payload messages
-            var validIds = Set<String>()
-            for message in payload.messages {
-                for (blockIndex, block) in message.content.enumerated() {
-                    switch block {
-                    case .toolUse(let tool):
-                        validIds.insert(tool.id)
-                    case .text, .thinking, .image, .interrupted:
-                        let itemId = "\(message.id)-\(block.typePrefix)-\(blockIndex)"
-                        validIds.insert(itemId)
-                    }
-                }
-            }
-
-            // Filter chatItems to only keep valid items OR items that are very recent
-            // (within last 2 seconds - these are hook-created placeholders for post-clear tools)
-            let cutoffTime = Date().addingTimeInterval(-2)
-            let previousCount = session.chatItems.count
-            session.chatItems = session.chatItems.filter { item in
-                validIds.contains(item.id) || item.timestamp > cutoffTime
-            }
-            let retainedItemIds = Set(session.chatItems.map(\.id))
-            blockOrderings[payload.sessionId] = blockOrderings[payload.sessionId]?.filter {
-                retainedItemIds.contains($0.key)
-            }
-
-            // Also reset tool tracker
-            session.toolTracker = ToolTracker()
-            session.subagentState = SubagentState()
-
-            session.needsClearReconciliation = false
-            Self.logger.debug("Clear reconciliation: kept \(session.chatItems.count) of \(previousCount) items")
-        }
-
-        // Persist clear reconciliation before applying adapter updates,
-        // so applyChatItemUpdate() sees the filtered chatItems.
-        sessions[payload.sessionId] = session
-
-        // Use ClaudeChatItemAdapter instead of upsertBlocks.
-        // Sorting is handled by ChatItemSorter in applyChatItemUpdate().
-        let chatUpdates = ClaudeChatItemAdapter.updates(fromFileUpdate: payload)
-        let typeCounts = Dictionary(grouping: chatUpdates, by: { "\($0.block)".prefix(20) }).mapValues(\.count)
-        DebugLog.shared.write("[claude-file-update] session=\(payload.sessionId) adapterUpdates=\(chatUpdates.count) types=\(typeCounts)")
-        for update in chatUpdates {
-            applyChatItemUpdate(update)
-        }
-
-        // Re-fetch session — applyChatItemUpdate may have modified it.
-        guard var currentSession = sessions[payload.sessionId] else { return }
-        currentSession.toolTracker.lastSyncTime = Date()
-
-        await populateSubagentToolsFromAgentFiles(
-            sessionId: payload.sessionId,
-            session: &currentSession,
-            cwd: payload.cwd,
-            structuredResults: payload.structuredResults
-        )
-
-        sessions[payload.sessionId] = currentSession
-
-        await emitToolCompletionEvents(
-            sessionId: payload.sessionId,
-            session: currentSession,
-            completedToolIds: payload.completedToolIds,
-            toolResults: payload.toolResults,
-            structuredResults: payload.structuredResults
-        )
-    }
-
-    /// Populate subagent tools for Task/Agent tools using their agent JSONL files
-    private func populateSubagentToolsFromAgentFiles(
+    /// No suspension is allowed in this commit. Always merge into the current
+    /// session, so hooks received during I/O keep their phase and tool state.
+    private func commitClaudeRead(
+        _ snapshot: ClaudeConversationSnapshot,
         sessionId: String,
-        session: inout SessionState,
-        cwd: String,
-        structuredResults: [String: ToolResultData]
-    ) async {
-        for i in 0..<session.chatItems.count {
-            guard case .toolCall(var tool) = session.chatItems[i].type,
-                  tool.isSubagentContainer,
-                  let structuredResult = structuredResults[session.chatItems[i].id],
-                  case .task(let taskResult) = structuredResult,
-                  !taskResult.agentId.isEmpty else { continue }
+        request: ClaudeReadRequest,
+        baseline: ClaudeReadBaseline,
+        updates: [ChatItemUpdate],
+        subagents: [String: ClaudeSubagentRead]
+    ) {
+        guard var session = sessions[sessionId] else { return }
+        let hasClear = snapshot.clearDetected || session.needsClearReconciliation
+        let reconcilesClear = hasClear && request.appliesSyncEffects
+        session.conversationInfo = snapshot.conversationInfo
 
-            let taskToolId = session.chatItems[i].id
+        // History loading remains content-only. Carry a detected clear forward
+        // so the next sync can reconcile even after this cursor is committed.
+        session.needsClearReconciliation = hasClear
+        if reconcilesClear {
+            reconcileClaudeClear(in: &session, validIds: Set(updates.map(\.id)), baseline: baseline)
+        }
+        ChatItemUpdateReducer.applyBatch(
+            updates, items: &session.chatItems,
+            orderings: &blockOrderings[sessionId, default: [:]]
+        )
+        if request.appliesSyncEffects {
+            session.toolTracker.lastSyncTime = Date()
+            mergeClaudeSubagents(subagents, into: &session)
+        }
+        sessions[sessionId] = session
 
-            // Store agentId → description mapping for AgentOutputTool display
-            if let description = session.subagentState.activeTasks[taskToolId]?.description {
-                session.subagentState.agentDescriptions[taskResult.agentId] = description
-            } else if let description = tool.input["description"] {
-                session.subagentState.agentDescriptions[taskResult.agentId] = description
-            }
-
-            let subagentToolInfos = await ConversationParser.shared.parseSubagentTools(
-                sessionId: sessionId,
-                agentId: taskResult.agentId,
-                cwd: cwd
-            )
-
-            guard !subagentToolInfos.isEmpty else { continue }
-
-            tool.subagentTools = subagentToolInfos.map { info in
-                SubagentToolCall(
-                    id: info.id,
-                    name: info.name,
-                    input: info.input,
-                    status: info.isCompleted ? .success : .running,
-                    timestamp: parseTimestamp(info.timestamp) ?? Date()
+        if request.appliesSyncEffects {
+            for item in session.chatItems {
+                guard case .toolCall(let tool) = item.type,
+                      tool.status == .running || tool.status == .waitingForApproval,
+                      snapshot.completedToolIds.contains(item.id) else { continue }
+                processToolCompleted(
+                    sessionId: sessionId, toolUseId: item.id,
+                    result: ToolCompletionResult.from(
+                        parserResult: snapshot.toolResults[item.id],
+                        structuredResult: snapshot.structuredResults[item.id]
+                    )
                 )
             }
-
-            session.chatItems[i] = ChatHistoryItem(
-                id: taskToolId,
-                type: .toolCall(tool),
-                timestamp: session.chatItems[i].timestamp
-            )
-
-            Self.logger.debug("Populated \(subagentToolInfos.count) subagent tools for Task \(taskToolId.prefix(12), privacy: .public) from agent \(taskResult.agentId.prefix(8), privacy: .public)")
         }
+        writeDebugLogAsync("[claude-read] session=\(sessionId) updates=\(updates.count) full=\(request.fullHistory) clear=\(reconcilesClear)")
     }
 
-    /// Emit toolCompleted events for tools that have results in JSONL but aren't marked complete yet
-    private func emitToolCompletionEvents(
-        sessionId: String,
-        session: SessionState,
-        completedToolIds: Set<String>,
-        toolResults: [String: ConversationParser.ToolResult],
-        structuredResults: [String: ToolResultData]
-    ) async {
-        for item in session.chatItems {
-            guard case .toolCall(let tool) = item.type else { continue }
+    private func reconcileClaudeClear(
+        in session: inout SessionState, validIds: Set<String>, baseline: ClaudeReadBaseline
+    ) {
+        // Keep the established two-second grace for post-clear hook placeholders.
+        let cutoff = Date().addingTimeInterval(-2)
+        session.chatItems.removeAll { !validIds.contains($0.id) && $0.timestamp <= cutoff }
+        let retainedIds = Set(session.chatItems.map(\.id))
+        blockOrderings[session.sessionId] = blockOrderings[session.sessionId]?.filter { retainedIds.contains($0.key) }
+        // Claude hooks track tools before JSONL creates their visible items.
+        // Retain tools started during I/O even when no chat item exists yet.
+        let validToolIds = retainedIds.union(validIds)
+        session.toolTracker.inProgress = session.toolTracker.inProgress.filter {
+            validToolIds.contains($0.key) || baseline.toolStarts[$0.key] != $0.value.startTime
+        }
+        session.subagentState.activeTasks = session.subagentState.activeTasks.filter {
+            validToolIds.contains($0.key) || baseline.taskStarts[$0.key] != $0.value.startTime
+        }
+        session.toolTracker.seenIds.formIntersection(
+            validToolIds.union(session.toolTracker.inProgress.keys).union(session.subagentState.activeTasks.keys)
+        )
+        let activeTaskIds = Set(session.subagentState.activeTasks.keys)
+        session.subagentState.taskStack.removeAll { !activeTaskIds.contains($0) }
+        session.subagentState.agentDescriptions.removeAll()
+        session.needsClearReconciliation = false
+    }
 
-            // Only emit for tools that are running or waiting but have results in JSONL
-            guard tool.status == .running || tool.status == .waitingForApproval else { continue }
-            guard completedToolIds.contains(item.id) else { continue }
-
-            let result = ToolCompletionResult.from(
-                parserResult: toolResults[item.id],
-                structuredResult: structuredResults[item.id]
-            )
-
-            // Process the completion event (this will update state and phase consistently)
-            await process(.toolCompleted(sessionId: sessionId, toolUseId: item.id, result: result))
+    private func mergeClaudeSubagents(_ reads: [String: ClaudeSubagentRead], into session: inout SessionState) {
+        for index in session.chatItems.indices {
+            let item = session.chatItems[index]
+            guard case .toolCall(var tool) = item.type, tool.isSubagentContainer,
+                  let read = reads[item.id] else { continue }
+            if let description = session.subagentState.activeTasks[item.id]?.description ?? tool.input["description"] {
+                session.subagentState.agentDescriptions[read.agentId] = description
+            }
+            guard !read.tools.isEmpty else { continue }
+            // Match by stable ID after I/O; do not roll back newer hook completions
+            // or remove child tools that arrived while the agent file was read.
+            let existing = Dictionary(tool.subagentTools.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            let readIds = Set(read.tools.map(\.id))
+            var tools = read.tools.map { info in
+                let current = existing[info.id]
+                let status: ToolStatus
+                if let current, current.status == .success || current.status == .error || current.status == .interrupted {
+                    status = current.status
+                } else {
+                    status = info.isCompleted ? .success : (current?.status ?? .running)
+                }
+                return SubagentToolCall(
+                    id: info.id, name: info.name, input: info.input, status: status,
+                    timestamp: current?.timestamp ?? parseTimestamp(info.timestamp) ?? Date()
+                )
+            }
+            tools.append(contentsOf: tool.subagentTools.filter { !readIds.contains($0.id) })
+            tool.subagentTools = tools
+            session.chatItems[index] = ChatHistoryItem(id: item.id, type: .toolCall(tool), timestamp: item.timestamp)
         }
     }
 
@@ -2452,10 +2422,12 @@ actor SessionStore {
 
         Self.logger.info("Processing /clear for session \(sessionId.prefix(8), privacy: .public)")
 
-        // Mark that a clear happened - the next fileUpdated will reconcile
-        // by removing items that no longer exist in the parser's state
+        // An explicit clear invalidates all earlier reads, including full loads.
+        // A clear discovered inside a candidate snapshot is handled in its commit.
+        invalidateClaudeRead(sessionId: sessionId)
         session.needsClearReconciliation = true
         sessions[sessionId] = session
+        requestClaudeRead(sessionId: sessionId, cwd: session.cwd, fullHistory: true, appliesSyncEffects: true)
 
         Self.logger.info("/clear processed for session \(sessionId.prefix(8), privacy: .public) - marked for reconciliation")
     }
@@ -2490,65 +2462,8 @@ actor SessionStore {
             await codexSyncTasks[sessionId]?.value
             return
         }
-        if sessions[sessionId]?.provider == .cursor {
-            return
-        }
-
-        // Parse file asynchronously
-        let messages = await ConversationParser.shared.parseFullConversation(
-            sessionId: sessionId,
-            cwd: cwd
-        )
-        let completedTools = await ConversationParser.shared.completedToolIds(for: sessionId)
-        let toolResults = await ConversationParser.shared.toolResults(for: sessionId)
-        let structuredResults = await ConversationParser.shared.structuredResults(for: sessionId)
-
-        // Also parse conversationInfo (summary, lastMessage, etc.)
-        let conversationInfo = await ConversationParser.shared.parse(
-            sessionId: sessionId,
-            cwd: cwd
-        )
-
-        // Process loaded history
-        await process(.historyLoaded(
-            sessionId: sessionId,
-            messages: messages,
-            completedTools: completedTools,
-            toolResults: toolResults,
-            structuredResults: structuredResults,
-            conversationInfo: conversationInfo
-        ))
-    }
-
-    private func processHistoryLoaded(
-        sessionId: String,
-        messages: [ChatMessage],
-        completedTools: Set<String>,
-        toolResults: [String: ConversationParser.ToolResult],
-        structuredResults: [String: ToolResultData],
-        conversationInfo: ConversationInfo
-    ) async {
-        guard var session = sessions[sessionId] else { return }
-
-        DebugLog.shared.write("[claude-history-loaded] session=\(sessionId) msgs=\(messages.count) completedTools=\(completedTools.count)")
-
-        // Update conversationInfo (summary, lastMessage, etc.)
-        session.conversationInfo = conversationInfo
-
-        // Use ClaudeChatItemAdapter instead of upsertBlocks.
-        // Sorting is handled by ChatItemSorter in applyChatItemUpdate().
-        sessions[sessionId] = session
-
-        let chatUpdates = ClaudeChatItemAdapter.updates(
-            fromHistoryLoad: messages,
-            completedTools: completedTools,
-            toolResults: toolResults,
-            structuredResults: structuredResults,
-            sessionId: sessionId
-        )
-        for update in chatUpdates {
-            applyChatItemUpdate(update)
-        }
+        let task = requestClaudeRead(sessionId: sessionId, cwd: cwd, fullHistory: true, appliesSyncEffects: false)
+        await task?.value
     }
 
     private func scheduleCodexTranscriptSync(sessionId: String) {
@@ -2626,45 +2541,95 @@ actor SessionStore {
     // MARK: - File Sync Scheduling
 
     private func scheduleFileSync(sessionId: String, cwd: String) {
-        // Cancel existing sync
-        cancelPendingSync(sessionId: sessionId)
+        requestClaudeRead(sessionId: sessionId, cwd: cwd, fullHistory: false, appliesSyncEffects: true)
+    }
 
-        // Schedule new debounced sync
-        pendingSyncs[sessionId] = Task { [weak self, syncDebounceNs] in
-            try? await Task.sleep(nanoseconds: syncDebounceNs)
-            guard !Task.isCancelled else { return }
+    @discardableResult
+    private func requestClaudeRead(
+        sessionId: String, cwd: String, fullHistory: Bool, appliesSyncEffects: Bool
+    ) -> Task<Void, Never>? {
+        guard let session = sessions[sessionId], session.provider == .claude,
+              session.cwd == cwd else { return nil }
+        var state = claudeReads[sessionId] ?? ClaudeReadState(cwd: cwd)
+        state.pending = ClaudeReadRequest(
+            fullHistory: fullHistory || (state.pending?.fullHistory ?? false),
+            appliesSyncEffects: appliesSyncEffects || (state.pending?.appliesSyncEffects ?? false)
+        )
+        claudeReads[sessionId] = state
+        if let task = claudeSyncTasks[sessionId] { return task }
+        let generation = state.generation
+        let task = Task { [weak self, claudeSyncDebounceNs] in
+            try? await Task.sleep(nanoseconds: claudeSyncDebounceNs)
+            await self?.runClaudeRead(sessionId: sessionId, generation: generation)
+        }
+        claudeSyncTasks[sessionId] = task
+        return task
+    }
 
-            // Parse incrementally - only get NEW messages since last call
-            let result = await ConversationParser.shared.parseIncremental(
-                sessionId: sessionId,
-                cwd: cwd
+    private func isCurrentClaudeRead(sessionId: String, generation: UUID) -> Bool {
+        guard !Task.isCancelled, let state = claudeReads[sessionId],
+              state.generation == generation, let session = sessions[sessionId] else { return false }
+        return session.provider == .claude && session.cwd == state.cwd
+    }
+
+    private func runClaudeRead(sessionId: String, generation: UUID) async {
+        defer {
+            // A cancelled old flight must not remove a replacement's task handle.
+            if claudeReads[sessionId]?.generation == generation {
+                claudeSyncTasks.removeValue(forKey: sessionId)
+            }
+        }
+        while isCurrentClaudeRead(sessionId: sessionId, generation: generation),
+              let state = claudeReads[sessionId], let request = state.pending {
+            claudeReads[sessionId]?.pending = nil
+            let baseline = ClaudeReadBaseline(
+                toolStarts: sessions[sessionId]?.toolTracker.inProgress.mapValues(\.startTime) ?? [:],
+                taskStarts: sessions[sessionId]?.subagentState.activeTasks.mapValues(\.startTime) ?? [:]
             )
-
-            if result.clearDetected {
-                await self?.process(.clearDetected(sessionId: sessionId))
-            }
-
-            guard !result.newMessages.isEmpty || result.clearDetected else {
-                return
-            }
-
+            let snapshot = await claudeReader.readSnapshot(
+                sessionId: sessionId, cwd: state.cwd, cursor: state.cursor
+            )
+            guard isCurrentClaudeRead(sessionId: sessionId, generation: generation) else { return }
+            let fullHistory = request.fullHistory || snapshot.clearDetected ||
+                sessions[sessionId]?.needsClearReconciliation == true
             let payload = FileUpdatePayload(
-                sessionId: sessionId,
-                cwd: cwd,
-                messages: result.newMessages,
-                isIncremental: !result.clearDetected,
-                completedToolIds: result.completedToolIds,
-                toolResults: result.toolResults,
-                structuredResults: result.structuredResults
+                sessionId: sessionId, cwd: state.cwd,
+                messages: fullHistory ? snapshot.allMessages : snapshot.newMessages,
+                isIncremental: !fullHistory, completedToolIds: snapshot.completedToolIds,
+                toolResults: snapshot.toolResults, structuredResults: snapshot.structuredResults
             )
-
-            await self?.process(.fileUpdated(payload))
+            // The legacy adapter uses the project's default MainActor isolation.
+            // Finish that hop before entering the synchronous Store commit.
+            let updates = await ClaudeChatItemAdapter.updates(fromFileUpdate: payload)
+            guard isCurrentClaudeRead(sessionId: sessionId, generation: generation) else { return }
+            var subagents: [String: ClaudeSubagentRead] = [:]
+            if request.appliesSyncEffects {
+                for toolId in snapshot.structuredResults.keys.sorted() {
+                    guard case .task(let result) = snapshot.structuredResults[toolId],
+                          !result.agentId.isEmpty else { continue }
+                    let tools = await claudeReader.readSubagentTools(
+                        sessionId: sessionId, agentId: result.agentId, cwd: state.cwd
+                    )
+                    guard isCurrentClaudeRead(sessionId: sessionId, generation: generation) else { return }
+                    subagents[toolId] = ClaudeSubagentRead(agentId: result.agentId, tools: tools)
+                }
+            }
+            commitClaudeRead(
+                snapshot, sessionId: sessionId, request: request,
+                baseline: baseline, updates: updates, subagents: subagents
+            )
+            claudeReads[sessionId]?.cursor = snapshot.cursor
+            publishState()
         }
     }
 
+    private func invalidateClaudeRead(sessionId: String) {
+        claudeSyncTasks.removeValue(forKey: sessionId)?.cancel()
+        claudeReads.removeValue(forKey: sessionId)
+    }
+
     private func cancelPendingSync(sessionId: String) {
-        pendingSyncs[sessionId]?.cancel()
-        pendingSyncs.removeValue(forKey: sessionId)
+        invalidateClaudeRead(sessionId: sessionId)
         cancelCodexTranscriptSync(sessionId: sessionId)
         codexTranscriptCursors.removeValue(forKey: sessionId)
     }
@@ -2860,11 +2825,12 @@ actor SessionStore {
         opencodePortProbeTask?.cancel()
         opencodePortProbeTask = nil
         opencodePortProbeToken = nil
-        for task in pendingSyncs.values {
+        for task in claudeSyncTasks.values {
             task.cancel()
         }
         sessions.removeAll()
-        pendingSyncs.removeAll()
+        claudeSyncTasks.removeAll()
+        claudeReads.removeAll()
         for task in codexSyncTasks.values { task.cancel() }
         codexSyncTasks.removeAll()
         codexSyncTokens.removeAll()
@@ -2889,7 +2855,8 @@ actor SessionStore {
     /// Resource ownership snapshot for lifecycle tests; no provider I/O needed.
     func sessionResourceIDsForTesting() -> Set<String> {
         var ids = Set(sessions.keys)
-        ids.formUnion(pendingSyncs.keys)
+        ids.formUnion(claudeSyncTasks.keys)
+        ids.formUnion(claudeReads.keys)
         ids.formUnion(codexSyncTasks.keys)
         ids.formUnion(codexSyncTokens.keys)
         ids.formUnion(codexSyncRequested)
@@ -2907,7 +2874,7 @@ actor SessionStore {
 
     func hasBackgroundTasksForTesting() -> Bool {
         statusCheckTask != nil || opencodePortProbeTask != nil ||
-            !pendingSyncs.isEmpty || !codexSyncTasks.isEmpty
+            !claudeSyncTasks.isEmpty || !codexSyncTasks.isEmpty
     }
 
     func setSessionPidForTesting(sessionId: String, pid: Int?) {
@@ -2923,6 +2890,15 @@ actor SessionStore {
 
     func setCodexTranscriptRootForTesting(_ root: URL) {
         codexTranscriptRoot = root
+    }
+
+    func pendingClaudeReadForTesting(sessionId: String) -> (fullHistory: Bool, appliesSyncEffects: Bool)? {
+        guard let request = claudeReads[sessionId]?.pending else { return nil }
+        return (request.fullHistory, request.appliesSyncEffects)
+    }
+
+    func waitForClaudeSyncForTesting(sessionId: String) async {
+        await claudeSyncTasks[sessionId]?.value
     }
 
     func waitForCodexSyncForTesting(sessionId: String) async {
