@@ -51,6 +51,8 @@ actor SessionStore {
     private var opencodeServerPorts: [Int: Int] = [:]
     /// Legacy fallback: port from a plugin that reports no pid, or from probe.
     private var opencodeServerPortFallback: Int?
+    private var opencodePortProbeTask: Task<Void, Never>?
+    private var opencodePortProbeToken: UUID?
 
     /// Running OpenCode plugin version, reported by the plugin in the serverPort
     /// handshake. Used to detect when OpenCode is still running a stale plugin
@@ -78,9 +80,9 @@ actor SessionStore {
     private let codexLateEventIgnoreSeconds: TimeInterval = 10
 
     /// BlockOrdering keys for chat items (from unified ChatItemUpdate path).
-    /// Maps chatItem.id → BlockOrdering so ChatItemSorter can maintain
-    /// correct display order regardless of event arrival timing.
-    private var blockOrderings: [String: BlockOrdering] = [:]
+    /// Item IDs are only unique within a session. Each session owns its
+    /// ordering metadata so removal and conversation resets stay isolated.
+    private var blockOrderings: [String: [String: BlockOrdering]] = [:]
 
     /// Sessions that have been explicitly opened via a `SessionStarted`
     /// event (or via Claude's hook path). The `realtimeChatItemBatch` /
@@ -105,7 +107,12 @@ actor SessionStore {
     /// Subagent child sessions are intentionally never registered (they don't emit
     /// SessionStarted), so their buffered updates are naturally dropped. Top-level
     /// sessions get registered via processOpencodeSessionStart and flush their buffer.
-    private var earlyChatItemBuffer: [String: [ChatItemUpdate]] = [:]
+    private struct BufferedChatItemUpdate {
+        let update: ChatItemUpdate
+        let appliesLifecycleEffects: Bool
+    }
+
+    private var earlyChatItemBuffer: [String: [BufferedChatItemUpdate]] = [:]
 
     // MARK: - Published State (for UI)
 
@@ -139,7 +146,7 @@ actor SessionStore {
 
     // MARK: - Initialization
 
-    private init() {}
+    init() {}
 
     // MARK: - Event Processing
 
@@ -330,8 +337,8 @@ actor SessionStore {
         // (e.g. image) before the sessionStart event.
         if let buffered = earlyChatItemBuffer.removeValue(forKey: sessionId) {
             writeDebugLogAsync("[chat-item-update] flushing \(buffered.count) buffered updates for session=\(sessionId.prefix(12))")
-            for update in buffered {
-                applyChatItemUpdate(update, appliesLifecycleEffects: true)
+            for entry in buffered {
+                applyChatItemUpdate(entry.update, appliesLifecycleEffects: entry.appliesLifecycleEffects)
             }
         }
     }
@@ -360,7 +367,10 @@ actor SessionStore {
             // They will be flushed when the session is registered via processOpencodeSessionStart.
             // Subagent child sessions are never registered, so their buffers
             // are never flushed (and get cleaned up on session end).
-            earlyChatItemBuffer[update.sessionId, default: []].append(update)
+            earlyChatItemBuffer[update.sessionId, default: []].append(BufferedChatItemUpdate(
+                update: update,
+                appliesLifecycleEffects: appliesLifecycleEffects
+            ))
             writeDebugLogAsync("[chat-item-update] buffered for unregistered session=\(update.sessionId.prefix(12)) id=\(update.id.prefix(16)) bufferCount=\(earlyChatItemBuffer[update.sessionId]?.count ?? 0)")
             return
         }
@@ -403,9 +413,7 @@ actor SessionStore {
         session.lastActivity = Date()
 
         if event.status == "ended" {
-            sessions.removeValue(forKey: sessionId)
-            cancelPendingSync(sessionId: sessionId)
-            unregisterSession(sessionId: sessionId)
+            removeSession(sessionId: sessionId)
             return
         }
 
@@ -587,9 +595,7 @@ actor SessionStore {
         if pendingCodexStartupSessions.remove(sessionId) != nil,
            isCodexInternalStartupPrompt(prompt) {
             ignoredCodexSessions.insert(sessionId)
-            sessions.removeValue(forKey: sessionId)
-            cancelPendingSync(sessionId: sessionId)
-            unregisterSession(sessionId: sessionId)
+            removeSession(sessionId: sessionId, preservingCodexSuppression: true)
             writeDebugLogAsync("[codex-lifecycle] ignored internal startup session=\(sessionId)")
             return
         }
@@ -991,7 +997,7 @@ actor SessionStore {
         // Probe OpenCode server port if not yet known (plugin's serverPort
         // event may have been lost due to race with socket connection).
         if session.serverPort == nil && opencodeServerPortFallback == nil && opencodeServerPorts.isEmpty {
-            Task { await probeOpencodeServerPort() }
+            scheduleOpencodeServerPortProbe()
         }
 
         publishState()
@@ -1007,8 +1013,7 @@ actor SessionStore {
             guard let session = sessions[provisionalId],
                   session.chatItems.isEmpty,
                   !session.phase.isActive else { continue }
-            sessions.removeValue(forKey: provisionalId)
-            unregisterSession(sessionId: provisionalId)
+            removeSession(sessionId: provisionalId)
             writeDebugLogAsync("[opencode] removed inactive provisional session=\(provisionalId.prefix(12)) replacedBy=\(newSessionId.prefix(12)) pid=\(pid)")
         }
     }
@@ -1022,7 +1027,7 @@ actor SessionStore {
 
         // Retry probe if server port still unknown (plugin event may arrive late).
         if session.serverPort == nil && opencodeServerPortFallback == nil && opencodeServerPorts.isEmpty {
-            Task { await probeOpencodeServerPort() }
+            scheduleOpencodeServerPortProbe()
         }
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -1171,15 +1176,34 @@ actor SessionStore {
     /// Probe common OpenCode server ports to discover a running server.
     /// Note: OpenCode in TUI mode (tmux) has no HTTP server — this only works
     /// for `opencode serve` mode. TUI sessions should use tmux send-keys.
-    private func probeOpencodeServerPort() async {
+    private func scheduleOpencodeServerPortProbe() {
+        guard opencodePortProbeTask == nil,
+              opencodeServerPortFallback == nil, opencodeServerPorts.isEmpty else { return }
+        let token = UUID()
+        opencodePortProbeToken = token
+        opencodePortProbeTask = Task { [weak self] in
+            await self?.probeOpencodeServerPort(token: token)
+        }
+    }
+
+    private func probeOpencodeServerPort(token: UUID) async {
+        defer {
+            if opencodePortProbeToken == token {
+                opencodePortProbeTask = nil
+                opencodePortProbeToken = nil
+            }
+        }
         guard opencodeServerPortFallback == nil && opencodeServerPorts.isEmpty else { return }
         let ports = [4096, 4097, 4098]
         for port in ports {
+            guard !Task.isCancelled, opencodePortProbeToken == token else { return }
             guard let url = URL(string: "http://127.0.0.1:\(port)/global/health") else { continue }
             var request = URLRequest(url: url)
             request.timeoutInterval = 1
             if let (_, response) = try? await URLSession.shared.data(for: request),
                let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                guard !Task.isCancelled, opencodePortProbeToken == token,
+                      opencodeServerPortFallback == nil, opencodeServerPorts.isEmpty else { return }
                 writeDebugLogAsync("[opencode-server] probe OK port=\(port)")
                 applyOpencodeFallbackPort(port)
                 return
@@ -1396,7 +1420,7 @@ actor SessionStore {
         let didApply = ChatItemUpdateReducer.apply(
             update,
             items: &session.chatItems,
-            orderings: &blockOrderings,
+            orderings: &blockOrderings[update.sessionId, default: [:]],
             now: now
         )
         guard didApply else { return }
@@ -1614,9 +1638,7 @@ actor SessionStore {
     // MARK: - Codex Helpers
 
     private func resetCodexConversationState(_ session: inout SessionState) {
-        for item in session.chatItems {
-            blockOrderings.removeValue(forKey: item.id)
-        }
+        blockOrderings.removeValue(forKey: session.sessionId)
 
         session.chatItems.removeAll()
         session.toolTracker = ToolTracker()
@@ -2231,6 +2253,10 @@ actor SessionStore {
             session.chatItems = session.chatItems.filter { item in
                 validIds.contains(item.id) || item.timestamp > cutoffTime
             }
+            let retainedItemIds = Set(session.chatItems.map(\.id))
+            blockOrderings[payload.sessionId] = blockOrderings[payload.sessionId]?.filter {
+                retainedItemIds.contains($0.key)
+            }
 
             // Also reset tool tracker
             session.toolTracker = ToolTracker()
@@ -2437,12 +2463,22 @@ actor SessionStore {
     // MARK: - Session End Processing
 
     private func processSessionEnd(sessionId: String) async {
+        removeSession(sessionId: sessionId)
+    }
+
+    /// Release session-owned state in every removal path. OpenCode ports and
+    /// plugin version belong to the running instance, not an individual chat.
+    /// Hidden Codex startup sessions retain suppression until explicitly ended.
+    private func removeSession(sessionId: String, preservingCodexSuppression: Bool = false) {
         sessions.removeValue(forKey: sessionId)
         cancelPendingSync(sessionId: sessionId)
+        blockOrderings.removeValue(forKey: sessionId)
         codexTranscriptLowerBounds.removeValue(forKey: sessionId)
-        recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
         pendingCodexStartupSessions.remove(sessionId)
-        ignoredCodexSessions.remove(sessionId)
+        if !preservingCodexSuppression {
+            recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
+            ignoredCodexSessions.remove(sessionId)
+        }
         unregisterSession(sessionId: sessionId)
     }
 
@@ -2573,7 +2609,8 @@ actor SessionStore {
         codexTranscriptCursors[sessionId] = result.cursor
         currentSession.toolTracker.lastSyncTime = Date()
         ChatItemUpdateReducer.applyBatch(
-            result.updates, items: &currentSession.chatItems, orderings: &blockOrderings
+            result.updates, items: &currentSession.chatItems,
+            orderings: &blockOrderings[sessionId, default: [:]]
         )
         // History must not wake a completed turn or emit another notification.
         // A late transcript-only tool also must not remain visibly running.
@@ -2669,13 +2706,7 @@ actor SessionStore {
 
         for (sessionId, session) in Array(sessions) {
             if session.phase == .ended {
-                sessions.removeValue(forKey: sessionId)
-                cancelPendingSync(sessionId: sessionId)
-                codexTranscriptLowerBounds.removeValue(forKey: sessionId)
-                recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
-                pendingCodexStartupSessions.remove(sessionId)
-                ignoredCodexSessions.remove(sessionId)
-                unregisterSession(sessionId: sessionId)
+                removeSession(sessionId: sessionId)
                 stateChanged = true
                 continue
             }
@@ -2683,13 +2714,7 @@ actor SessionStore {
             if session.provider == .codex,
                session.phase == .idle,
                now.timeIntervalSince(session.lastActivity) > codexIdleExpirationSeconds {
-                sessions.removeValue(forKey: sessionId)
-                cancelPendingSync(sessionId: sessionId)
-                codexTranscriptLowerBounds.removeValue(forKey: sessionId)
-                recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
-                pendingCodexStartupSessions.remove(sessionId)
-                ignoredCodexSessions.remove(sessionId)
-                unregisterSession(sessionId: sessionId)
+                removeSession(sessionId: sessionId)
                 stateChanged = true
                 continue
             }
@@ -2737,13 +2762,7 @@ actor SessionStore {
                 let isRunning = isProcessRunning(pid: pid)
                 if !isRunning {
                     Self.logger.info("Process \(pid) no longer running, ending session \(sessionId.prefix(8))")
-                    sessions.removeValue(forKey: sessionId)
-                    cancelPendingSync(sessionId: sessionId)
-                    codexTranscriptLowerBounds.removeValue(forKey: sessionId)
-                    recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
-                    pendingCodexStartupSessions.remove(sessionId)
-                    ignoredCodexSessions.remove(sessionId)
-                    unregisterSession(sessionId: sessionId)
+                    removeSession(sessionId: sessionId)
                     stateChanged = true
                     continue
                 }
@@ -2837,6 +2856,10 @@ actor SessionStore {
 
     #if DEBUG
     func resetForTesting() {
+        stopPeriodicStatusCheck()
+        opencodePortProbeTask?.cancel()
+        opencodePortProbeTask = nil
+        opencodePortProbeToken = nil
         for task in pendingSyncs.values {
             task.cancel()
         }
@@ -2853,8 +2876,38 @@ actor SessionStore {
         pendingCodexStartupSessions.removeAll()
         ignoredCodexSessions.removeAll()
         blockOrderings.removeAll()
+        registeredSessionIds.removeAll()
+        earlyChatItemBuffer.removeAll()
         provisionalSessionPids.removeAll()
+        opencodeServerPorts.removeAll()
+        opencodeServerPortFallback = nil
+        opencodePluginVersion = nil
+        opencodePluginVersionSubject.send(nil)
         publishState()
+    }
+
+    /// Resource ownership snapshot for lifecycle tests; no provider I/O needed.
+    func sessionResourceIDsForTesting() -> Set<String> {
+        var ids = Set(sessions.keys)
+        ids.formUnion(pendingSyncs.keys)
+        ids.formUnion(codexSyncTasks.keys)
+        ids.formUnion(codexSyncTokens.keys)
+        ids.formUnion(codexSyncRequested)
+        ids.formUnion(codexTranscriptCursors.keys)
+        ids.formUnion(codexTranscriptLowerBounds.keys)
+        ids.formUnion(recentlyStoppedCodexSessions.keys)
+        ids.formUnion(pendingCodexStartupSessions)
+        ids.formUnion(ignoredCodexSessions)
+        ids.formUnion(blockOrderings.keys)
+        ids.formUnion(registeredSessionIds)
+        ids.formUnion(earlyChatItemBuffer.keys)
+        ids.formUnion(provisionalSessionPids.keys)
+        return ids
+    }
+
+    func hasBackgroundTasksForTesting() -> Bool {
+        statusCheckTask != nil || opencodePortProbeTask != nil ||
+            !pendingSyncs.isEmpty || !codexSyncTasks.isEmpty
     }
 
     func setSessionPidForTesting(sessionId: String, pid: Int?) {
