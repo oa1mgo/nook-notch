@@ -1101,13 +1101,10 @@ actor SessionStore {
             return
         }
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        let wasActive = session.phase.isActive
         let hadRunningTools = hasRunningTools(in: session)
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
-        session.phase = .idle
-        // Don't set completionNotificationAt here — we use publishCompletionNotification
-        // below for direct notification, avoiding double-trigger with
-        // handleWaitingForInputChange's completionMarker detection.
 
         for index in session.chatItems.indices {
             if case .toolCall(var tool) = session.chatItems[index].type, tool.status == .running {
@@ -1121,16 +1118,22 @@ actor SessionStore {
         }
 
         session.toolTracker.inProgress.removeAll()
+
+        // Only an active turn can be completed. A duplicate `.stop` (status=idle
+        // + session.idle double-fire), a `.stop` while waiting for user input, or
+        // one while an approval is pending must not re-notify or clobber the phase.
+        // waitingForApproval is recovered by the quiet-expiry path; waitingForInput
+        // has no timer and recovers only via question.replied / busy / a new prompt.
+        if wasActive {
+            session.phase = .idle
+        }
         sessions[sessionId] = session
         publishState()
 
-        // Publish completion notification when the session ends without
-        // running tools (normal turn completion). This triggers the
-        // notification sound and bounce in NotchView.
-        // NOTE: We use publishCompletionNotification (direct) instead of
-        // completionNotificationAt (detected via handleWaitingForInputChange)
-        // to avoid double-triggering the sound.
-        if !hadRunningTools {
+        // No completion sound/bounce for non-active sessions: Nook can be launched
+        // mid-turn, and a late `.stop` must not announce a completion the user
+        // never saw start.
+        if wasActive && !hadRunningTools {
             publishCompletionNotification(for: session)
         }
     }
