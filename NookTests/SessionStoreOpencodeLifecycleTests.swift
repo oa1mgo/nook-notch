@@ -80,4 +80,63 @@ final class SessionStoreOpencodeLifecycleTests: XCTestCase {
         XCTAssertTrue(session?.phase.isWaitingForApproval == true)
         XCTAssertEqual(recorder.snapshot().count, notificationsBeforeStop)
     }
+
+    /// `.stop` 之后如果有一个 chat item 抢在第二条 `.stop` 之前把 phase
+    /// 拉回 `.processing`，第二条 `.stop` 不得再发通知。闩锁按「轮」重置，
+    /// 不依赖 phase。
+    func testDuplicateStopAfterLateChatItemNotifiesOnce() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        let recorder = NotificationRecorder()
+        let cancellable = store.completionNotificationsPublisher.sink { recorder.record($0) }
+        defer { cancellable.cancel() }
+
+        await startProcessingSession(store, id: "late")
+        await store.process(.opencodeStopped(sessionId: "late", cwd: "/tmp/proj"))
+        await store.process(.realtimeChatItemBatch([
+            ChatItemUpdate(
+                id: "late-text",
+                sessionId: "late",
+                block: .assistantText("late chunk"),
+                ordering: .timestamp(Date()),
+                mutation: .insert,
+                provider: .opencode
+            )
+        ]))
+        await store.process(.opencodeStopped(sessionId: "late", cwd: "/tmp/proj"))
+
+        let session = await store.session(for: "late")
+        XCTAssertEqual(session?.phase, .idle)
+        XCTAssertEqual(recorder.snapshot().count, 1)
+    }
+
+    /// 新的一轮必须重新武装通知闩锁。
+    func testNewTurnAfterCompletionNotifiesAgain() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        let recorder = NotificationRecorder()
+        let cancellable = store.completionNotificationsPublisher.sink { recorder.record($0) }
+        defer { cancellable.cancel() }
+
+        await startProcessingSession(store, id: "again")
+        await store.process(.opencodeStopped(sessionId: "again", cwd: "/tmp/proj"))
+        await startProcessingSession(store, id: "again")
+        await store.process(.opencodeStopped(sessionId: "again", cwd: "/tmp/proj"))
+
+        XCTAssertEqual(recorder.snapshot().count, 2)
+    }
+
+    /// question.rejected 后 .stop 能正常收尾（不再卡在 waitingForInput）。
+    func testQuestionRejectedThenStopEndsTurn() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await startProcessingSession(store, id: "qrej")
+        await store.process(.opencodeWaitingForUserInput(
+            sessionId: "qrej", cwd: "/tmp/proj", toolUseId: "tool-1", questions: [], requestId: "que_1"))
+        await store.process(.opencodeProcessingStarted(sessionId: "qrej", cwd: "/tmp/proj"))
+        await store.process(.opencodeStopped(sessionId: "qrej", cwd: "/tmp/proj"))
+
+        let session = await store.session(for: "qrej")
+        XCTAssertEqual(session?.phase, .idle)
+    }
 }

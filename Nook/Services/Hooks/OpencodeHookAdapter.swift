@@ -5,23 +5,37 @@
 //  Translates raw OpenCode bus events (from the plugin socket) into the
 //  normalised OpencodeSessionEvent surface that Nook's session store consumes.
 //
-//  Compatibility matrix (v1.15.13 / v1.17.x), `question.asked` 陷阱等:
+//  Compatibility matrix (v1.15.13 → v1.19), 陷阱, 复测方法:
 //  → docs/specs/2026-06-17-opencode-v1.17-compatibility-matrix.md
 //
-//  Event model (reverse‑engineered from opencode v1.15.13 bus):
-//    session.created        → sessionStart (legacy; current versions use session.updated)
-//    session.updated        → sessionStart on first sighting; refreshes cwd afterwards
-//    session.status         → processingStarted on busy;
-//                            on idle, only flush pending text buffers
-//                            (do NOT emit .stop — see handleSessionStatus)
-//    session.idle           → stop (canonical session-end signal)
-//    question.asked         → waitingForUserInput (verified 2026-06-17 to
-//                              fire in v1.17.x; handleQuestionAsked is the
-//                              primary path, handleToolPart has a
-//                              defensive fallback below)
-//    message.updated        → user/assistant message boundary
-//    message.part.updated   → user text, assistant text (initial empty), bash tool
-//    message.part.delta     → assistant text streaming chunks (field=text)
+//  Event model. The plugin forwards EVERY opencode bus event verbatim (it
+//  only injects `pid` + `cwd`); `session.started` and `serverPort` are the
+//  two events the plugin synthesises itself.
+//
+//    session.created           → sessionStart (legacy; v1.18+ fires it rarely)
+//    session.updated           → sessionStart on first sighting; refreshes cwd
+//    session.started           → sessionStart (plugin probe for resumed
+//                                sessions; `provisional` = guessed via
+//                                session.list() fallback)
+//    session.status            → processingStarted on busy / retry;
+//                                stop on idle (turn end; see handleSessionStatus)
+//    session.idle              → stop (legacy canonical signal; deprecated in
+//                                the v1.19 schema and may be LOST — 陷阱 4.
+//                                `session.status=idle` is published from the
+//                                same SessionStatus.set() call, so it is the
+//                                safer redundant end signal)
+//    question.asked            → waitingForUserInput (PRIMARY; carries the
+//                                `que_` requestId needed to answer)
+//    question.replied          → processingStarted (user answered, in Nook or TUI)
+//    question.rejected         → processingStarted (user dismissed/cancelled)
+//    permission.asked          → permissionAsked (approval bar; see
+//                                docs/specs/2026-07-10-opencode-permission-handling.md)
+//    serverPort                → serverPortReceived (plugin-synthesised; 0 = no
+//                                HTTP server, i.e. TUI mode without --port)
+//    message.updated           → user/assistant message boundary; on
+//                                finish=stop only flush buffers (no .stop)
+//    message.part.updated      → text / reasoning / tool / file / step-start
+//    message.part.delta        → streaming chunks (field=text and field=reasoning)
 //
 //  Assistant text arrives via a chain:
 //    message.part.updated(type=text, text="")   → initialise buffer for messageID
@@ -29,22 +43,27 @@
 //    message.updated(role=assistant, finish=stop) → flush buffer as .assistantText
 //
 //  AskUserQuestion phase — two redundant detection paths converge on
-//  the same `.waitingForUserInput` event:
-//    1. handleQuestionAsked (line ~498) — primary path, listens for
-//       opencode's `question.asked` bus event. Verified firing in
-//       v1.17.x (2026-06-17, log shows [opencode] event type=question.asked).
-//       Earlier during this session we observed runs where this event
-//       was missing from the log — likely timing/connection issues
-//       (e.g. opencode hadn't fully started, plugin socket hadn't
-//       bound yet), NOT that the event doesn't exist.
-//    2. handleToolPart (line ~1036) — defensive fallback, derives the
-//       phase from the standard `message.part.updated(type=tool,
-//       tool=question)` event. Kept because:
-//         - The two paths are idempotent (both set .waitingForInput)
-//         - If question.asked ever fails to reach us (transport loss,
-//           version regression, plugin breakage), the list view still
-//           gets the correct phase
-//         - It's "evidence-driven" detection from events we KNOW fire
+//  `.waitingForUserInput`, but they are NOT equivalent:
+//    1. handleQuestionAsked — primary path, listens for opencode's
+//       `question.asked` bus event. Carries `requestId` (`que_xxx`), which
+//       is what QuestionReplyProvider needs in order to answer. Verified
+//       firing in v1.17.x (2026-06-17, log shows
+//       [opencode] event type=question.asked). Earlier in that session the
+//       event looked missing — the cause was the plugin socket not being
+//       bound yet (transport timing), NOT a missing event. Diagnose the
+//       transport before adding handlers (陷阱 2 in the spec).
+//    2. handleToolPart — defensive fallback, derives the phase from
+//       `message.part.updated(type=tool, tool=question)`. `requestId` stays
+//       nil here (that event's id is not a question request id), so this
+//       path preserves the PHASE but NOT the ability to reply:
+//       OpencodeQuestionReplyProvider.sendAnswer throws
+//       QuestionReplyError.missingRequestId on nil. Kept because transport
+//       loss / version drift must never make Nook lose the "waiting for you"
+//       state; when question.asked does arrive, SessionStore merges the
+//       requestId in.
+//
+//  Neither path uses line-number anchors on purpose — they rot. Cite the
+//  function name plus the branch condition when pointing at this file.
 //
 
 import Foundation
@@ -309,6 +328,19 @@ final class OpencodeHookAdapter: @unchecked Sendable {
                 return v
             }()
             Self.logNotice("→ question.replied session=\(sessionId) — transitioning to processing")
+            handled = [.processingStarted(sessionId: sessionId, cwd: cwd)]
+        case "question.rejected":
+            // User dismissed/cancelled the question in the TUI (or opencode
+            // timed it out). The model normally resumes, so mirror
+            // question.replied; if the turn ends instead, the following
+            // status=idle now reaches processOpencodeStop with an active phase.
+            let cwd: String = {
+                lock.lock()
+                let v = sessionCwd[sessionId] ?? ""
+                lock.unlock()
+                return v
+            }()
+            Self.logNotice("→ question.rejected session=\(sessionId) — transitioning to processing")
             handled = [.processingStarted(sessionId: sessionId, cwd: cwd)]
         case "permission.asked":
             handled = handlePermissionAsked(props)
@@ -654,20 +686,47 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             Self.logNotice("→ processingStarted (session.status=busy) session=\(sessionId) cwd=\(cwd)")
             return [.processingStarted(sessionId: sessionId, cwd: cwd)]
         case "idle":
-            // ⚠️ session.status=idle fires between tool calls (think → think → tool
-            // → think) AND at the actual session end. We must NOT treat it as
-            // session-end here — that would make the agent icon flash off
-            // after every tool call (between operations the session is still
-            // alive; the user can issue a new prompt).
+            // v1.19 source: SessionStatus.set(idle) publishes session.status=idle
+            // and session.idle from the same call (1:1). session.idle is
+            // deprecated, so status=idle is the canonical end signal too.
             //
-            // What we DO need to do: flush any assistant text buffers that
-            // didn't get a finish=stop, otherwise accumulated text between
-            // tool calls would be lost. The actual session end is handled
-            // by `handleSessionIdle` (the legacy `session.idle` event fires
-            // once when the session truly terminates).
-            let events: [OpencodeSessionEvent] = flushPendingText(forSession: sessionId, cwd: cwd)
-            Self.logNotice("→ idle (between ops) session=\(sessionId) flushed=\(events.count)")
-            return events
+            // Deliberately no cleanupState() here: on older opencode versions
+            // status=idle fires between tool steps, and clearing per-step buffers
+            // would drop in-flight text. cleanupState stays on the legacy
+            // session.idle path.
+            //
+            // The phase guard lives in SessionStore.processOpencodeStop: adapter
+            // has no phase state and must emit unconditionally.
+            //
+            // recentlyStoppedSessions is pruned (30s cutoff) inside cleanupState,
+            // which only runs on the legacy session.idle path. If that is the
+            // event that got lost, this entry lingers until the next busy or the
+            // next real session.idle. One entry per session, bounded, harmless —
+            // and it is what suppresses a late session.updated from re-creating
+            // the session as a phantom .sessionStart.
+            lock.lock()
+            recentlyStoppedSessions[sessionId] = Date()
+            lock.unlock()
+            let flushed = flushPendingText(forSession: sessionId, cwd: cwd)
+            Self.logNotice("→ idle (turn end) session=\(sessionId) flushed=\(flushed.count)")
+            return flushed + [.stop(sessionId: sessionId, cwd: cwd)]
+
+        case "retry":
+            // Provider backoff. retry.ts publishes status=retry once per attempt,
+            // BEFORE sleeping (`next - now`) ms, so the wait itself is silent.
+            // Without this branch lastActivity never refreshes during a
+            // multi-minute backoff and the store's 90s quiet-expiry would flash
+            // .idle mid-retry. .processingStarted is the right carrier: it
+            // refreshes lastActivity and already suppresses itself for
+            // waitingForApproval / waitingForTerminalApproval.
+            //
+            // Residual gap: if the provider sends a `retry-after` header larger
+            // than the quiet window (default backoff caps at 30s, headers do
+            // not), one attempt can outlast 90s. The following busy/retry pulls
+            // the phase back to .processing, so the cost is a single flicker.
+            let attempt = status["attempt"] as? Int ?? 0
+            Self.logNotice("→ processingStarted (session.status=retry attempt=\(attempt)) session=\(sessionId) cwd=\(cwd)")
+            return [.processingStarted(sessionId: sessionId, cwd: cwd)]
         default:
             return []
         }

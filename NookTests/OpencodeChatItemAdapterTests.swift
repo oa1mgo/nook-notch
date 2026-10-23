@@ -129,7 +129,11 @@ final class OpencodeChatItemAdapterTests: XCTestCase {
             properties: ["status": ["type": "idle"]]
         ))
         XCTAssertTrue(idle.chatItemUpdates.isEmpty)
-        XCTAssertTrue(idle.passthroughEvents.isEmpty)
+        XCTAssertEqual(idle.passthroughEvents.count, 1)
+        guard case .stop(let idleSession, _) = idle.passthroughEvents[0] else {
+            return XCTFail("session.status=idle must pass through as .stop")
+        }
+        XCTAssertEqual(idleSession, sessionId)
 
         let stop = adapter.adaptAndConvert(envelope(
             "session.idle",

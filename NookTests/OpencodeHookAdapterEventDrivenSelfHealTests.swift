@@ -59,4 +59,127 @@ final class OpencodeHookAdapterEventDrivenSelfHealTests: XCTestCase {
             return false
         }, "permission.asked without cwd must NOT self-heal, got \(events)")
     }
+
+    func testSessionStatusIdleEmitsStop() {
+        let sessionId = "ses_idle_\(UUID().uuidString)"
+        _ = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.started",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "cwd": AnyCodable("/tmp/test-project"),
+                "pid": AnyCodable(12345),
+            ]
+        ))
+
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.status",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "status": AnyCodable(["type": "idle"]),
+            ]
+        ))
+
+        XCTAssertTrue(events.contains { event in
+            if case .stop(let sid, _) = event { return sid == sessionId }
+            return false
+        }, "session.status=idle must emit .stop, got \(events)")
+    }
+
+    func testSessionStatusBusyDoesNotEmitStop() {
+        let sessionId = "ses_busy_\(UUID().uuidString)"
+        _ = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.started",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "cwd": AnyCodable("/tmp/test-project"),
+                "pid": AnyCodable(12345),
+            ]
+        ))
+
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.status",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "status": AnyCodable(["type": "busy"]),
+            ]
+        ))
+
+        XCTAssertFalse(events.contains { event in
+            if case .stop = event { return true }
+            return false
+        })
+    }
+
+    /// Provider 退避重试期间不能被认为是空闲：必须产 `.processingStarted`
+    /// 以刷新 SessionStore 的 lastActivity，否则 90s 静默兜底会误判。
+    func testSessionStatusRetryRefreshesActivityWithoutStopping() {
+        let sessionId = "ses_retry_\(UUID().uuidString)"
+        _ = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.started",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "cwd": AnyCodable("/tmp/test-project"),
+                "pid": AnyCodable(12345),
+            ]
+        ))
+
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.status",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "status": AnyCodable([
+                    "type": "retry",
+                    "attempt": 2,
+                    "message": "rate limited",
+                    "next": 1_700_000_000_000,
+                ] as [String: Any]),
+            ]
+        ))
+
+        XCTAssertTrue(events.contains { event in
+            if case .processingStarted(let sid, _) = event { return sid == sessionId }
+            return false
+        }, "session.status=retry must emit .processingStarted, got \(events)")
+        XCTAssertFalse(events.contains { event in
+            if case .stop = event { return true }
+            return false
+        }, "session.status=retry must not end the turn")
+    }
+
+    /// 用户在 TUI 里拒绝/取消问题后，opencode 会发 `question.rejected`。
+    /// 不消费它 + `.stop` 不再清等待态 = 问题面板永久可交互。
+    /// 模型拒答后通常继续跑，所以映射成 `.processingStarted`；若该轮直接结束，
+    /// 随后的 `status=idle` 会把 processing 正常收尾。
+    func testQuestionRejectedResumesProcessing() {
+        let sessionId = "ses_qrej_\(UUID().uuidString)"
+        _ = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.started",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "cwd": AnyCodable("/tmp/test-project"),
+                "pid": AnyCodable(12345),
+            ]
+        ))
+
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "question.rejected",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "requestID": AnyCodable("que_1"),
+            ]
+        ))
+
+        XCTAssertTrue(events.contains { event in
+            if case .processingStarted(let sid, _) = event { return sid == sessionId }
+            return false
+        }, "question.rejected must emit .processingStarted, got \(events)")
+    }
 }

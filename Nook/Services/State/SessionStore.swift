@@ -107,6 +107,11 @@ actor SessionStore {
     /// sessions get registered via processOpencodeSessionStart and flush their buffer.
     private var earlyChatItemBuffer: [String: [ChatItemUpdate]] = [:]
 
+    /// Sessions whose current turn already published a completion notification.
+    /// Reset when a new turn starts (prompt / status=busy), not by chat items —
+    /// a late chat item must not re-arm the notification.
+    private var opencodeCompletionNotifiedSessions: Set<String> = []
+
     // MARK: - Published State (for UI)
 
     /// Publisher for session state changes (nonisolated for Combine subscription from any context)
@@ -1018,6 +1023,7 @@ actor SessionStore {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration processingStarted session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
         }
+        opencodeCompletionNotifiedSessions.remove(sessionId)
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
 
         // Retry probe if server port still unknown (plugin event may arrive late).
@@ -1133,7 +1139,8 @@ actor SessionStore {
         // No completion sound/bounce for non-active sessions: Nook can be launched
         // mid-turn, and a late `.stop` must not announce a completion the user
         // never saw start.
-        if wasActive && !hadRunningTools {
+        if wasActive && !hadRunningTools && !opencodeCompletionNotifiedSessions.contains(sessionId) {
+            opencodeCompletionNotifiedSessions.insert(sessionId)
             publishCompletionNotification(for: session)
         }
     }
@@ -1141,6 +1148,7 @@ actor SessionStore {
     private func processOpencodePromptSubmitted(sessionId: String, cwd: String, prompt: String) {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else { return }
+        opencodeCompletionNotifiedSessions.remove(sessionId)
         registerSession(sessionId: sessionId)
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         enrichOpencodeRuntimeMetadata(session: &session)
@@ -2857,6 +2865,7 @@ actor SessionStore {
         ignoredCodexSessions.removeAll()
         blockOrderings.removeAll()
         provisionalSessionPids.removeAll()
+        opencodeCompletionNotifiedSessions.removeAll()
         publishState()
     }
 
