@@ -168,6 +168,8 @@ final class SessionStoreOpencodeLifecycleTests: XCTestCase {
 
         let session = await store.session(for: "quiet")
         XCTAssertEqual(session?.phase, .idle)
+        XCTAssertNil(session?.completionNotificationAt)
+        XCTAssertTrue(session?.toolTracker.inProgress.isEmpty == true)
     }
 
     func testRunningToolGetsLongerQuietWindow() async {
@@ -249,5 +251,22 @@ final class SessionStoreOpencodeLifecycleTests: XCTestCase {
         }.first
         XCTAssertEqual(expiredTool?.status, .interrupted,
                        "approval tool must not stay in waitingForApproval after phase expires")
+    }
+
+    /// 阈值是严格大于：89s 不回收，91s 回收。
+    func testActiveQuietExpiryBoundaryIsExclusive() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await startProcessingSession(store, id: "boundary")
+
+        await store.setLastActivityForTesting(sessionId: "boundary", secondsAgo: 89)
+        await store.recheckAllSessionsForTesting()
+        let notYet = await store.session(for: "boundary")
+        XCTAssertEqual(notYet?.phase, .processing)
+
+        await store.setLastActivityForTesting(sessionId: "boundary", secondsAgo: 91)
+        await store.recheckAllSessionsForTesting()
+        let expired = await store.session(for: "boundary")
+        XCTAssertEqual(expired?.phase, .idle)
     }
 }

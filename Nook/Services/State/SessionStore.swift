@@ -2792,16 +2792,19 @@ actor SessionStore {
                 || session.phase.isWaitingForApproval
                 || session.phase.isWaitingForTerminalApproval {
                 let quietDuration = now.timeIntervalSince(session.lastActivity)
+                // tracker may hold tools whose chat item has not arrived yet
                 let extended = session.phase == .compacting
                     || session.phase.isWaitingForApproval
                     || session.phase.isWaitingForTerminalApproval
                     || hasRunningTools(in: session)
+                    || !session.toolTracker.inProgress.isEmpty
                 let quietLimit = extended
                     ? opencodeExtendedQuietExpirationSeconds
                     : opencodeActiveQuietExpirationSeconds
 
                 if quietDuration > quietLimit {
                     var updatedSession = session
+                    Self.logger.info("opencode session \(sessionId.prefix(8), privacy: .public) active state expired after \(Int(quietDuration), privacy: .public)s quiet; marking idle")
                     writeDebugLogAsync("[opencode-lifecycle] activeQuietExpired session=\(sessionId) quietSeconds=\(Int(quietDuration)) limitSeconds=\(Int(quietLimit)) phase=\(String(describing: session.phase))")
                     updatedSession.phase = .idle
                     updatedSession.completionNotificationAt = nil
