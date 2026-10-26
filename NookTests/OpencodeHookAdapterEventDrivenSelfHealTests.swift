@@ -85,6 +85,12 @@ final class OpencodeHookAdapterEventDrivenSelfHealTests: XCTestCase {
             if case .stop(let sid, _) = event { return sid == sessionId }
             return false
         }, "session.status=idle must emit .stop, got \(events)")
+
+        let stops = events.filter { event in
+            if case .stop = event { return true }
+            return false
+        }
+        XCTAssertEqual(stops.count, 1, "status=idle must emit exactly one .stop")
     }
 
     func testSessionStatusBusyDoesNotEmitStop() {
@@ -177,9 +183,13 @@ final class OpencodeHookAdapterEventDrivenSelfHealTests: XCTestCase {
             ]
         ))
 
-        XCTAssertTrue(events.contains { event in
-            if case .processingStarted(let sid, _) = event { return sid == sessionId }
+        guard case .processingStarted(let sid, let cwd)? = events.first(where: { event in
+            if case .processingStarted = event { return true }
             return false
-        }, "question.rejected must emit .processingStarted, got \(events)")
+        }) else {
+            return XCTFail("question.rejected must emit .processingStarted, got \(events)")
+        }
+        XCTAssertEqual(sid, sessionId)
+        XCTAssertEqual(cwd, "/tmp/test-project")
     }
 }

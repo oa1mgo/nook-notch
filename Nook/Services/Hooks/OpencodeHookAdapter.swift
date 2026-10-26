@@ -18,7 +18,10 @@
 //                                sessions; `provisional` = guessed via
 //                                session.list() fallback)
 //    session.status            → processingStarted on busy / retry;
-//                                stop on idle (turn end; see handleSessionStatus)
+//                                stop on idle (turn end on opencode >= 1.18;
+//                                older versions fired idle between tool steps,
+//                                so <= 1.17 is NOT supported by this path —
+//                                see handleSessionStatus)
 //    session.idle              → stop (legacy canonical signal; deprecated in
 //                                the v1.19 schema and may be LOST — 陷阱 4.
 //                                `session.status=idle` is published from the
@@ -93,7 +96,7 @@ final class OpencodeHookAdapter: @unchecked Sendable {
     // session-scoped (or message-scoped within a session) and was
     // previously NEVER cleared when the corresponding session ends.
     // Cleanup is now implemented in `cleanupState(forSession:)`, called
-    // from `handleSessionStatus(idle)` and `handleSessionIdle`.
+    // from `handleSessionIdle` and `finalizeSubagent`.
     //
     // State that remains unbounded (cannot be cleaned per-session):
     //   - runningToolCallIds: keyed by callID, no session mapping;
@@ -295,7 +298,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // as "pre-registration" (which previously hid permission popups right
         // after a Nook/opencode restart).
         let healEvents: [OpencodeSessionEvent]
-        if ["permission.asked", "question.asked", "session.status",
+        if ["permission.asked", "question.asked", "question.replied", "question.rejected",
+            "session.status",
             "message.updated", "message.part.updated", "message.part.delta"].contains(envelope.type) {
             let fallbackCwd = (props["cwd"]?.value as? String) ?? ""
             healEvents = ensureSessionRegistered(sessionId, fallbackCwd: fallbackCwd, pid: instancePid(from: props))
@@ -698,12 +702,12 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // The phase guard lives in SessionStore.processOpencodeStop: adapter
             // has no phase state and must emit unconditionally.
             //
-            // recentlyStoppedSessions is pruned (30s cutoff) inside cleanupState,
-            // which only runs on the legacy session.idle path. If that is the
-            // event that got lost, this entry lingers until the next busy or the
-            // next real session.idle. One entry per session, bounded, harmless —
-            // and it is what suppresses a late session.updated from re-creating
-            // the session as a phantom .sessionStart.
+            // recentlyStoppedSessions is pruned (30s cutoff) when cleanupState
+            // runs (legacy session.idle / subagent finalize) and cleared for the
+            // session on the next busy. If both end events are lost the entry
+            // lingers until the next turn — one entry per session, harmless — and
+            // it is what suppresses a late session.updated from re-creating the
+            // session as a phantom .sessionStart.
             lock.lock()
             recentlyStoppedSessions[sessionId] = Date()
             lock.unlock()
@@ -745,9 +749,12 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         lock.lock()
         recentlyStoppedSessions[sessionId] = Date()
         lock.unlock()
+        // Flush before cleanup: cleanupState drops pendingText/pendingReasoning,
+        // and status=idle (the other end signal) may be the event that was lost.
+        let flushed = flushPendingText(forSession: sessionId, cwd: cwd)
         cleanupState(forSession: sessionId)
-        Self.logNotice("→ stop (legacy session.idle) session=\(sessionId)")
-        return [.stop(sessionId: sessionId, cwd: cwd)]
+        Self.logNotice("→ stop (legacy session.idle) session=\(sessionId) flushed=\(flushed.count)")
+        return flushed + [.stop(sessionId: sessionId, cwd: cwd)]
     }
 
     private static func cleanupState(forSession sessionId: String) {

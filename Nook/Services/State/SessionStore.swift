@@ -347,6 +347,7 @@ actor SessionStore {
         registeredSessionIds.remove(sessionId)
         earlyChatItemBuffer.removeValue(forKey: sessionId)
         provisionalSessionPids.removeValue(forKey: sessionId)
+        opencodeCompletionNotifiedSessions.remove(sessionId)
     }
 
     /// Filtered wrapper around `applyChatItemUpdate`: drops updates for
@@ -1441,6 +1442,8 @@ actor SessionStore {
             if !session.phase.isWaitingForApproval && !session.phase.isWaitingForTerminalApproval {
                 session.phase = .processing
             }
+            // A TUI prompt can start a new turn without opencodePromptSubmitted.
+            opencodeCompletionNotifiedSessions.remove(update.sessionId)
             session.completionNotificationAt = nil
             session.conversationInfo = ConversationInfo(
                 summary: session.conversationInfo.summary,

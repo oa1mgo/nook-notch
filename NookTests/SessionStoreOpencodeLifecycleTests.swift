@@ -103,11 +103,14 @@ final class SessionStoreOpencodeLifecycleTests: XCTestCase {
                 provider: .opencode
             )
         ]))
+        let reactivated = await store.session(for: "late")
+        XCTAssertEqual(reactivated?.phase, .processing, "late assistant text must re-enter processing")
         await store.process(.opencodeStopped(sessionId: "late", cwd: "/tmp/proj"))
 
         let session = await store.session(for: "late")
         XCTAssertEqual(session?.phase, .idle)
         XCTAssertEqual(recorder.snapshot().count, 1)
+        XCTAssertEqual(recorder.snapshot().map(\.sessionId), ["late"])
     }
 
     /// 新的一轮必须重新武装通知闩锁。
@@ -138,5 +141,21 @@ final class SessionStoreOpencodeLifecycleTests: XCTestCase {
 
         let session = await store.session(for: "qrej")
         XCTAssertEqual(session?.phase, .idle)
+    }
+
+    /// status=busy（processingStarted）也必须重新武装通知闩锁（TUI 轮次路径）。
+    func testProcessingStartedReArmsCompletionNotification() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        let recorder = NotificationRecorder()
+        let cancellable = store.completionNotificationsPublisher.sink { recorder.record($0) }
+        defer { cancellable.cancel() }
+
+        await startProcessingSession(store, id: "busy")
+        await store.process(.opencodeStopped(sessionId: "busy", cwd: "/tmp/proj"))
+        await store.process(.opencodeProcessingStarted(sessionId: "busy", cwd: "/tmp/proj"))
+        await store.process(.opencodeStopped(sessionId: "busy", cwd: "/tmp/proj"))
+
+        XCTAssertEqual(recorder.snapshot().count, 2)
     }
 }
