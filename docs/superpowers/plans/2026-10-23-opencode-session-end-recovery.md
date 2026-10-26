@@ -819,11 +819,11 @@ git commit -m "fix(opencode): reap active and stuck-approval sessions after a qu
 - Modify: `docs/specs/2026-06-17-opencode-v1.17-compatibility-matrix.md`（状态行 + 陷阱 4 正文）
 - Modify: `docs/debug/2026-10-23-opencode-lost-idle-stuck-processing.md`（状态行 + 修复方向 A/B + 风险）
 
-- [ ] **Step 1: 更新 docstring**
+- [x] **Step 1: 更新 docstring**
 
 已在 Task 2 完成（`d8e3bfc` / `dd86f51` 已同步 `OpencodeHookAdapter` 顶部 docstring）。
 
-- [ ] **Step 2: 更新 spec 状态与陷阱 4 正文**
+- [x] **Step 2: 更新 spec 状态与陷阱 4 正文**
 
 - 头部：`结束信号兜底 🔴 未修复` → `✅ 已修复（2026-10-23）`
 - 核心结论表 `v1.18+` 行：状态改为 `✅ 主体可用；结束信号双路（status=idle + session.idle）+ 静默兜底`
@@ -840,7 +840,7 @@ git commit -m "fix(opencode): reap active and stuck-approval sessions after a qu
   - 明确写出 ≤1.17 不支持：`status=idle` 在旧版会在 tool step 之间触发，不能当轮末信号；旧版依赖 `session.idle` + 90s 静默兜底
   - 删除「修复方案与阈值权衡见上述 debug 文档」这类指向"未实施"的措辞
 
-- [ ] **Step 3: 更新 debug 文档**
+- [x] **Step 3: 更新 debug 文档**
 
 - 头部：`状态: 🔴 已定位，未修复` → `状态: ✅ 已修复（2026-10-23，commits 5991426…cc747c8）`
 - TL;DR 补一段「修复」摘要（双结束信号 + 每轮闩锁 + 静默兜底 + retry / question.rejected）
@@ -852,7 +852,7 @@ git commit -m "fix(opencode): reap active and stuck-approval sessions after a qu
   4. ≤1.17 的 `status=idle` 在 tool step 之间触发，结束信号路径不支持；旧版靠 `session.idle` + 90s 静默兜底，可能闪烁或按步通知
   5. 最后一条 `.stop` 之后到达的 chat item 会把 phase 重新拉回 `.processing`，直到下一个静默窗口
 
-- [ ] **Step 4: 全量测试**
+- [x] **Step 4: 全量测试**
 
 ```bash
 xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug \
@@ -861,7 +861,7 @@ xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug \
 
 Expected: 全绿。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Nook/Services/Hooks/OpencodeHookAdapter.swift \
@@ -877,7 +877,7 @@ git commit -m "docs(opencode): record session-end recovery as fixed"
 **Files:**
 - Modify: `Nook/Resources/opencode-plugin/index.js`
 
-- [ ] **Step 1: 加节流版的失败日志**
+- [x] **Step 1: 加节流版的失败日志**
 
 **不能直接 `logDebug` 每一条失败。** 用户没开 Nook 时 `send` 失败是常态，而 `message.part.delta`
 一分钟几十条；`logDebug` 走 `fs.appendFileSync`（同步写）且文件永不轮转 —— 那等于给不装 Nook 的用户
@@ -922,7 +922,7 @@ function logSendFailure(payload, err) {
 `total` 统计的是本进程累计失败次数（含被跳过的 delta），所以「日志里只有 1 条但 total=137」
 正是「Nook 没开、事件全丢」的指纹——这正是今天事故里缺的那个可判读信号。
 
-- [ ] **Step 2: 让 opencode 真正加载新插件**
+- [ ] **Step 2: 让 opencode 真正加载新插件**（用户手动执行）
 
 三步缺一不可，只做前两步验证到的是**旧插件**：
 
@@ -934,7 +934,7 @@ function logSendFailure(payload, err) {
    ```
 3. 重新启动 opencode。
 
-- [ ] **Step 3: 手动验证**
+- [ ] **Step 3: 手动验证**（用户手动执行）
 
 关掉 Nook（或改 `SOCKET_PATH` 临时指向不存在的路径）→ 在 opencode 里跑一轮（要求带一次工具调用，
 确保 delta 也在刷）→ 期望：
@@ -947,7 +947,7 @@ ls -l /tmp/nook-plugin-debug.log   # 不应因本轮验证暴涨到 MB 级
 判读：`message.part.delta` 不出现在日志里；其他 type 同一 5s 窗口内最多一条；
 `total=` 单调递增。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Nook/Resources/opencode-plugin/index.js
@@ -962,12 +962,13 @@ git commit -m "chore(opencode-plugin): log socket send failures (throttled)"
 ## 风险与回滚
 
 - **`status=idle` 到底每轮一次还是每步一次**：v1.19 源码是每轮一次——`status.set(idle)` 只由 `run-state.ts` 的 `onIdle` / `cancel` 与 `processor.ts` 的 halt/error 触发，而 `halt` 只在 `SessionRetry.policy` 耗尽后执行（`status=idle` 不会在 retry 中途发出）。更强的旁证：`adaptSubagentEvent` 只在 `session.status=idle` 时 `finalizeSubagent`，若每步都发，子会话早被反复 finalize 了。v1.15/1.17 的旧注释声称「tool 之间也会发」——若旧版本复测发现闪烁，回滚 Task 2（保留 Task 1/3 仍可兜底）。
-- **双通知**：Task 1 的 `wasActive` guard 是唯一防线，必须与 Task 2 同时上线。
+- **双通知**：主防线是每轮一次闩锁（`opencodeCompletionNotifiedSessions`）——它不依赖 phase，能扛住 chat item 穿插把 phase 拉回 `.processing`；`wasActive` 只负责等待态收尾 / 非 active 轮次不进通知。两者必须与 Task 2 同时上线。
+- **≤1.17 兼容性**：opencode ≤1.17 的 `status=idle` 每步触发；本次不兼容该路径（文档已标注），旧版可能每步闪 idle / 通知。
 - **等待态清理**：Task 1 清理逻辑无条件执行，会把等待中的 running tool 标 `.interrupted`；若复测发现问题面板异常，改为「仅 active 时清理」。
 - **长任务误杀**：opencode 无心跳，600s 仍可能短于真实长任务；后果是提前 `.idle`，不会丢会话。
 - **retry 残留窗口**：默认退避上限 30s < 90s，retry 分支足以覆盖；但若服务端用 `retry-after` header 指定超过 90s 的单次等待，仍会闪一次 idle，随后 busy/retry 拉回。
 - **审批条会消失**：`.waitingForApproval` 600s 后被回收，Nook UI 回到 idle，而 opencode 仍在阻塞——用户需回 TUI 处理。这是「不永久卡住」的代价，已写进验证清单。
-- **`.waitingForInput` 无兜底**：只剩 `question.replied` / `busy` / 新一轮 prompt 三个出口，其中只有 `busy` 不依赖用户动作。三者全丢则卡到进程退出。
+- **`.waitingForInput` 无兜底**：出口是 `question.replied` / `question.rejected`（已消费 → `.processingStarted`）/ `busy` / 新一轮 prompt，其中只有 `busy` 不依赖用户动作。全丢则卡到进程退出。
 - **无通知的 stop**：Nook 中途启动的会话不再补发完成通知（改进，PR 描述写明）。
 
 ---
