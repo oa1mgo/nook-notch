@@ -852,8 +852,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
         // parent — that's what we mark here so the parent's `assistantText`
         // is dropped before the safety-net flush has a chance to emit it.
         //
-        // This handler is the PRIMARY detection path; handleToolPart has
-        // a defensive fallback (line ~1036) that derives the phase from
+        // This handler is the PRIMARY detection path; `handleToolPart` has
+        // a defensive fallback that derives the phase from
         // `message.part.updated(type=tool, tool=question)` if this event
         // ever fails to arrive. The two paths are idempotent.
         if let tool = props["tool"]?.value as? [String: Any],

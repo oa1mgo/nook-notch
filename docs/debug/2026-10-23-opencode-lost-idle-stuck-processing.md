@@ -100,7 +100,7 @@ Nook 日志在 16:16:52.646 之后直到 08:43（次日）没有任何该 sessio
 
 ## 根因链
 
-1. **传输层丢事件**：plugin 的 `send()`（`Nook/Resources/opencode-plugin/index.js` 顶部）对每条事件新建一个 Unix socket 连接，失败静默 `resolve()`，没有重试或 ACK。opencode 在 52ms 内连续产生 `step-finish` / `message.updated`（均已落库），但未到达 Nook；`session.idle` 同样未到达。
+1. **传输层丢事件**：plugin 的 `send()`（`Nook/Resources/opencode-plugin/index.js` 顶部）对每条事件新建一个 Unix socket 连接，失败以节流日志记录（`message.part.delta` 跳过，其他 type 每 5s 最多一条，`close` 保持静默），事件本身仍是 best-effort 无重试/ACK。opencode 在 52ms 内连续产生 `step-finish` / `message.updated`（均已落库），但未到达 Nook；`session.idle` 同样未到达。
 2. **协议层没有启用第二结束信号（已修复）**：当时 `OpencodeHookAdapter.handleMessageUpdated` 在 `finish=stop` 分支只 flush 文本缓冲，不 emit `.stop`；`handleSessionStatus` 的 `idle` 分支也只 flush，不结束会话。`.stop` 只能由 `handleSessionIdle` 产生。而源码里 `session.status=idle` 与 `session.idle` 是同一次 `set()` 里先后 publish 的（见修复方案 B），本可互为冗余。
 3. **状态层无静默兜底（已修复）**：当时 `recheckAllSessions()` 的 active-quiet 过期分支条件是 `session.provider == .codex && session.phase.isActive`，只对 Codex 生效。opencode 会话只能靠事件或进程退出，二者本次都不可用。
 
@@ -193,8 +193,8 @@ Nook 日志在 16:16:52.646 之后直到 08:43（次日）没有任何该 sessio
    会在真实工作期间被标 `.idle`。下一个事件会把会话拉回 `.processing`，代价是一次闪烁；不会丢会话。
 2. **审批条可能提前消失**：`.waitingForApproval` 在 600s 后被回收为 `.idle`，Nook 的审批条消失，
    而 opencode 可能仍阻塞在权限请求上——用户需回 TUI 处理。这是「不永久卡住」换来的有意取舍。
-3. **`.waitingForInput` 出口有限**：只有 `question.replied`、`session.status=busy`、新一轮用户 prompt
-   三个出口，其中只有 `busy` 不依赖用户动作；三者全丢则卡到进程退出。
+3. **`.waitingForInput` 出口有限**：只有 `question.replied`、`question.rejected`、`session.status=busy`、
+   新一轮用户 prompt 四个出口，其中只有 `busy` 不依赖用户动作；全丢则卡到进程退出。
 4. **≤1.17 不支持新的结束信号路径**：v1.15.13 / v1.17.x 的 `session.status=idle` 在 tool step 之间触发，
    不能当轮末信号。这些版本依赖 `session.idle` + 90s 静默兜底；旧版丢失 `session.idle` 时可能出现
    step 间闪烁或按步通知。
@@ -230,7 +230,7 @@ Nook 日志在 16:16:52.646 之后直到 08:43（次日）没有任何该 sessio
   - `handleSessionIdle`：先 flush、再 `cleanupState`、最后产 `.stop`（legacy 路径）
   - dispatch 的 `question.replied` / `question.rejected` → `.processingStarted`
 - `Nook/Resources/opencode-plugin/index.js`
-  - `send()`（best-effort，失败静默 `resolve()`，无重试/ACK）
+  - `send()`（best-effort，失败以节流日志记录：`message.part.delta` 跳过，其他 type 每 5s 最多一条，`close` 静默；无重试/ACK）
 
 ## 附：原始日志取样
 

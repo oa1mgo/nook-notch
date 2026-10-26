@@ -1131,7 +1131,8 @@ actor SessionStore {
         // + session.idle double-fire), a `.stop` while waiting for user input, or
         // one while an approval is pending must not re-notify or clobber the phase.
         // waitingForApproval is recovered by the quiet-expiry path; waitingForInput
-        // has no timer and recovers only via question.replied / busy / a new prompt.
+        // has no timer and recovers only via question.replied /
+        // question.rejected / busy / a new prompt.
         if wasActive {
             session.phase = .idle
         }
@@ -1582,6 +1583,9 @@ actor SessionStore {
     }
 
     private func enrichOpencodeRuntimeMetadata(session: inout SessionState) {
+        #if DEBUG
+        guard !runtimeMetadataDisabledForTesting else { return }
+        #endif
         let tree = ProcessTreeBuilder.shared.buildTree()
         guard let process = bestMatchingOpencodeProcess(for: session.cwd, tree: tree) else {
             return
@@ -2903,6 +2907,10 @@ actor SessionStore {
     }
 
     #if DEBUG
+    /// Tests must not scan the real process tree (lsof) or bind to a running
+    /// opencode instance. Enabled by `resetForTesting()`.
+    private var runtimeMetadataDisabledForTesting = false
+
     func resetForTesting() {
         for task in pendingSyncs.values {
             task.cancel()
@@ -2922,6 +2930,9 @@ actor SessionStore {
         blockOrderings.removeAll()
         provisionalSessionPids.removeAll()
         opencodeCompletionNotifiedSessions.removeAll()
+        #if DEBUG
+        runtimeMetadataDisabledForTesting = true
+        #endif
         publishState()
     }
 

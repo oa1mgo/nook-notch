@@ -26,7 +26,7 @@
 3. phase guard 落在 `SessionStore.processOpencodeStop`：只把「phase → `.idle`」+ 完成通知放进 `wasActive` 条件；running-tool 清理、`toolTracker` 清空、`publishState()` 照旧执行。
 4. `.stop` 不再清除 `.waitingForInput` / `.waitingForApproval`（这是本次要修的误清）。代价是等待态必须有出口：
    - `.waitingForApproval`：quiet-expiry 600s 档兜底。
-   - `.waitingForInput`：**不设自动过期**（用户可能真的要思考很久）。Task 1 之后 `session.idle` / `status=idle` **不再是出口**（`.stop` 对非 active 相位不改 phase，而 `isActive` 不含等待态），剩下的出口只有三种：`question.replied`、`session.status=busy`、新一轮用户 prompt（`opencodePromptSubmitted` 直接置 `.processing`）。
+   - `.waitingForInput`：**不设自动过期**（用户可能真的要思考很久）。Task 1 之后 `session.idle` / `status=idle` **不再是出口**（`.stop` 对非 active 相位不改 phase，而 `isActive` 不含等待态），剩下的出口只有这几种：`question.replied`、`question.rejected`、`session.status=busy`、新一轮用户 prompt（`opencodePromptSubmitted` 直接置 `.processing`）。
      其中只有 `busy` 不依赖用户动作——这是已知残留风险，写进文档与验证清单，不在本计划内解决。
 5. quiet-expiry 只降级为 `.idle`（不是 `.ended`），后续事件可把会话拉回 `.processing`。
 6. `wasActive` 行为变化：Nook 中途启动、phase 从未进入 active 的会话，`.stop` 不再发完成通知。属改进，写进 PR 描述。
@@ -848,7 +848,7 @@ git commit -m "fix(opencode): reap active and stuck-approval sessions after a qu
 - 残留风险段补五条：
   1. 90s 静默窗口对长 TTFT / 非流式 reasoning / 排队中的 turn / `retry-after` header >90s 会误判；下一个事件可恢复，代价是闪烁
   2. 审批 600s 回收会隐藏审批条，而 opencode 仍在阻塞；用户需回 TUI 处理
-  3. `.waitingForInput` 无自动过期；`question.replied` / `busy` / 新一轮 prompt 全丢时会卡住
+  3. `.waitingForInput` 无自动过期；`question.replied` / `question.rejected` / `busy` / 新一轮 prompt 全丢时会卡住
   4. ≤1.17 的 `status=idle` 在 tool step 之间触发，结束信号路径不支持；旧版靠 `session.idle` + 90s 静默兜底，可能闪烁或按步通知
   5. 最后一条 `.stop` 之后到达的 chat item 会把 phase 重新拉回 `.processing`，直到下一个静默窗口
 
