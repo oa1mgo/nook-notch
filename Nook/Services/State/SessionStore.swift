@@ -77,6 +77,16 @@ actor SessionStore {
     private let codexRunningToolQuietExpirationSeconds: TimeInterval = 600
     private let codexLateEventIgnoreSeconds: TimeInterval = 10
 
+    /// opencode can lose the whole end-of-turn batch (status=idle +
+    /// session.idle + message.updated). Bound active states so a lost batch
+    /// cannot leave the session stuck in .processing forever.
+    /// See docs/debug/2026-10-23-opencode-lost-idle-stuck-processing.md.
+    private let opencodeActiveQuietExpirationSeconds: TimeInterval = 90
+    /// Running tools, compaction, and pending approvals can legitimately stay
+    /// quiet for minutes. opencode has no heartbeat event, so this is the only
+    /// signal — keep it generous.
+    private let opencodeExtendedQuietExpirationSeconds: TimeInterval = 600
+
     /// BlockOrdering keys for chat items (from unified ChatItemUpdate path).
     /// Maps chatItem.id → BlockOrdering so ChatItemSorter can maintain
     /// correct display order regardless of event arrival timing.
@@ -1113,16 +1123,7 @@ actor SessionStore {
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
 
-        for index in session.chatItems.indices {
-            if case .toolCall(var tool) = session.chatItems[index].type, tool.status == .running {
-                tool.status = .interrupted
-                session.chatItems[index] = ChatHistoryItem(
-                    id: session.chatItems[index].id,
-                    type: .toolCall(tool),
-                    timestamp: session.chatItems[index].timestamp
-                )
-            }
-        }
+        interruptStalledTools(in: &session)
 
         session.toolTracker.inProgress.removeAll()
 
@@ -1667,6 +1668,29 @@ actor SessionStore {
                 return tool.status == .running || tool.status == .waitingForApproval
             }
             return false
+        }
+    }
+
+    /// Mark stalled tool calls as interrupted. `includeWaitingForApproval` is for
+    /// phase expiry: a tool stuck in `.waitingForApproval` would otherwise keep
+    /// pulsing forever in the chat row after the approval bar is dismissed.
+    /// `.stop` deliberately keeps the default `false`: a real approval prompt
+    /// may still be pending there.
+    private func interruptStalledTools(
+        in session: inout SessionState,
+        includeWaitingForApproval: Bool = false
+    ) {
+        for index in session.chatItems.indices {
+            guard case .toolCall(var tool) = session.chatItems[index].type else { continue }
+            let stalled = tool.status == .running
+                || (includeWaitingForApproval && tool.status == .waitingForApproval)
+            guard stalled else { continue }
+            tool.status = .interrupted
+            session.chatItems[index] = ChatHistoryItem(
+                id: session.chatItems[index].id,
+                type: .toolCall(tool),
+                timestamp: session.chatItems[index].timestamp
+            )
         }
     }
 
@@ -2763,6 +2787,32 @@ actor SessionStore {
                 }
             }
 
+            if session.provider == .opencode,
+               session.phase.isActive
+                || session.phase.isWaitingForApproval
+                || session.phase.isWaitingForTerminalApproval {
+                let quietDuration = now.timeIntervalSince(session.lastActivity)
+                let extended = session.phase == .compacting
+                    || session.phase.isWaitingForApproval
+                    || session.phase.isWaitingForTerminalApproval
+                    || hasRunningTools(in: session)
+                let quietLimit = extended
+                    ? opencodeExtendedQuietExpirationSeconds
+                    : opencodeActiveQuietExpirationSeconds
+
+                if quietDuration > quietLimit {
+                    var updatedSession = session
+                    writeDebugLogAsync("[opencode-lifecycle] activeQuietExpired session=\(sessionId) quietSeconds=\(Int(quietDuration)) limitSeconds=\(Int(quietLimit)) phase=\(String(describing: session.phase))")
+                    updatedSession.phase = .idle
+                    updatedSession.completionNotificationAt = nil
+                    interruptStalledTools(in: &updatedSession, includeWaitingForApproval: true)
+                    updatedSession.toolTracker.inProgress.removeAll()
+                    sessions[sessionId] = updatedSession
+                    stateChanged = true
+                    continue
+                }
+            }
+
             // Claude: when the Stop hook is missed (e.g. nook-state.py
             // fails to connect, or the socket is temporarily unavailable),
             // the session can get stuck in .processing even though Claude
@@ -2877,6 +2927,12 @@ actor SessionStore {
         session.pid = pid
         sessions[sessionId] = session
         publishState()
+    }
+
+    func setLastActivityForTesting(sessionId: String, secondsAgo: TimeInterval) {
+        guard var session = sessions[sessionId] else { return }
+        session.lastActivity = Date().addingTimeInterval(-secondsAgo)
+        sessions[sessionId] = session
     }
 
     func recheckAllSessionsForTesting() {

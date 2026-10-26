@@ -158,4 +158,96 @@ final class SessionStoreOpencodeLifecycleTests: XCTestCase {
 
         XCTAssertEqual(recorder.snapshot().count, 2)
     }
+
+    func testActiveQuietExpiryMarksOpencodeIdle() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await startProcessingSession(store, id: "quiet")
+        await store.setLastActivityForTesting(sessionId: "quiet", secondsAgo: 120)
+        await store.recheckAllSessionsForTesting()
+
+        let session = await store.session(for: "quiet")
+        XCTAssertEqual(session?.phase, .idle)
+    }
+
+    func testRunningToolGetsLongerQuietWindow() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await startProcessingSession(store, id: "tool")
+        await store.process(.realtimeChatItemBatch([
+            ChatItemUpdate(
+                id: "call-1",
+                sessionId: "tool",
+                block: .toolCall(makeToolCall(id: "call-1", status: .running)),
+                ordering: .timestamp(Date()),
+                mutation: .insert,
+                provider: .opencode
+            )
+        ]))
+        await store.setLastActivityForTesting(sessionId: "tool", secondsAgo: 120)
+        await store.recheckAllSessionsForTesting()
+
+        let stillRunning = await store.session(for: "tool")
+        XCTAssertEqual(stillRunning?.phase, .processing, "running tool must not expire at 90s")
+
+        await store.setLastActivityForTesting(sessionId: "tool", secondsAgo: 700)
+        await store.recheckAllSessionsForTesting()
+        let expired = await store.session(for: "tool")
+        XCTAssertEqual(expired?.phase, .idle)
+        let tool = expired?.chatItems.compactMap { item -> ToolCallItem? in
+            if case .toolCall(let t) = item.type { return t }
+            return nil
+        }.first
+        XCTAssertEqual(tool?.status, .interrupted)
+    }
+
+    /// waitingForInput 是用户可能真的要思考很久的状态：不自动过期。
+    func testWaitingForInputIsNotExpired() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await startProcessingSession(store, id: "wait")
+        await store.process(.opencodeWaitingForUserInput(
+            sessionId: "wait", cwd: "/tmp/proj", toolUseId: "tool-1", questions: [], requestId: "que_1"))
+        await store.setLastActivityForTesting(sessionId: "wait", secondsAgo: 700)
+        await store.recheckAllSessionsForTesting()
+
+        let session = await store.session(for: "wait")
+        XCTAssertTrue(session?.phase.isWaitingForInput == true)
+    }
+
+    /// waitingForApproval 不能永久卡住：120s 不动，700s 回收为 idle。
+    func testWaitingForApprovalExpiresAfterLongWindow() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await startProcessingSession(store, id: "appr-quiet")
+        await store.process(.realtimeChatItemBatch([
+            ChatItemUpdate(
+                id: "call-1",
+                sessionId: "appr-quiet",
+                block: .toolCall(makeToolCall(id: "call-1", status: .waitingForApproval)),
+                ordering: .timestamp(Date()),
+                mutation: .insert,
+                provider: .opencode
+            )
+        ]))
+        await store.process(.opencodePermissionRequested(
+            sessionId: "appr-quiet", cwd: "/tmp/proj", permission: "bash", requestId: "per_1",
+            toolUseId: "call-1", input: [:], inputSummary: nil, alwaysPatterns: []))
+        await store.setLastActivityForTesting(sessionId: "appr-quiet", secondsAgo: 120)
+        await store.recheckAllSessionsForTesting()
+
+        let waiting = await store.session(for: "appr-quiet")
+        XCTAssertTrue(waiting?.phase.isWaitingForApproval == true)
+
+        await store.setLastActivityForTesting(sessionId: "appr-quiet", secondsAgo: 700)
+        await store.recheckAllSessionsForTesting()
+        let expired = await store.session(for: "appr-quiet")
+        XCTAssertEqual(expired?.phase, .idle)
+        let expiredTool = expired?.chatItems.compactMap { item -> ToolCallItem? in
+            if case .toolCall(let t) = item.type { return t }
+            return nil
+        }.first
+        XCTAssertEqual(expiredTool?.status, .interrupted,
+                       "approval tool must not stay in waitingForApproval after phase expires")
+    }
 }
