@@ -35,7 +35,7 @@ opencode/Claude → plugin/hook → HookSocketServer → SessionStore.handleWait
                                                     （no panel-level UI, no chip indicator）
 ```
 
-`OpencodeHookAdapter.handleQuestionAsked` (`Nook/Services/Hooks/OpencodeHookAdapter.swift:687-747`) 缺失 `requestID` 捕获，导致即便后续想用 plugin command socket 也没法 reply。
+`OpencodeHookAdapter.handleQuestionAsked`（`Nook/Services/Hooks/OpencodeHookAdapter.swift`，`question.asked` 分支）当时缺失 `requestID` 捕获，导致即便后续想用 plugin command socket 也没法 reply。
 
 ### Codex / Claude 对照
 
@@ -384,7 +384,7 @@ private func handleWaitingForUserInput(sessionId: String) {
 
 ```swift
 private func handleQuestionAsked(_ event: OpencodeQuestionAskedEvent) -> [SessionEvent] {
-    // 当前 OpencodeHookAdapter.swift:687-747 只用 tool.messageID 抑制文本
+    // 当前 handleQuestionAsked 只用 tool.messageID 抑制文本
     // 新增：提取 requestID 用于后续 reply
     let requestID = event.id   // question.asked 事件的顶层 id（que_xxx），不在 properties
     // ... 现有逻辑 + 把 requestID 存到 session metadata
