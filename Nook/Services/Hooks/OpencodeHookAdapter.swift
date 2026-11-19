@@ -348,6 +348,8 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             handled = [.processingStarted(sessionId: sessionId, cwd: cwd)]
         case "permission.asked":
             handled = handlePermissionAsked(props)
+        case "permission.replied":
+            handled = handlePermissionReplied(props)
         case "serverPort":
             handled = handleServerPort(props, sessionId: sessionId)
         case "message.updated":
@@ -446,6 +448,16 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             // chat view. Rewrite sessionId to parentId so the event lands
             // in the parent's SessionState.
             return handleSubagentPermissionAsked(props: props, childId: childId, parentId: parentId)
+
+        case "permission.replied":
+            // The child's request was created on the parent (see above), so
+            // the resolution must be routed there too — otherwise the
+            // parent's approval bar survives an approval that happened
+            // inside the subagent.
+            guard let requestId = props["requestID"]?.value as? String, !requestId.isEmpty,
+                  let reply = props["reply"]?.value as? String, !reply.isEmpty else { return [] }
+            Self.logNotice("→ subagent permissionReplied routed to parent child=\(childId) parent=\(parentId) requestID=\(requestId) reply=\(reply)")
+            return [.permissionReplied(sessionId: parentId, requestId: requestId, reply: reply)]
 
         default:
             return []
@@ -935,6 +947,30 @@ final class OpencodeHookAdapter: @unchecked Sendable {
             input: inputMap, inputSummary: inputSummary,
             alwaysPatterns: alwaysPatterns
         )]
+    }
+
+    /// Handle opencode's `permission.replied` event. The request may have been
+    /// resolved outside Nook: answered in the TUI, by another client, or
+    /// auto-answered by `opencode run` (`--auto` replies "once", a plain run
+    /// replies "reject"). Mirrors `question.replied` — without this the phase
+    /// stays `.waitingForApproval` until the matching tool completes (impossible
+    /// when `tool.callID` is absent, e.g. `external_directory`) or the 600s
+    /// quiet-expiry backstop fires.
+    ///
+    /// Payload shape:
+    ///   { "sessionID": "...", "requestID": "per_xxx", "reply": "once"|"always"|"reject" }
+    private static func handlePermissionReplied(_ props: [String: AnyCodable]) -> [OpencodeSessionEvent] {
+        guard let sessionId = props["sessionID"]?.value as? String else { return [] }
+        guard let requestId = props["requestID"]?.value as? String, !requestId.isEmpty else {
+            Self.logNotice("→ permissionReplied dropped (no requestID) session=\(sessionId)")
+            return []
+        }
+        guard let reply = props["reply"]?.value as? String, !reply.isEmpty else {
+            Self.logNotice("→ permissionReplied dropped (no reply) session=\(sessionId) requestID=\(requestId)")
+            return []
+        }
+        Self.logNotice("→ permissionReplied session=\(sessionId) requestID=\(requestId) reply=\(reply)")
+        return [.permissionReplied(sessionId: sessionId, requestId: requestId, reply: reply)]
     }
 
     private static func handleServerPort(_ props: [String: AnyCodable], sessionId: String) -> [OpencodeSessionEvent] {

@@ -72,6 +72,11 @@ enum SessionEvent: Sendable {
     /// reply via the plugin's command socket using the `requestId` carried here.
     case opencodePermissionRequested(sessionId: String, cwd: String, permission: String, requestId: String, toolUseId: String?, input: [String: String], inputSummary: String?, alwaysPatterns: [String])
 
+    /// OpenCode resolved a permission request outside Nook (TUI, another
+    /// client, or `opencode run`'s auto-reply). `reply` is opencode's
+    /// "once" / "always" / "reject".
+    case opencodePermissionReplied(sessionId: String, requestId: String, reply: String)
+
     /// OpenCode server port received from plugin. Used for HTTP API communication.
     /// `version` is the running plugin version reported by OpenCode, used to detect
     /// stale plugin loads.
@@ -320,6 +325,8 @@ extension SessionEvent: CustomStringConvertible {
             return "opencodeStopped(session: \(sessionId.prefix(8)))"
         case .opencodePermissionRequested(let sessionId, _, let permission, let requestId, _, _, _, _):
             return "opencodePermissionRequested(session: \(sessionId.prefix(8)), permission: \(permission), requestId: \(requestId.prefix(12)))"
+        case .opencodePermissionReplied(let sessionId, let requestId, let reply):
+            return "opencodePermissionReplied(session: \(sessionId.prefix(8)), requestId: \(requestId.prefix(12)), reply: \(reply))"
         case .opencodeServerPortReceived(let sessionId, let port, let version, let pid):
             return "opencodeServerPortReceived(session: \(sessionId.prefix(8)), port: \(port), pid: \(pid ?? -1), version: \(version ?? "-"))"
         case .cursorSessionStarted(let sessionId, _):

@@ -60,6 +60,29 @@ final class OpencodeHookAdapterEventDrivenSelfHealTests: XCTestCase {
         }, "permission.asked without cwd must NOT self-heal, got \(events)")
     }
 
+    /// `permission.replied` (answered in the TUI, by another client, or
+    /// auto-replied by `opencode run`) must be forwarded so SessionStore can
+    /// dismiss the approval bar. It is not a self-heal trigger — the request it
+    /// resolves already registered the session.
+    func testPermissionRepliedIsForwarded() {
+        let sessionId = "ses_replied_\(UUID().uuidString)"
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "permission.replied",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "requestID": AnyCodable("per_abc"),
+                "reply": AnyCodable("once"),
+            ]
+        ))
+        XCTAssertTrue(events.contains { event in
+            if case .permissionReplied(let sid, let reqId, let reply) = event {
+                return sid == sessionId && reqId == "per_abc" && reply == "once"
+            }
+            return false
+        }, "permission.replied must be forwarded, got \(events)")
+    }
+
     func testSessionStatusIdleEmitsStop() {
         let sessionId = "ses_idle_\(UUID().uuidString)"
         _ = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(

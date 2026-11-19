@@ -45,7 +45,11 @@ struct ChatView: View {
         self._viewModel = ObservedObject(wrappedValue: viewModel)
         self.primaryTextColor = primaryTextColor
         self.secondaryTextColor = secondaryTextColor
-        self._session = State(initialValue: initialSession)
+        // The route snapshot (`currentChatSession`) is captured when the notch
+        // closes, so its phase can be stale — e.g. an approval that opencode
+        // auto-answered after the notch closed. Start from the live instance
+        // whenever the session still exists.
+        self._session = State(initialValue: sessionMonitor.instances.first { $0.sessionId == sessionId } ?? initialSession)
 
         // Codex sessions force an initial transcript sync below, but the
         // visible history still flows through ChatHistoryManager like other
@@ -213,6 +217,11 @@ struct ChatView: View {
                         shouldScrollToBottom = true
                     }
                 }
+            } else if hasLoadedOnce, !sessions.contains(where: { $0.sessionId == sessionId }) {
+                // Session was reaped (opencode process exited). A restored chat
+                // snapshot would otherwise keep rendering its stale phase — for
+                // example an approval bar whose request no longer exists.
+                viewModel.exitChat()
             }
         }
         .onChange(of: canSendMessages) { _, canSend in

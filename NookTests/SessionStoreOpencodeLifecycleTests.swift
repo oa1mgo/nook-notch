@@ -13,6 +13,46 @@ final class SessionStoreOpencodeLifecycleTests: XCTestCase {
         await store.process(.opencodePromptSubmitted(sessionId: id, cwd: "/tmp/proj", prompt: "hello"))
     }
 
+    /// 权限提示通知是延迟发的：手动审批时仍会响（用户需要被叫回来看），
+    /// 但不会在 asked 的同一刻就响。
+    func testPermissionPromptNotificationIsDelayed() async throws {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await store.setPermissionPromptNotificationDelayForTesting(50_000_000)  // 50ms
+        let recorder = NotificationRecorder()
+        let cancellable = store.completionNotificationsPublisher.sink { recorder.record($0) }
+        defer { cancellable.cancel() }
+
+        await startProcessingSession(store, id: "prompt-delay")
+        await store.process(.opencodePermissionRequested(
+            sessionId: "prompt-delay", cwd: "/tmp/proj", permission: "bash",
+            requestId: "per_1", toolUseId: "call-1", input: [:], inputSummary: nil, alwaysPatterns: []))
+
+        XCTAssertTrue(recorder.snapshot().isEmpty, "prompt notification must be held")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(recorder.snapshot().count, 1)
+    }
+
+    /// `opencode run --auto` 会在毫秒级返回 `permission.replied`：此时用户
+    /// 根本没机会看到审批条，提示音必须被取消，只保留真正完成时的通知。
+    func testPermissionRepliedCancelsPromptNotification() async throws {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await store.setPermissionPromptNotificationDelayForTesting(50_000_000)  // 50ms
+        let recorder = NotificationRecorder()
+        let cancellable = store.completionNotificationsPublisher.sink { recorder.record($0) }
+        defer { cancellable.cancel() }
+
+        await startProcessingSession(store, id: "prompt-cancel")
+        await store.process(.opencodePermissionRequested(
+            sessionId: "prompt-cancel", cwd: "/tmp/proj", permission: "external_directory",
+            requestId: "per_1", toolUseId: nil, input: [:], inputSummary: nil, alwaysPatterns: ["/tmp/*"]))
+        await store.process(.opencodePermissionReplied(sessionId: "prompt-cancel", requestId: "per_1", reply: "once"))
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(recorder.snapshot().isEmpty, "auto-answered prompts must not ring")
+    }
+
     /// `status=idle` 与 `session.idle` 双发会产生两条 `.stop`。第二条不得再发完成通知。
     func testDuplicateStopNotifiesExactlyOnce() async {
         let store = SessionStore.shared
@@ -79,6 +119,41 @@ final class SessionStoreOpencodeLifecycleTests: XCTestCase {
         let session = await store.session(for: "approval")
         XCTAssertTrue(session?.phase.isWaitingForApproval == true)
         XCTAssertEqual(recorder.snapshot().count, notificationsBeforeStop)
+    }
+
+    /// opencode 自己应答权限（TUI 里点、另一个 client，或 `opencode run --auto`
+    /// 自动回 "once"）时，`permission.replied` 是唯一的解除信号：toolUseId 为
+    /// nil 的 permission（如 external_directory）没有 tool 完成事件可兜底。
+    func testPermissionRepliedClearsWaitingPhase() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await startProcessingSession(store, id: "replied")
+        await store.process(.opencodePermissionRequested(
+            sessionId: "replied", cwd: "/tmp/proj", permission: "external_directory",
+            requestId: "per_1", toolUseId: nil, input: [:], inputSummary: nil, alwaysPatterns: []))
+
+        var session = await store.session(for: "replied")
+        XCTAssertTrue(session?.phase.isWaitingForApproval == true)
+
+        await store.process(.opencodePermissionReplied(sessionId: "replied", requestId: "per_1", reply: "once"))
+        session = await store.session(for: "replied")
+        XCTAssertEqual(session?.phase, .processing)
+    }
+
+    /// requestID 不匹配（Nook 自己的回复路径已推进 phase，或事件迟到）时必须
+    /// 幂等忽略，不能误伤仍在等待的审批。
+    func testPermissionRepliedWithUnknownRequestIdIsIgnored() async {
+        let store = SessionStore.shared
+        await store.resetForTesting()
+        await startProcessingSession(store, id: "replied-stale")
+        await store.process(.opencodePermissionRequested(
+            sessionId: "replied-stale", cwd: "/tmp/proj", permission: "bash",
+            requestId: "per_1", toolUseId: "call-1", input: [:], inputSummary: nil, alwaysPatterns: []))
+
+        await store.process(.opencodePermissionReplied(sessionId: "replied-stale", requestId: "per_other", reply: "once"))
+
+        let session = await store.session(for: "replied-stale")
+        XCTAssertTrue(session?.phase.isWaitingForApproval == true)
     }
 
     /// `.stop` 之后如果有一个 chat item 抢在第二条 `.stop` 之前把 phase
