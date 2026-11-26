@@ -55,7 +55,7 @@ struct ChatView: View {
         if initialSession.provider == .codex {
             cachedHistory = initialSession.chatItems
             alreadyLoaded = false
-        } else if initialSession.provider == .cursor {
+        } else if initialSession.provider == .cursor || initialSession.provider == .antigravity {
             cachedHistory = initialSession.chatItems
             alreadyLoaded = true
         } else {
@@ -305,7 +305,7 @@ struct ChatView: View {
                 } else {
                     return "Message to \(name) via tmux... (⏎ send · ⌃F/⌃B scroll · ⌃G bottom)"
                 }
-            case .claude, .codex, .cursor:
+            case .claude, .codex, .cursor, .antigravity:
                 return "Message to \(name)... (⏎ send · ⌃F/⌃B scroll · ⌃G bottom)"
             }
         } else {
@@ -315,7 +315,7 @@ struct ChatView: View {
                 // or the server API (started with --port). Surface both so
                 // users who don't tmux their agent know they have an option.
                 return "Run \(name) inside tmux or with --port to enable messaging"
-            case .claude, .codex, .cursor:
+            case .claude, .codex, .cursor, .antigravity:
                 return "Open \(name) in tmux to enable messaging"
             }
         }
@@ -331,6 +331,8 @@ struct ChatView: View {
             return "OpenCode needs your input"
         case .cursor:
             return "Cursor needs your input"
+        case .antigravity:
+            return "Antigravity needs your input"
         }
     }
 
@@ -472,7 +474,7 @@ struct ChatView: View {
         case .opencode:
             // OpenCode: tmux or server API
             return (session.isInTmux && session.tty != nil) || session.serverPort != nil
-        case .claude, .codex, .cursor:
+        case .claude, .codex, .cursor, .antigravity:
             // Other providers: tmux only
             return session.isInTmux && session.tty != nil
         }
@@ -705,7 +707,7 @@ struct ChatView: View {
         switch session.provider {
         case .opencode:
             await sendToOpenCode(text)
-        case .claude, .codex, .cursor:
+        case .claude, .codex, .cursor, .antigravity:
             await sendToTmux(text)
         }
     }
@@ -1690,6 +1692,7 @@ struct ChatInteractivePromptBar: View {
         case .codex: return "Codex needs your input"
         case .opencode: return "OpenCode needs your input"
         case .cursor: return "Cursor needs your input"
+        case .antigravity: return "Antigravity needs your input"
         }
     }
 
@@ -1702,6 +1705,7 @@ struct ChatInteractivePromptBar: View {
         case .codex: return "Codex"
         case .opencode: return "OpenCode"
         case .cursor: return "Cursor"
+        case .antigravity: return "Antigravity"
         }
     }
 

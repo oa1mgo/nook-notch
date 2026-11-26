@@ -277,6 +277,18 @@ actor SessionStore {
         case .cursorSessionEnded(let sessionId):
             processCursorSessionEnd(sessionId: sessionId)
 
+        case .antigravitySessionStarted(let sessionId, let cwd):
+            processAntigravitySessionStart(sessionId: sessionId, cwd: cwd)
+
+        case .antigravityProcessingStarted(let sessionId, let cwd):
+            processAntigravityProcessingStarted(sessionId: sessionId, cwd: cwd)
+
+        case .antigravityWaitingForInput(let sessionId, let cwd):
+            processAntigravityWaitingForInput(sessionId: sessionId, cwd: cwd)
+
+        case .antigravityStopped(let sessionId, let cwd, let terminationReason, let error):
+            processAntigravityStop(sessionId: sessionId, cwd: cwd, terminationReason: terminationReason, error: error)
+
         case .chatItemUpdate(let update):
             applyChatItemUpdateIfRegistered(update)
             publishState()
@@ -1398,6 +1410,70 @@ actor SessionStore {
 
         if wasMissing && result.session != nil {
             mixpanel?.track(event: "Session Started", properties: ["provider": "cursor"])
+        }
+    }
+
+    // MARK: - Antigravity Lifecycle Processing
+
+    private func processAntigravitySessionStart(sessionId: String, cwd: String) {
+        applyAntigravityLifecycle(sessionId: sessionId, event: .sessionStart(cwd: cwd))
+    }
+
+    private func processAntigravityProcessingStarted(sessionId: String, cwd: String) {
+        applyAntigravityLifecycle(sessionId: sessionId, event: .processingStarted(cwd: cwd))
+    }
+
+    private func processAntigravityWaitingForInput(sessionId: String, cwd: String) {
+        applyAntigravityLifecycle(sessionId: sessionId, event: .waitingForInput(cwd: cwd))
+    }
+
+    private func processAntigravityStop(
+        sessionId: String,
+        cwd: String,
+        terminationReason: String?,
+        error: String?
+    ) {
+        applyAntigravityLifecycle(
+            sessionId: sessionId,
+            event: .stop(cwd: cwd, terminationReason: terminationReason, error: error)
+        )
+    }
+
+    private func applyAntigravityLifecycle(
+        sessionId: String,
+        event: AntigravitySessionStateReducer.Event
+    ) {
+        if let existingSession = sessions[sessionId],
+           existingSession.provider != .antigravity {
+            writeDebugLogAsync("[antigravity-lifecycle] ignored provider-mismatch session=\(sessionId) existingProvider=\(existingSession.provider.rawValue)")
+            return
+        }
+
+        let wasMissing = sessions[sessionId] == nil
+        if wasMissing {
+            switch event {
+            case .sessionStart(let cwd), .processingStarted(let cwd),
+                 .waitingForInput(let cwd), .stop(let cwd, _, _):
+                _ = registerNewSession(SessionState(sessionId: sessionId, provider: .antigravity, cwd: cwd))
+            }
+        }
+
+        let result = AntigravitySessionStateReducer.reduce(
+            existingSession: sessions[sessionId],
+            sessionId: sessionId,
+            event: event
+        )
+
+        if let session = result.session {
+            sessions[sessionId] = session
+        }
+
+        if let debugMessage = result.debugMessage {
+            writeDebugLogAsync(debugMessage)
+        }
+
+        if wasMissing && result.session != nil {
+            mixpanel?.track(event: "Session Started", properties: ["provider": "antigravity"])
         }
     }
 
@@ -2774,10 +2850,10 @@ actor SessionStore {
 
     private func shouldRemoveWhenProcessExits(_ session: SessionState) -> Bool {
         switch session.provider {
-        case .codex:
+        case .codex, .antigravity:
             // Codex runtime pids are best-effort hints for focusing a live turn.
-            // The stable identity is the Codex session id, so a completed Codex
-            // turn must remain visible after the worker process exits.
+            // Antigravity sessions are owned by the Antigravity app/LS and have no
+            // per-session pid; completed sessions remain visible until dismissed.
             return false
         case .claude, .opencode, .cursor:
             return true

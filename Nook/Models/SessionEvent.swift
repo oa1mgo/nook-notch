@@ -92,6 +92,18 @@ enum SessionEvent: Sendable {
     /// Cursor composer conversation ended.
     case cursorSessionEnded(sessionId: String)
 
+    /// Antigravity conversation session started.
+    case antigravitySessionStarted(sessionId: String, cwd: String)
+
+    /// Antigravity entered a working state (invocation or tool execution).
+    case antigravityProcessingStarted(sessionId: String, cwd: String)
+
+    /// Antigravity is waiting for user input (ask_question tool).
+    case antigravityWaitingForInput(sessionId: String, cwd: String)
+
+    /// Antigravity stopped the current agent execution loop.
+    case antigravityStopped(sessionId: String, cwd: String, terminationReason: String?, error: String?)
+
     // MARK: - Unified ChatItem Updates (from provider adapters)
 
     /// A provider adapter produced a chat item operation (insert/update/remove).
@@ -327,6 +339,14 @@ extension SessionEvent: CustomStringConvertible {
             return "cursorStopped(session: \(sessionId.prefix(8)), status: \(status ?? "nil"))"
         case .cursorSessionEnded(let sessionId):
             return "cursorSessionEnded(session: \(sessionId.prefix(8)))"
+        case .antigravitySessionStarted(let sessionId, _):
+            return "antigravitySessionStarted(session: \(sessionId.prefix(8)))"
+        case .antigravityProcessingStarted(let sessionId, _):
+            return "antigravityProcessingStarted(session: \(sessionId.prefix(8)))"
+        case .antigravityWaitingForInput(let sessionId, _):
+            return "antigravityWaitingForInput(session: \(sessionId.prefix(8)))"
+        case .antigravityStopped(let sessionId, _, let terminationReason, _):
+            return "antigravityStopped(session: \(sessionId.prefix(8)), reason: \(terminationReason ?? "nil"))"
         case .permissionApproved(let sessionId, let toolUseId):
             return "permissionApproved(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .permissionDenied(let sessionId, let toolUseId, _):

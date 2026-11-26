@@ -64,6 +64,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             reg.register(TerminalFallbackProvider(provider: .claude))
             reg.register(TerminalFallbackProvider(provider: .codex))
             reg.register(TerminalFallbackProvider(provider: .cursor))
+            reg.register(TerminalFallbackProvider(provider: .antigravity))
         }
 
         // Start the on-disk debug log mirror as early as possible so
@@ -109,6 +110,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if AppSettings.codexHooksEnabled { CodexHookInstaller.installIfNeeded() }
             if AppSettings.opencodeHooksEnabled { OpencodeHookInstaller.installIfNeeded() }
             if AppSettings.cursorHooksEnabled { CursorHookInstaller.installIfNeeded() }
+            if AppSettings.antigravityHooksEnabled { AntigravityHookInstaller.installIfNeeded() }
         }
         NSApplication.shared.setActivationPolicy(.accessory)
 

@@ -135,6 +135,12 @@ final class SessionRuntime {
                     ? [] : [.realtimeChatItemBatch(batch.chatItemUpdates)]
                 events.append(contentsOf: batch.passthroughEvents.map(Self.sessionEvent(from:)))
                 ingress.enqueue(events, generation: generation)
+            },
+            onAntigravityBatch: { batch in
+                var events: [SessionEvent] = batch.chatItemUpdates.isEmpty
+                    ? [] : [.realtimeChatItemBatch(batch.chatItemUpdates)]
+                events.append(contentsOf: batch.passthroughEvents.map(Self.sessionEvent(from:)))
+                ingress.enqueue(events, generation: generation)
             }
         )
     }
@@ -182,6 +188,19 @@ final class SessionRuntime {
             return .cursorStopped(sessionId: sessionId, cwd: cwd, status: status)
         case .sessionEnd(let sessionId):
             return .cursorSessionEnded(sessionId: sessionId)
+        }
+    }
+
+    private nonisolated static func sessionEvent(from event: AntigravitySessionEvent) -> SessionEvent {
+        switch event {
+        case .sessionStart(let sessionId, let cwd):
+            return .antigravitySessionStarted(sessionId: sessionId, cwd: cwd)
+        case .processingStarted(let sessionId, let cwd):
+            return .antigravityProcessingStarted(sessionId: sessionId, cwd: cwd)
+        case .waitingForInput(let sessionId, let cwd):
+            return .antigravityWaitingForInput(sessionId: sessionId, cwd: cwd)
+        case .stop(let sessionId, let cwd, let terminationReason, let error):
+            return .antigravityStopped(sessionId: sessionId, cwd: cwd, terminationReason: terminationReason, error: error)
         }
     }
 

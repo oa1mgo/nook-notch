@@ -53,17 +53,17 @@ enum ToolKind: Sendable, Equatable {
     static func classify(_ name: String?) -> ToolKind {
         guard let n = name?.lowercased(), !n.isEmpty else { return .unknown }
         switch n {
-        case "bash": return .bash
-        case "read": return .read
-        case "edit": return .edit
-        case "write": return .write
-        case "grep": return .grep
-        case "glob": return .glob
-        case "task", "agent": return .task          // Claude "Agent" is the subagent container too
+        case "bash", "run_command": return .bash
+        case "read", "read_file", "view_file": return .read
+        case "edit", "edit_file", "replace_file_content", "multi_replace_file_content": return .edit
+        case "write", "write_file", "write_to_file": return .write
+        case "grep", "grep_search": return .grep
+        case "glob", "find_by_name": return .glob
+        case "task", "agent", "invoke_subagent": return .task          // Claude "Agent" is the subagent container too
         case "todowrite", "todo", "taskupdate": return .todoWrite
         case "webfetch": return .webFetch
-        case "websearch": return .webSearch
-        case "question", "askuserquestion": return .askUserQuestion
+        case "websearch", "search_web": return .webSearch
+        case "question", "askuserquestion", "ask_question": return .askUserQuestion
         case "enterplanmode", "plan-enter": return .enterPlanMode
         case "exitplanmode", "plan-exit": return .exitPlanMode
         case "agentoutputtool": return .agentOutputTool

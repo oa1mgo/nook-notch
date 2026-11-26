@@ -12,6 +12,7 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
     case codex
     case opencode
     case cursor
+    case antigravity
 
     var displayName: String {
         switch self {
@@ -19,6 +20,7 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
         case .codex: return "Codex"
         case .opencode: return "OpenCode"
         case .cursor: return "Cursor"
+        case .antigravity: return "Antigravity"
         }
     }
 
@@ -28,6 +30,7 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
         case .codex: return "chevron.left.forwardslash.chevron.right"
         case .opencode: return "terminal"
         case .cursor: return "cube"
+        case .antigravity: return "sparkles"
         }
     }
 
@@ -37,6 +40,7 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
         case .codex: return ".codex"
         case .opencode: return ".config/opencode"
         case .cursor: return ".cursor"
+        case .antigravity: return ".gemini/config"
         }
     }
 
@@ -58,7 +62,7 @@ enum SessionProvider: String, Codable, Equatable, Sendable, CaseIterable {
     var needsHookPlaceholders: Bool {
         switch self {
         case .claude, .codex: return false
-        case .opencode, .cursor: return true
+        case .opencode, .cursor, .antigravity: return true
         }
     }
 }

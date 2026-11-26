@@ -12,6 +12,7 @@ struct AgentSettingsView: View {
     @State private var codexHooksInstalled = false
     @State private var opencodeHooksInstalled = false
     @State private var cursorHooksInstalled = false
+    @State private var antigravityHooksInstalled = false
     @State private var debugLogOn: Bool = AppSettings.debugLogEnabled
     @State private var didAppear = false
     /// Once `true`, the initial GeometryReader measurement has been
@@ -57,6 +58,7 @@ struct AgentSettingsView: View {
     private var codexInstalled: Bool { AgentPathsResolver.isInstalled(.codex) }
     private var opencodeInstalled: Bool { AgentPathsResolver.isInstalled(.opencode) }
     private var cursorInstalled: Bool { AgentPathsResolver.isInstalled(.cursor) }
+    private var antigravityInstalled: Bool { AgentPathsResolver.isInstalled(.antigravity) }
 
     /// Version of the Nook OpenCode plugin installed in
     /// `~/.config/opencode/plugins/nook/package.json`. nil when the plugin
@@ -118,9 +120,18 @@ struct AgentSettingsView: View {
         guard cursorInstalled else { return nil }
         return cursorMainIndex + 1
     }
-    private var debugLogIndex: Int {
+    private var antigravityMainIndex: Int {
         var idx = cursorMainIndex + 1
         if cursorInstalled { idx += 1 }
+        return idx
+    }
+    private var antigravityHooksIndex: Int? {
+        guard antigravityInstalled else { return nil }
+        return antigravityMainIndex + 1
+    }
+    private var debugLogIndex: Int {
+        var idx = antigravityMainIndex + 1
+        if antigravityInstalled { idx += 1 }
         return idx
     }
 
@@ -269,7 +280,7 @@ struct AgentSettingsView: View {
                 viewModel.agentsClaudeDirPickerExpanded = newExpanded
                 viewModel.agentsContentHeight = agentsContentHeight
             }
-        case codexMainIndex, opencodeMainIndex, cursorMainIndex:
+        case codexMainIndex, opencodeMainIndex, cursorMainIndex, antigravityMainIndex:
             break // Static rows — no action on activate.
         case debugLogIndex:
             toggleDebugLog()
@@ -287,6 +298,8 @@ struct AgentSettingsView: View {
                 toggleHooks(provider: .opencode, currentlyOn: hooksInstalled(.opencode))
             } else if i == cursorHooksIndex {
                 toggleHooks(provider: .cursor, currentlyOn: hooksInstalled(.cursor))
+            } else if i == antigravityHooksIndex {
+                toggleHooks(provider: .antigravity, currentlyOn: hooksInstalled(.antigravity))
             }
         }
     }
@@ -365,10 +378,11 @@ struct AgentSettingsView: View {
                 // OpenCode uses the SF Symbol from systemImage.
                 let mainIndex: Int = {
                     switch provider {
-                    case .codex:    return codexMainIndex
-                    case .opencode: return opencodeMainIndex
-                    case .cursor:   return cursorMainIndex
-                    default:        return 0 // unreachable for static rows
+                    case .codex:       return codexMainIndex
+                    case .opencode:    return opencodeMainIndex
+                    case .cursor:      return cursorMainIndex
+                    case .antigravity: return antigravityMainIndex
+                    default:           return 0 // unreachable for static rows
                     }
                 }()
                 MenuRow(
@@ -435,6 +449,9 @@ struct AgentSettingsView: View {
             // shape recognizable.
             OpenCodeLogoIcon(size: 13, color: primaryTextColor)
                 .frame(width: 16, height: 16)
+        case .antigravity:
+            AntigravityLogoIcon(size: 16, color: SessionLoadingStyle.tint(for: .antigravity))
+                .frame(width: 16, height: 16)
         }
     }
 
@@ -493,10 +510,11 @@ struct AgentSettingsView: View {
     private func hooksToggle(provider: SessionProvider, hooksOn: Bool) -> some View {
         let focusedIndex: Int? = {
             switch provider {
-            case .claude:   return claudeHooksIndex
-            case .codex:    return codexHooksIndex
-            case .opencode: return opencodeHooksIndex
-            case .cursor:   return cursorHooksIndex
+            case .claude:      return claudeHooksIndex
+            case .codex:       return codexHooksIndex
+            case .opencode:    return opencodeHooksIndex
+            case .cursor:      return cursorHooksIndex
+            case .antigravity: return antigravityHooksIndex
             }
         }()
         // OpenCode uses a plugin mechanism (installed via `opencode plugin --global`),
@@ -652,6 +670,15 @@ struct AgentSettingsView: View {
                 cursorHooksInstalled = true
             }
             AppSettings.cursorHooksEnabled = !currentlyOn
+        case .antigravity:
+            if currentlyOn {
+                AntigravityHookInstaller.uninstall()
+                antigravityHooksInstalled = false
+            } else {
+                AntigravityHookInstaller.installIfNeeded()
+                antigravityHooksInstalled = true
+            }
+            AppSettings.antigravityHooksEnabled = !currentlyOn
         }
     }
 
@@ -711,7 +738,8 @@ struct AgentSettingsView: View {
         case .claude:   return claudeHooksInstalled   || AppSettings.claudeHooksEnabled
         case .codex:    return codexHooksInstalled    || AppSettings.codexHooksEnabled
         case .opencode: return opencodeHooksInstalled || AppSettings.opencodeHooksEnabled
-        case .cursor:   return cursorHooksInstalled   || AppSettings.cursorHooksEnabled
+        case .cursor:      return cursorHooksInstalled      || AppSettings.cursorHooksEnabled
+        case .antigravity: return antigravityHooksInstalled || AppSettings.antigravityHooksEnabled
         }
     }
 
@@ -720,6 +748,7 @@ struct AgentSettingsView: View {
         codexHooksInstalled = CodexHookInstaller.isInstalled()
         opencodeHooksInstalled = OpencodeHookInstaller.isInstalled()
         cursorHooksInstalled = CursorHookInstaller.isInstalled()
+        antigravityHooksInstalled = AntigravityHookInstaller.isInstalled()
         currentClaudeDir = AppSettings.claudeDirectoryName
     }
 

@@ -120,6 +120,7 @@ nonisolated struct HookSocketCallbacks: Sendable {
     var onCodexEvent: CodexHookEventHandler? = nil
     var onOpencodeBatch: (@Sendable (OpencodeChatItemAdapter.AdaptResult) -> Void)? = nil
     var onCursorBatch: (@Sendable (CursorChatItemAdapter.Result) -> Void)? = nil
+    var onAntigravityBatch: (@Sendable (AntigravityChatItemAdapter.Result) -> Void)? = nil
 }
 
 /// Callback for permission response failures (socket died)
@@ -138,6 +139,7 @@ class HookSocketServer {
     private var codexEventHandler: CodexHookEventHandler?
     private var opencodeBatchHandler: (@Sendable (OpencodeChatItemAdapter.AdaptResult) -> Void)?
     private var cursorBatchHandler: (@Sendable (CursorChatItemAdapter.Result) -> Void)?
+    private var antigravityBatchHandler: (@Sendable (AntigravityChatItemAdapter.Result) -> Void)?
     private var permissionFailureHandler: PermissionFailureHandler?
     private let queue = DispatchQueue(label: "com.celestial.Nook.socket", qos: .userInitiated)
 
@@ -173,6 +175,7 @@ class HookSocketServer {
         codexEventHandler = callbacks.onCodexEvent
         opencodeBatchHandler = callbacks.onOpencodeBatch
         cursorBatchHandler = callbacks.onCursorBatch
+        antigravityBatchHandler = callbacks.onAntigravityBatch
         permissionFailureHandler = callbacks.onPermissionFailure
 
         unlink(boundSocketPath)
@@ -261,6 +264,7 @@ class HookSocketServer {
         codexEventHandler = nil
         opencodeBatchHandler = nil
         cursorBatchHandler = nil
+        antigravityBatchHandler = nil
 
         permissionsLock.lock()
         for (_, pending) in pendingPermissions {
@@ -504,6 +508,17 @@ class HookSocketServer {
             close(clientSocket)
             logger.debug("Cursor event skipped by adapter: event=\(eventName)")
 
+        case .antigravityChatItems(let batch):
+            close(clientSocket)
+            for event in batch.passthroughEvents {
+                socketLog("Received Antigravity passthrough: \(String(describing: event))")
+            }
+            antigravityBatchHandler?(batch)
+
+        case .antigravitySkipped(let eventName):
+            close(clientSocket)
+            logger.debug("Antigravity event skipped by adapter: event=\(eventName)")
+
         case .unknown:
             let raw = String(data: data, encoding: .utf8) ?? "?"
             socketLog("Failed to parse event (raw=\(raw))")
@@ -518,6 +533,8 @@ class HookSocketServer {
         case opencodeSkipped(type: String)
         case cursorChatItems(CursorChatItemAdapter.Result)
         case cursorSkipped(eventName: String)
+        case antigravityChatItems(AntigravityChatItemAdapter.Result)
+        case antigravitySkipped(eventName: String)
         case unsupportedCodex(eventName: String)
         case unknown
     }
@@ -526,6 +543,15 @@ class HookSocketServer {
         // Provider hook payloads can contain fields that are also accepted by
         // Claude's broad HookEvent decoder. Let provider-specific modules
         // classify their own payload shapes before trying the legacy shape.
+        if let antigravityEnvelope = try? JSONDecoder().decode(AntigravityHookEnvelope.self, from: data),
+           antigravityEnvelope.isAntigravityPayload {
+            let result = AntigravityChatItemAdapter.shared.adaptAndConvert(antigravityEnvelope)
+            if !result.chatItemUpdates.isEmpty || !result.passthroughEvents.isEmpty {
+                return .antigravityChatItems(result)
+            }
+            return .antigravitySkipped(eventName: antigravityEnvelope.hookEventName)
+        }
+
         if let cursorEnvelope = try? JSONDecoder().decode(CursorHookEnvelope.self, from: data),
            cursorEnvelope.isCursorPayload {
             let result = CursorChatItemAdapter.shared.adaptAndConvert(cursorEnvelope)

@@ -16,6 +16,7 @@ enum NotchActivityType: Equatable {
     case codex       // Codex is processing
     case opencode    // OpenCode is processing
     case cursor      // Cursor is processing
+    case antigravity // Antigravity is processing
     case none
 }
 

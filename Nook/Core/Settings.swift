@@ -98,6 +98,7 @@ enum AppSettings {
         nonisolated static let codexHooksEnabled = "codexHooksEnabled"
         nonisolated static let opencodeHooksEnabled = "opencodeHooksEnabled"
         nonisolated static let cursorHooksEnabled = "cursorHooksEnabled"
+        nonisolated static let antigravityHooksEnabled = "antigravityHooksEnabled"
         nonisolated static let debugLogEnabled = "debugLogEnabled"
     }
 
@@ -118,6 +119,7 @@ enum AppSettings {
             Keys.codexHooksEnabled: true,
             Keys.opencodeHooksEnabled: false,
             Keys.cursorHooksEnabled: true,
+            Keys.antigravityHooksEnabled: true,
             Keys.debugLogEnabled: false,
         ])
     }
@@ -379,6 +381,11 @@ enum AppSettings {
     nonisolated static var cursorHooksEnabled: Bool {
         get { defaults.bool(forKey: Keys.cursorHooksEnabled) }
         set { defaults.set(newValue, forKey: Keys.cursorHooksEnabled) }
+    }
+
+    nonisolated static var antigravityHooksEnabled: Bool {
+        get { defaults.bool(forKey: Keys.antigravityHooksEnabled) }
+        set { defaults.set(newValue, forKey: Keys.antigravityHooksEnabled) }
     }
 
     /// When true, internal log output is mirrored to
