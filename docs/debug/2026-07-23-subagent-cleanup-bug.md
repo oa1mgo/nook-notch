@@ -7,6 +7,7 @@
 >   - **漏网修复 C (07-24)**: 让 `createOpencodeSession` / `createCodexSession` / `createSession` 内部自注册——修复"Nook 启动后感知不到 OpenCode 已存在 session"导致 chat-item 被 drop 的回归
 > Owner: SessionStore (`Nook/Services/State/SessionStore.swift`) + OpencodeHookAdapter (`Nook/Services/Hooks/OpencodeHookAdapter.swift`)
 > 关联日志: `docs/debug/2026-07-23-subagent-cleanup-bug.nook-debug.log` (7.1MB)
+> 注: 本文是当时的调查记录，已移除全部行号锚点（行号必漂）；其中描述的「`session.status` / `session.idle` 共用 case」结构在后继版本已拆分，引用代码请以函数名/分支条件为准。
 
 ## 症状
 
@@ -25,7 +26,7 @@ opencode 的 `Task` tool 会为每个 subagent 创建一个独立 session（`par
 
 ### 真正的 bug：`adaptSubagentEvent` 自毁注册
 
-`OpencodeHookAdapter.swift:301-315`:
+`OpencodeHookAdapter.adaptSubagentEvent` 的 `case "session.status", "session.idle"` 分支：
 
 ```swift
 case "session.status", "session.idle":
@@ -116,7 +117,7 @@ private func applyChatItemUpdateIfRegistered(
 
 ### 方案 B（采用为根因修复）：修 `adaptSubagentEvent` 不 cleanup
 
-把 `OpencodeHookAdapter.swift:301` 拆成两个 case，只在 `session.idle` 和 `session.status=idle` 清理。`session.status=busy` 不清理映射。
+把 `adaptSubagentEvent` 里 `session.status` / `session.idle` 的共用 case 拆成两个 case，只在 `session.idle` 和 `session.status=idle` 清理。`session.status=busy` 不清理映射。
 
 **修复后**：
 

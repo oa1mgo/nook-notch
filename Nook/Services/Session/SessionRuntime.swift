@@ -113,6 +113,12 @@ final class SessionRuntime {
                     if event.status == "ended" {
                         InterruptWatcherManager.shared.stopWatching(sessionId: event.sessionId)
                     }
+                    if event.event == "Stop" {
+                        HookSocketServer.shared.cancelPendingPermissions(sessionId: event.sessionId)
+                    }
+                    if event.event == "PostToolUse", let toolUseId = event.toolUseId {
+                        HookSocketServer.shared.cancelPendingPermission(toolUseId: toolUseId)
+                    }
                 }
             },
             onPermissionFailure: { sessionId, toolUseId in
@@ -157,6 +163,8 @@ final class SessionRuntime {
             return .opencodeStopped(sessionId: sessionId, cwd: cwd)
         case .permissionAsked(let sessionId, let cwd, let requestId, let toolName, let toolUseId, let input, let inputSummary, let alwaysPatterns):
             return .opencodePermissionRequested(sessionId: sessionId, cwd: cwd, permission: toolName, requestId: requestId, toolUseId: toolUseId, input: input, inputSummary: inputSummary, alwaysPatterns: alwaysPatterns)
+        case .permissionReplied(let sessionId, let requestId, let reply):
+            return .opencodePermissionReplied(sessionId: sessionId, requestId: requestId, reply: reply)
         case .serverPortReceived(let sessionId, let port, let version, let pid):
             return .opencodeServerPortReceived(sessionId: sessionId, port: port, version: version, pid: pid)
         case .subagentStarted(let sessionId, let taskToolId):

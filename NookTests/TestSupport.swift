@@ -102,3 +102,20 @@ func appendCodexRows(_ rows: String, to url: URL) throws {
     try handle.seekToEnd()
     try handle.write(contentsOf: Data((rows + "\n").utf8))
 }
+
+final class NotificationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var notifications: [SessionCompletionNotification] = []
+
+    func record(_ notification: SessionCompletionNotification) {
+        lock.lock()
+        notifications.append(notification)
+        lock.unlock()
+    }
+
+    func snapshot() -> [SessionCompletionNotification] {
+        lock.lock()
+        defer { lock.unlock() }
+        return notifications
+    }
+}

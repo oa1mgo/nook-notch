@@ -21,8 +21,29 @@ function logDebug(message) {
   } catch {}
 }
 
+/// Send-failure logging is throttled: when Nook isn't running every send fails,
+/// and `message.part.delta` alone fires dozens of times a minute. logDebug uses
+/// appendFileSync, so un-throttled logging would mean one synchronous disk write
+/// per token. Delta is skipped entirely; other types log at most once per 5s.
+const SEND_FAILURE_LOG_INTERVAL_MS = 5000;
+const sendFailureLoggedAt = new Map();
+let sendFailureTotal = 0;
+
+function logSendFailure(payload, err) {
+  sendFailureTotal += 1;
+  const type = payload?.type ?? "-";
+  if (type === "message.part.delta") return;
+  const now = Date.now();
+  if (now - (sendFailureLoggedAt.get(type) ?? 0) < SEND_FAILURE_LOG_INTERVAL_MS) return;
+  sendFailureLoggedAt.set(type, now);
+  const sessionId = payload?.properties?.sessionID ?? "-";
+  logDebug(
+    `send failed type=${type} session=${sessionId} total=${sendFailureTotal}: ${err.message}`,
+  );
+}
+
 /// Send a payload to Nook's Unix socket.
-/// Failures are silently swallowed so the plugin never crashes OpenCode.
+/// Failures never crash the plugin; they are logged (throttled) via logSendFailure.
 function send(payload) {
   return new Promise((resolve) => {
     try {
@@ -30,7 +51,10 @@ function send(payload) {
       socket.connect(SOCKET_PATH, () => {
         socket.end(JSON.stringify(payload) + "\n");
       });
-      socket.on("error", () => resolve());
+      socket.on("error", (err) => {
+        logSendFailure(payload, err);
+        resolve();
+      });
       socket.on("close", () => resolve());
     } catch {
       resolve();

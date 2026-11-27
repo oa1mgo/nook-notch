@@ -66,7 +66,7 @@ Example: header height = `settingsPageHeaderHeight(for: geometry)` (in `Settings
 
 Before changing opencode adapter: read the v1.17 compatibility matrix. The PRIMARY vs DEFENSIVE detection paths have explicit design rationale (see `question.asked` dual-path) — do NOT casually merge them.
 
-**Version caveat**: the matrix was verified on opencode v1.15.13 / v1.17.x only. Production now runs **v1.18+** — event names/payloads may have drifted; re-verify against the live log (`/tmp/nook-debug.log`) before trusting the matrix on newer versions.
+**Version caveat**: the matrix's detailed verification covers opencode v1.15.13 / v1.17.x. v1.18+ has a measured subset only (event frequencies from `/tmp/nook-debug.log` + the `session.idle` loss gap, 2026-10-23). Event names/payloads may still drift — re-run the spec's "复测方法" section before trusting it on newer versions.
 
 ## 4. Progress Tracking (Critical)
 

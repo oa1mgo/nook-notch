@@ -105,6 +105,16 @@ actor SessionStore {
     private let codexRunningToolQuietExpirationSeconds: TimeInterval = 600
     private let codexLateEventIgnoreSeconds: TimeInterval = 10
 
+    /// opencode can lose the whole end-of-turn batch (status=idle +
+    /// session.idle + message.updated). Bound active states so a lost batch
+    /// cannot leave the session stuck in .processing forever.
+    /// See docs/debug/2026-10-23-opencode-lost-idle-stuck-processing.md.
+    private let opencodeActiveQuietExpirationSeconds: TimeInterval = 90
+    /// Running tools, compaction, and pending approvals can legitimately stay
+    /// quiet for minutes. opencode has no heartbeat event, so this is the only
+    /// signal — keep it generous.
+    private let opencodeExtendedQuietExpirationSeconds: TimeInterval = 600
+
     /// BlockOrdering keys for chat items (from unified ChatItemUpdate path).
     /// Item IDs are only unique within a session. Each session owns its
     /// ordering metadata so removal and conversation resets stay isolated.
@@ -131,6 +141,25 @@ actor SessionStore {
     /// In particular, unregistered child sessions expire without becoming visible.
     private var earlyChatItemBuffer: PendingChatItemBuffer
     private let pendingChatItemClock: @Sendable () -> TimeInterval
+
+    /// Sessions whose current turn already published a completion notification.
+    /// Reset when a new turn starts (prompt / status=busy), not by chat items —
+    /// a late chat item must not re-arm the notification.
+    private var opencodeCompletionNotifiedSessions: Set<String> = []
+
+    /// Permission prompts publish a completion notification (sound/bounce) so the
+    /// user notices an actionable prompt. Auto-answered prompts (`opencode run
+    /// --auto` replies within milliseconds) would ring for a prompt the user
+    /// never saw, so the notification is held briefly and cancelled when
+    /// `permission.replied` resolves the request first. Keyed by session id —
+    /// the phase holds at most one approval context per session.
+    private var pendingPermissionPromptNotifications: [String: PendingPermissionPromptNotification] = [:]
+    private var permissionPromptNotificationDelayNanos: UInt64 = 1_500_000_000
+
+    private struct PendingPermissionPromptNotification {
+        let requestId: String
+        let task: Task<Void, Never>
+    }
 
     // MARK: - Published State (for UI)
 
@@ -255,6 +284,9 @@ actor SessionStore {
                 input: input, inputSummary: inputSummary,
                 alwaysPatterns: alwaysPatterns
             )
+
+        case .opencodePermissionReplied(let sessionId, let requestId, let reply):
+            await processOpencodePermissionReplied(sessionId: sessionId, requestId: requestId, reply: reply)
 
         case .opencodePromptSubmitted(let sessionId, let cwd, let prompt):
             processOpencodePromptSubmitted(sessionId: sessionId, cwd: cwd, prompt: prompt)
@@ -388,6 +420,7 @@ actor SessionStore {
         registeredSessionIds.remove(sessionId)
         earlyChatItemBuffer.remove(sessionId: sessionId)
         provisionalSessionPids.removeValue(forKey: sessionId)
+        opencodeCompletionNotifiedSessions.remove(sessionId)
     }
 
     /// Only registered provider owners receive content. Unknown identities
@@ -1053,6 +1086,7 @@ actor SessionStore {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration processingStarted session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
         }
+        opencodeCompletionNotifiedSessions.remove(sessionId)
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
 
         // Retry probe if server port still unknown (plugin event may arrive late).
@@ -1137,37 +1171,35 @@ actor SessionStore {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration stop session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
         }
+        // A pending prompt notification is stale once the turn ends.
+        cancelPermissionPromptNotification(sessionId: sessionId)
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
+        let wasActive = session.phase.isActive
         let hadRunningTools = hasRunningTools(in: session)
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
-        session.phase = .idle
-        // Don't set completionNotificationAt here — we use publishCompletionNotification
-        // below for direct notification, avoiding double-trigger with
-        // handleWaitingForInputChange's completionMarker detection.
 
-        for index in session.chatItems.indices {
-            if case .toolCall(var tool) = session.chatItems[index].type, tool.status == .running {
-                tool.status = .interrupted
-                session.chatItems[index] = ChatHistoryItem(
-                    id: session.chatItems[index].id,
-                    type: .toolCall(tool),
-                    timestamp: session.chatItems[index].timestamp
-                )
-            }
-        }
+        interruptStalledTools(in: &session)
 
         session.toolTracker.inProgress.removeAll()
+
+        // Only an active turn can be completed. A duplicate `.stop` (status=idle
+        // + session.idle double-fire), a `.stop` while waiting for user input, or
+        // one while an approval is pending must not re-notify or clobber the phase.
+        // waitingForApproval is recovered by the quiet-expiry path; waitingForInput
+        // has no timer and recovers only via question.replied /
+        // question.rejected / busy / a new prompt.
+        if wasActive {
+            session.phase = .idle
+        }
         sessions[sessionId] = session
         publishState()
 
-        // Publish completion notification when the session ends without
-        // running tools (normal turn completion). This triggers the
-        // notification sound and bounce in NotchView.
-        // NOTE: We use publishCompletionNotification (direct) instead of
-        // completionNotificationAt (detected via handleWaitingForInputChange)
-        // to avoid double-triggering the sound.
-        if !hadRunningTools {
+        // No completion sound/bounce for non-active sessions: Nook can be launched
+        // mid-turn, and a late `.stop` must not announce a completion the user
+        // never saw start.
+        if wasActive && !hadRunningTools && !opencodeCompletionNotifiedSessions.contains(sessionId) {
+            opencodeCompletionNotifiedSessions.insert(sessionId)
             publishCompletionNotification(for: session)
         }
     }
@@ -1176,6 +1208,7 @@ actor SessionStore {
         guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "userPromptSubmit") else { return }
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else { return }
+        opencodeCompletionNotifiedSessions.remove(sessionId)
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -1342,11 +1375,41 @@ actor SessionStore {
             usage: session.conversationInfo.usage
         )
         sessions[sessionId] = session
-        // Publish a completion notification so the notch plays the alert
-        // sound and bounces — permission prompts are actionable events
-        // that need the user's attention just like a finished response.
-        publishCompletionNotification(for: session)
+        // Permission prompts are actionable events that need the user's
+        // attention — but hold the notification briefly so an auto-answered
+        // prompt (`opencode run --auto`) can cancel it (see
+        // `schedulePermissionPromptNotification`).
+        schedulePermissionPromptNotification(sessionId: sessionId, requestId: requestId)
         writeDebugLogAsync("[opencode-permission] permissionAsked session=\(sessionId.prefix(8)) tool=\(permission) requestId=\(requestId.prefix(12)) toolUseId=\(toolUseId ?? "nil") phase=\(String(describing: session.phase))")
+    }
+
+    /// opencode resolved a permission request outside Nook: answered in the
+    /// TUI, replied by another client, or auto-answered by `opencode run`
+    /// (`--auto` replies "once", a plain run replies "reject"). Without this
+    /// the phase stays `.waitingForApproval` until the matching tool completes
+    /// (never, when `tool.callID` is absent — e.g. `external_directory`) or
+    /// the quiet-expiry backstop fires.
+    ///
+    /// Idempotent: when Nook's own reply path ran first, the phase context has
+    /// already advanced and the requestID no longer matches, so the event is
+    /// ignored.
+    private func processOpencodePermissionReplied(sessionId: String, requestId: String, reply: String) async {
+        // Cancel even when the phase no longer matches: Nook's own reply path
+        // may have resolved the request first, and the delayed prompt
+        // notification must still not fire.
+        cancelPermissionPromptNotification(sessionId: sessionId)
+
+        guard let session = sessions[sessionId],
+              case .waitingForApproval(let ctx) = session.phase,
+              ctx.opencodeRequestId == requestId else { return }
+
+        writeDebugLogAsync("[opencode-permission] permissionReplied session=\(sessionId.prefix(8)) requestId=\(requestId.prefix(12)) reply=\(reply) toolUseId=\(ctx.toolUseId.prefix(12))")
+
+        if reply == "reject" {
+            await processPermissionDenied(sessionId: sessionId, toolUseId: ctx.toolUseId, reason: nil)
+        } else {
+            await processPermissionApproved(sessionId: sessionId, toolUseId: ctx.toolUseId)
+        }
     }
 
     // MARK: - Cursor Session Processing
@@ -1548,6 +1611,8 @@ actor SessionStore {
             if !session.phase.isWaitingForApproval && !session.phase.isWaitingForTerminalApproval {
                 session.phase = .processing
             }
+            // A TUI prompt can start a new turn without opencodePromptSubmitted.
+            opencodeCompletionNotifiedSessions.remove(update.sessionId)
             session.completionNotificationAt = nil
             session.conversationInfo = ConversationInfo(
                 summary: session.conversationInfo.summary,
@@ -1685,6 +1750,9 @@ actor SessionStore {
     }
 
     private func enrichOpencodeRuntimeMetadata(session: inout SessionState) {
+        #if DEBUG
+        guard !runtimeMetadataDisabledForTesting else { return }
+        #endif
         let tree = ProcessTreeBuilder.shared.buildTree()
         guard let process = bestMatchingOpencodeProcess(for: session.cwd, tree: tree) else {
             return
@@ -1769,6 +1837,29 @@ actor SessionStore {
                 return tool.status == .running || tool.status == .waitingForApproval
             }
             return false
+        }
+    }
+
+    /// Mark stalled tool calls as interrupted. `includeWaitingForApproval` is for
+    /// phase expiry: a tool stuck in `.waitingForApproval` would otherwise keep
+    /// pulsing forever in the chat row after the approval bar is dismissed.
+    /// `.stop` deliberately keeps the default `false`: a real approval prompt
+    /// may still be pending there.
+    private func interruptStalledTools(
+        in session: inout SessionState,
+        includeWaitingForApproval: Bool = false
+    ) {
+        for index in session.chatItems.indices {
+            guard case .toolCall(var tool) = session.chatItems[index].type else { continue }
+            let stalled = tool.status == .running
+                || (includeWaitingForApproval && tool.status == .waitingForApproval)
+            guard stalled else { continue }
+            tool.status = .interrupted
+            session.chatItems[index] = ChatHistoryItem(
+                id: session.chatItems[index].id,
+                type: .toolCall(tool),
+                timestamp: session.chatItems[index].timestamp
+            )
         }
     }
 
@@ -2805,6 +2896,35 @@ actor SessionStore {
                 }
             }
 
+            if session.provider == .opencode,
+               session.phase.isActive
+                || session.phase.isWaitingForApproval
+                || session.phase.isWaitingForTerminalApproval {
+                let quietDuration = now.timeIntervalSince(session.lastActivity)
+                // tracker may hold tools whose chat item has not arrived yet
+                let extended = session.phase == .compacting
+                    || session.phase.isWaitingForApproval
+                    || session.phase.isWaitingForTerminalApproval
+                    || hasRunningTools(in: session)
+                    || !session.toolTracker.inProgress.isEmpty
+                let quietLimit = extended
+                    ? opencodeExtendedQuietExpirationSeconds
+                    : opencodeActiveQuietExpirationSeconds
+
+                if quietDuration > quietLimit {
+                    var updatedSession = session
+                    Self.logger.info("opencode session \(sessionId.prefix(8), privacy: .public) active state expired after \(Int(quietDuration), privacy: .public)s quiet; marking idle")
+                    writeDebugLogAsync("[opencode-lifecycle] activeQuietExpired session=\(sessionId) quietSeconds=\(Int(quietDuration)) limitSeconds=\(Int(quietLimit)) phase=\(String(describing: session.phase))")
+                    updatedSession.phase = .idle
+                    updatedSession.completionNotificationAt = nil
+                    interruptStalledTools(in: &updatedSession, includeWaitingForApproval: true)
+                    updatedSession.toolTracker.inProgress.removeAll()
+                    sessions[sessionId] = updatedSession
+                    stateChanged = true
+                    continue
+                }
+            }
+
             // Claude: when the Stop hook is missed (e.g. nook-state.py
             // fails to connect, or the socket is temporarily unavailable),
             // the session can get stuck in .processing even though Claude
@@ -2884,6 +3004,39 @@ actor SessionStore {
         sessionsSubject.send(sortedSessions)
     }
 
+    /// Hold the prompt notification briefly so an auto-answered prompt
+    /// (`permission.replied` arrives within milliseconds) can cancel it — the
+    /// user never had a chance to act, so ringing would be noise.
+    private func schedulePermissionPromptNotification(sessionId: String, requestId: String) {
+        pendingPermissionPromptNotifications[sessionId]?.task.cancel()
+        let delay = permissionPromptNotificationDelayNanos
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            await self?.firePermissionPromptNotification(sessionId: sessionId, requestId: requestId)
+        }
+        pendingPermissionPromptNotifications[sessionId] = PendingPermissionPromptNotification(
+            requestId: requestId,
+            task: task
+        )
+    }
+
+    private func firePermissionPromptNotification(sessionId: String, requestId: String) {
+        // The entry is replaced when a newer prompt arrives; only the current
+        // request may notify.
+        guard let pending = pendingPermissionPromptNotifications[sessionId],
+              pending.requestId == requestId else { return }
+        pendingPermissionPromptNotifications[sessionId] = nil
+        guard let session = sessions[sessionId],
+              case .waitingForApproval(let ctx) = session.phase,
+              ctx.opencodeRequestId == requestId else { return }
+        publishCompletionNotification(for: session)
+    }
+
+    private func cancelPermissionPromptNotification(sessionId: String) {
+        pendingPermissionPromptNotifications.removeValue(forKey: sessionId)?.task.cancel()
+    }
+
     private func publishCompletionNotification(for session: SessionState) {
         completionNotificationsSubject.send(
             SessionCompletionNotification(session: session)
@@ -2892,7 +3045,21 @@ actor SessionStore {
     }
 
     #if DEBUG
+    /// Tests must not scan the real process tree (lsof) or bind to a running
+    /// opencode instance. Enabled by `resetForTesting()`.
+    private var runtimeMetadataDisabledForTesting = false
+
+    /// Shorten the delayed prompt notification so tests do not wait 1.5s.
+    func setPermissionPromptNotificationDelayForTesting(_ nanos: UInt64) {
+        permissionPromptNotificationDelayNanos = nanos
+    }
+
     func resetForTesting() {
+        for pending in pendingPermissionPromptNotifications.values {
+            pending.task.cancel()
+        }
+        pendingPermissionPromptNotifications.removeAll()
+        permissionPromptNotificationDelayNanos = 1_500_000_000
         stopPeriodicStatusCheck()
         opencodePortProbeTask?.cancel()
         opencodePortProbeTask = nil
@@ -2917,6 +3084,10 @@ actor SessionStore {
         registeredSessionIds.removeAll()
         earlyChatItemBuffer.removeAll()
         provisionalSessionPids.removeAll()
+        opencodeCompletionNotifiedSessions.removeAll()
+        #if DEBUG
+        runtimeMetadataDisabledForTesting = true
+        #endif
         opencodeServerPorts.removeAll()
         opencodeServerPortFallback = nil
         opencodePluginVersion = nil
@@ -2954,6 +3125,12 @@ actor SessionStore {
         session.pid = pid
         sessions[sessionId] = session
         publishState()
+    }
+
+    func setLastActivityForTesting(sessionId: String, secondsAgo: TimeInterval) {
+        guard var session = sessions[sessionId] else { return }
+        session.lastActivity = Date().addingTimeInterval(-secondsAgo)
+        sessions[sessionId] = session
     }
 
     func recheckAllSessionsForTesting() {

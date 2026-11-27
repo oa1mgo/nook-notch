@@ -72,6 +72,11 @@ enum OpencodeSessionEvent: Sendable {
     case postTool(sessionId: String, cwd: String, toolName: String, toolUseId: String?, inputSummary: String?, output: String? = nil, error: String? = nil, messageId: String? = nil)
     case image(sessionId: String, cwd: String, mediaType: String, base64Data: String, messageId: String? = nil)
     case permissionAsked(sessionId: String, cwd: String, requestId: String, toolName: String, toolUseId: String?, input: [String: String], inputSummary: String?, alwaysPatterns: [String])
+    /// opencode resolved a permission request on its own — answered in the
+    /// TUI, replied by another client, or auto-replied by `opencode run`
+    /// (`--auto` → "once", plain run → "reject"). This is the only reliable
+    /// signal that Nook's approval bar must be dismissed.
+    case permissionReplied(sessionId: String, requestId: String, reply: String)
     case serverPortReceived(sessionId: String, port: Int, version: String?, pid: Int?)
     case stop(sessionId: String, cwd: String)
     // MARK: - Subagent events

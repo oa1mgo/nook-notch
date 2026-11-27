@@ -529,11 +529,23 @@ struct InlineApprovalButtons: View {
 | --- | --- | --- |
 | `question.asked` 回复能力 | 回复是多选答案，UI/API 跟 permission 完全不同 | Step 3，独立 PR |
 | DEFENSIVE 兜底（tool name=permission） | 当前 opencode 不会以 tool 形式发 permission | Step 4，防御性 |
-| `permission.replied` 监听 | 悬空清理可用 tool completion 事件代替 | Step 4 |
+| `permission.replied` 监听 | 悬空清理可用 tool completion 事件代替 | ✅ 已实现（2026-11-12），见下方说明 |
 | phase 超时回退（5s 无 replied → 回 `.processing`） | 需要 SessionStore 加 timer / 状态机，改动膨胀 | 后续，可放在 Step 4 |
 | subagent 触发的 permission | subagent 的 permission 在 opencode 内部自决，不暴露给父 session | 暂不处理 |
 | diff 预览 hover-expand | 视觉增强，非核心 | 后续 |
 | 键盘快捷键 | ~~⌘↩ / ⌘⌫~~ 改为 Y/N/A（与 ChatApprovalBar 一致）；chat 页已上线，instances 页由 `docs/superpowers/specs/2026-09-23-session-list-permission-shortcuts-design.md` 实现 | 已取代 |
+
+### 2026-11-12 补丁：`permission.replied` 接入
+
+原先假设「tool completion 能兜底清理审批态」，实测不成立：
+
+- `opencode run` 会自己应答权限（`--auto` → `"once"`，普通 run → `"reject"`，见 opencode `cli/cmd/run.ts`），TUI 内审批也不经过 Nook 的回复路径；
+- `tool.callID` 缺失的 permission（`external_directory` 等）没有对应的 tool 完成事件，phase 只能挂到 600s 静默过期；
+- `.stop` 出于保护真实审批挂起的考虑不会清 `waitingForApproval`。
+
+现在链路为 `permission.replied` → `OpencodeHookAdapter.handlePermissionReplied` → `SessionEvent.opencodePermissionReplied` → `SessionStore.processOpencodePermissionReplied`，按 **`requestID`**（不是 `toolUseId`）匹配 `PermissionContext`，命中后复用 `processPermissionApproved` / `processPermissionDenied`。Nook 自己回复时 phase 已先行推进，事件到达时 requestID 不匹配，天然幂等。
+
+显示层同步兜底：ChatView 初始化时优先取 `sessionMonitor.instances` 的实时状态（路由快照可能是关闭 notch 时的旧 phase）；若 session 已被 reap（opencode 进程退出）则 `exitChat()`，不再恢复出过期的审批条。
 
 ---
 

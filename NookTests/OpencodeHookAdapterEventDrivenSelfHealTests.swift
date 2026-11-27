@@ -59,4 +59,160 @@ final class OpencodeHookAdapterEventDrivenSelfHealTests: XCTestCase {
             return false
         }, "permission.asked without cwd must NOT self-heal, got \(events)")
     }
+
+    /// `permission.replied` (answered in the TUI, by another client, or
+    /// auto-replied by `opencode run`) must be forwarded so SessionStore can
+    /// dismiss the approval bar. It is not a self-heal trigger — the request it
+    /// resolves already registered the session.
+    func testPermissionRepliedIsForwarded() {
+        let sessionId = "ses_replied_\(UUID().uuidString)"
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "permission.replied",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "requestID": AnyCodable("per_abc"),
+                "reply": AnyCodable("once"),
+            ]
+        ))
+        XCTAssertTrue(events.contains { event in
+            if case .permissionReplied(let sid, let reqId, let reply) = event {
+                return sid == sessionId && reqId == "per_abc" && reply == "once"
+            }
+            return false
+        }, "permission.replied must be forwarded, got \(events)")
+    }
+
+    func testSessionStatusIdleEmitsStop() {
+        let sessionId = "ses_idle_\(UUID().uuidString)"
+        _ = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.started",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "cwd": AnyCodable("/tmp/test-project"),
+                "pid": AnyCodable(12345),
+            ]
+        ))
+
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.status",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "status": AnyCodable(["type": "idle"]),
+            ]
+        ))
+
+        XCTAssertTrue(events.contains { event in
+            if case .stop(let sid, _) = event { return sid == sessionId }
+            return false
+        }, "session.status=idle must emit .stop, got \(events)")
+
+        let stops = events.filter { event in
+            if case .stop = event { return true }
+            return false
+        }
+        XCTAssertEqual(stops.count, 1, "status=idle must emit exactly one .stop")
+    }
+
+    func testSessionStatusBusyDoesNotEmitStop() {
+        let sessionId = "ses_busy_\(UUID().uuidString)"
+        _ = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.started",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "cwd": AnyCodable("/tmp/test-project"),
+                "pid": AnyCodable(12345),
+            ]
+        ))
+
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.status",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "status": AnyCodable(["type": "busy"]),
+            ]
+        ))
+
+        XCTAssertFalse(events.contains { event in
+            if case .stop = event { return true }
+            return false
+        })
+    }
+
+    /// Provider 退避重试期间不能被认为是空闲：必须产 `.processingStarted`
+    /// 以刷新 SessionStore 的 lastActivity，否则 90s 静默兜底会误判。
+    func testSessionStatusRetryRefreshesActivityWithoutStopping() {
+        let sessionId = "ses_retry_\(UUID().uuidString)"
+        _ = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.started",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "cwd": AnyCodable("/tmp/test-project"),
+                "pid": AnyCodable(12345),
+            ]
+        ))
+
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.status",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "status": AnyCodable([
+                    "type": "retry",
+                    "attempt": 2,
+                    "message": "rate limited",
+                    "next": 1_700_000_000_000,
+                ] as [String: Any]),
+            ]
+        ))
+
+        XCTAssertTrue(events.contains { event in
+            if case .processingStarted(let sid, _) = event { return sid == sessionId }
+            return false
+        }, "session.status=retry must emit .processingStarted, got \(events)")
+        XCTAssertFalse(events.contains { event in
+            if case .stop = event { return true }
+            return false
+        }, "session.status=retry must not end the turn")
+    }
+
+    /// 用户在 TUI 里拒绝/取消问题后，opencode 会发 `question.rejected`。
+    /// 不消费它 + `.stop` 不再清等待态 = 问题面板永久可交互。
+    /// 模型拒答后通常继续跑，所以映射成 `.processingStarted`；若该轮直接结束，
+    /// 随后的 `status=idle` 会把 processing 正常收尾。
+    func testQuestionRejectedResumesProcessing() {
+        let sessionId = "ses_qrej_\(UUID().uuidString)"
+        _ = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "session.started",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "cwd": AnyCodable("/tmp/test-project"),
+                "pid": AnyCodable(12345),
+            ]
+        ))
+
+        let events = OpencodeHookAdapter.adapt(OpencodeHookEnvelope(
+            origin: "opencode",
+            type: "question.rejected",
+            properties: [
+                "sessionID": AnyCodable(sessionId),
+                "requestID": AnyCodable("que_1"),
+            ]
+        ))
+
+        guard case .processingStarted(let sid, let cwd)? = events.first(where: { event in
+            if case .processingStarted = event { return true }
+            return false
+        }) else {
+            return XCTFail("question.rejected must emit .processingStarted, got \(events)")
+        }
+        XCTAssertEqual(sid, sessionId)
+        XCTAssertEqual(cwd, "/tmp/test-project")
+    }
 }
