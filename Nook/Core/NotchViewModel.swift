@@ -844,12 +844,13 @@ class NotchViewModel: ObservableObject {
     /// [Cursor hooks if installed], Debug log.
     /// Order follows the visual order of the page.
     var agentsItemCount: Int {
-        var count = 1 + 1 + 1 + 1 + 1 + 1 // Back + Claude/Codex/OpenCode/Cursor main + Debug log
+        var count = 1 + 1 + 1 + 1 + 1 + 1 + 1 // Back + Claude/Codex/OpenCode/Cursor/Antigravity main + Debug log
         if agentsClaudeDirPickerExpanded { count += 2 }
-        if AgentPathsResolver.isInstalled(.claude)  { count += 1 }
-        if AgentPathsResolver.isInstalled(.codex)   { count += 1 }
-        if AgentPathsResolver.isInstalled(.opencode) { count += 1 }
-        if AgentPathsResolver.isInstalled(.cursor)  { count += 1 }
+        if AgentPathsResolver.isInstalled(.claude)      { count += 1 }
+        if AgentPathsResolver.isInstalled(.codex)       { count += 1 }
+        if AgentPathsResolver.isInstalled(.opencode)    { count += 1 }
+        if AgentPathsResolver.isInstalled(.cursor)      { count += 1 }
+        if AgentPathsResolver.isInstalled(.antigravity) { count += 1 }
         return count
     }
     /// Whether the "Visible Metrics" section is expanded in performance settings.

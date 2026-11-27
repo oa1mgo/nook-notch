@@ -112,18 +112,16 @@ typealias HookEventHandler = @Sendable (HookEvent) -> Void
 /// Callback for Codex hook events
 typealias CodexHookEventHandler = @Sendable (CodexSessionEvent) -> Void
 
-/// Callback for OpenCode hook events
-typealias OpencodeHookEventHandler = @Sendable (OpencodeSessionEvent) -> Void
-
-/// Callback for OpenCode chat item updates (from OpencodeChatItemAdapter)
-typealias OpencodeChatItemsHandler = @Sendable ([ChatItemUpdate]) -> Void
-
-/// Callback for Cursor hook events
-typealias CursorHookEventHandler = @Sendable (CursorSessionEvent) -> Void
-
-/// Callback for Cursor chat item updates (from CursorChatItemAdapter)
-typealias CursorChatItemsHandler = @Sendable ([ChatItemUpdate]) -> Void
-
+/// A provider adaptation is delivered intact; the Runtime orders its content
+/// and passthrough lifecycle events in one accepted batch.
+nonisolated struct HookSocketCallbacks: Sendable {
+    let onEvent: HookEventHandler
+    var onPermissionFailure: PermissionFailureHandler? = nil
+    var onCodexEvent: CodexHookEventHandler? = nil
+    var onOpencodeBatch: (@Sendable (OpencodeChatItemAdapter.AdaptResult) -> Void)? = nil
+    var onCursorBatch: (@Sendable (CursorChatItemAdapter.Result) -> Void)? = nil
+    var onAntigravityBatch: (@Sendable (AntigravityChatItemAdapter.Result) -> Void)? = nil
+}
 
 /// Callback for permission response failures (socket died)
 typealias PermissionFailureHandler = @Sendable (_ sessionId: String, _ toolUseId: String) -> Void
@@ -134,14 +132,14 @@ class HookSocketServer {
     static let shared = HookSocketServer()
     static let socketPath = "/tmp/nook.sock"
 
+    private let boundSocketPath: String
     private var serverSocket: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private var eventHandler: HookEventHandler?
     private var codexEventHandler: CodexHookEventHandler?
-    private var opencodeEventHandler: OpencodeHookEventHandler?
-    private var opencodeChatItemsHandler: OpencodeChatItemsHandler?
-    private var cursorEventHandler: CursorHookEventHandler?
-    private var cursorChatItemsHandler: CursorChatItemsHandler?
+    private var opencodeBatchHandler: (@Sendable (OpencodeChatItemAdapter.AdaptResult) -> Void)?
+    private var cursorBatchHandler: (@Sendable (CursorChatItemAdapter.Result) -> Void)?
+    private var antigravityBatchHandler: (@Sendable (AntigravityChatItemAdapter.Result) -> Void)?
     private var permissionFailureHandler: PermissionFailureHandler?
     private let queue = DispatchQueue(label: "com.celestial.Nook.socket", qos: .userInitiated)
 
@@ -155,51 +153,32 @@ class HookSocketServer {
     private var toolUseIdCache: [String: [String]] = [:]
     private let cacheLock = NSLock()
 
-    private init() {}
+    init(socketPath: String = HookSocketServer.socketPath) {
+        self.boundSocketPath = socketPath
+    }
 
-    /// Start the socket server
-    func start(
-        onEvent: @escaping HookEventHandler,
-        onPermissionFailure: PermissionFailureHandler? = nil,
-        onCodexEvent: CodexHookEventHandler? = nil,
-        onOpencodeEvent: OpencodeHookEventHandler? = nil,
-        onOpencodeChatItems: OpencodeChatItemsHandler? = nil,
-        onCursorEvent: CursorHookEventHandler? = nil,
-        onCursorChatItems: CursorChatItemsHandler? = nil
-    ) {
+    /// Convenience entry for isolated socket tests and Claude-only clients.
+    func start(onEvent: @escaping HookEventHandler) {
+        start(callbacks: HookSocketCallbacks(onEvent: onEvent))
+    }
+
+    func start(callbacks: HookSocketCallbacks) {
         queue.async { [weak self] in
-            self?.startServer(
-                onEvent: onEvent,
-                onPermissionFailure: onPermissionFailure,
-                onCodexEvent: onCodexEvent,
-                onOpencodeEvent: onOpencodeEvent,
-                onOpencodeChatItems: onOpencodeChatItems,
-                onCursorEvent: onCursorEvent,
-                onCursorChatItems: onCursorChatItems
-            )
+            self?.startServer(callbacks: callbacks)
         }
     }
 
-    private func startServer(
-        onEvent: @escaping HookEventHandler,
-        onPermissionFailure: PermissionFailureHandler?,
-        onCodexEvent: CodexHookEventHandler?,
-        onOpencodeEvent: OpencodeHookEventHandler?,
-        onOpencodeChatItems: OpencodeChatItemsHandler?,
-        onCursorEvent: CursorHookEventHandler?,
-        onCursorChatItems: CursorChatItemsHandler?
-    ) {
+    private func startServer(callbacks: HookSocketCallbacks) {
         guard serverSocket < 0 else { return }
 
-        eventHandler = onEvent
-        codexEventHandler = onCodexEvent
-        opencodeEventHandler = onOpencodeEvent
-        opencodeChatItemsHandler = onOpencodeChatItems
-        cursorEventHandler = onCursorEvent
-        cursorChatItemsHandler = onCursorChatItems
-        permissionFailureHandler = onPermissionFailure
+        eventHandler = callbacks.onEvent
+        codexEventHandler = callbacks.onCodexEvent
+        opencodeBatchHandler = callbacks.onOpencodeBatch
+        cursorBatchHandler = callbacks.onCursorBatch
+        antigravityBatchHandler = callbacks.onAntigravityBatch
+        permissionFailureHandler = callbacks.onPermissionFailure
 
-        unlink(Self.socketPath)
+        unlink(boundSocketPath)
 
         serverSocket = socket(AF_UNIX, SOCK_STREAM, 0)
         guard serverSocket >= 0 else {
@@ -212,7 +191,7 @@ class HookSocketServer {
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        Self.socketPath.withCString { ptr in
+        boundSocketPath.withCString { ptr in
             withUnsafeMutablePointer(to: &addr.sun_path) { pathPtr in
                 let pathBufferPtr = UnsafeMutableRawPointer(pathPtr)
                     .assumingMemoryBound(to: CChar.self)
@@ -233,7 +212,7 @@ class HookSocketServer {
             return
         }
 
-        chmod(Self.socketPath, 0o600)
+        chmod(boundSocketPath, 0o600)
 
         guard listen(serverSocket, 10) == 0 else {
             logger.error("Failed to listen: \(errno)")
@@ -242,31 +221,50 @@ class HookSocketServer {
             return
         }
 
-        logger.notice("Listening on \(Self.socketPath)")
+        logger.notice("Listening on \(self.boundSocketPath)")
 
         acceptSource = DispatchSource.makeReadSource(fileDescriptor: serverSocket, queue: queue)
         acceptSource?.setEventHandler { [weak self] in
             self?.acceptConnection()
         }
-        acceptSource?.setCancelHandler { [weak self] in
-            if let fd = self?.serverSocket, fd >= 0 {
-                close(fd)
-                self?.serverSocket = -1
-            }
+        // The cancellation handler can run after a restart. It owns this
+        // descriptor only, never the next generation's serverSocket.
+        let listeningSocket = serverSocket
+        acceptSource?.setCancelHandler {
+            close(listeningSocket)
         }
         acceptSource?.resume()
     }
 
-    /// Stop the socket server
+    /// Finish pending socket work before teardown, including an asynchronous
+    /// start that has not run yet. Called by the app's MainActor runtime owner.
     func stop() {
+        queue.sync {
+            stopServer()
+        }
+    }
+
+    /// Queue barrier for isolated socket lifecycle tests; never connects to the
+    /// production listener or sends a provider event.
+    func isListeningForTesting() async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                continuation.resume(returning: serverSocket >= 0)
+            }
+        }
+    }
+
+    private func stopServer() {
         acceptSource?.cancel()
         acceptSource = nil
-        unlink(Self.socketPath)
+        serverSocket = -1
+        unlink(boundSocketPath)
+        eventHandler = nil
+        permissionFailureHandler = nil
         codexEventHandler = nil
-        opencodeChatItemsHandler = nil
-        opencodeEventHandler = nil
-        cursorEventHandler = nil
-        cursorChatItemsHandler = nil
+        opencodeBatchHandler = nil
+        cursorBatchHandler = nil
+        antigravityBatchHandler = nil
 
         permissionsLock.lock()
         for (_, pending) in pendingPermissions {
@@ -274,6 +272,10 @@ class HookSocketServer {
         }
         pendingPermissions.removeAll()
         permissionsLock.unlock()
+
+        cacheLock.lock()
+        toolUseIdCache.removeAll()
+        cacheLock.unlock()
     }
 
     /// Respond to a pending permission request by toolUseId
@@ -482,26 +484,12 @@ class HookSocketServer {
             close(clientSocket)
             socketLog("Ignoring unsupported Codex event: \(eventName)")
 
-        case .opencode(let events):
+        case .opencodeChatItems(let batch):
             close(clientSocket)
-            for event in events {
-                socketLog("Received OpenCode event: \(String(describing: event))")
-                opencodeEventHandler?(event)
-            }
-
-        case .opencodeChatItems(let chatItems, let passthrough):
-            close(clientSocket)
-            // Dispatch chat items FIRST so their Task {} is enqueued
-            // before any passthrough lifecycle events (e.g. stop).
-            // This prevents the race where stop runs before chat items
-            // are applied, which would insert items into an idle session.
-            if !chatItems.isEmpty {
-                opencodeChatItemsHandler?(chatItems)
-            }
-            for event in passthrough {
+            for event in batch.passthroughEvents {
                 socketLog("Received OpenCode passthrough: \(String(describing: event))")
-                opencodeEventHandler?(event)
             }
+            opencodeBatchHandler?(batch)
 
         case .opencodeSkipped(let type):
             close(clientSocket)
@@ -509,19 +497,27 @@ class HookSocketServer {
             // this event (e.g. session.status busy, step-start, session.diff).
             logger.debug("OpenCode event skipped by adapter: type=\(type)")
 
-        case .cursorChatItems(let chatItems, let passthrough):
+        case .cursorChatItems(let batch):
             close(clientSocket)
-            if !chatItems.isEmpty {
-                cursorChatItemsHandler?(chatItems)
-            }
-            for event in passthrough {
+            for event in batch.passthroughEvents {
                 socketLog("Received Cursor passthrough: \(String(describing: event))")
-                cursorEventHandler?(event)
             }
+            cursorBatchHandler?(batch)
 
         case .cursorSkipped(let eventName):
             close(clientSocket)
             logger.debug("Cursor event skipped by adapter: event=\(eventName)")
+
+        case .antigravityChatItems(let batch):
+            close(clientSocket)
+            for event in batch.passthroughEvents {
+                socketLog("Received Antigravity passthrough: \(String(describing: event))")
+            }
+            antigravityBatchHandler?(batch)
+
+        case .antigravitySkipped(let eventName):
+            close(clientSocket)
+            logger.debug("Antigravity event skipped by adapter: event=\(eventName)")
 
         case .unknown:
             let raw = String(data: data, encoding: .utf8) ?? "?"
@@ -533,11 +529,12 @@ class HookSocketServer {
     private enum DecodedHookPayload {
         case claude(HookEvent)
         case codex(CodexSessionEvent)
-        case opencode([OpencodeSessionEvent])
-        case opencodeChatItems([ChatItemUpdate], [OpencodeSessionEvent])
+        case opencodeChatItems(OpencodeChatItemAdapter.AdaptResult)
         case opencodeSkipped(type: String)
-        case cursorChatItems([ChatItemUpdate], [CursorSessionEvent])
+        case cursorChatItems(CursorChatItemAdapter.Result)
         case cursorSkipped(eventName: String)
+        case antigravityChatItems(AntigravityChatItemAdapter.Result)
+        case antigravitySkipped(eventName: String)
         case unsupportedCodex(eventName: String)
         case unknown
     }
@@ -546,11 +543,20 @@ class HookSocketServer {
         // Provider hook payloads can contain fields that are also accepted by
         // Claude's broad HookEvent decoder. Let provider-specific modules
         // classify their own payload shapes before trying the legacy shape.
+        if let antigravityEnvelope = try? JSONDecoder().decode(AntigravityHookEnvelope.self, from: data),
+           antigravityEnvelope.isAntigravityPayload {
+            let result = AntigravityChatItemAdapter.shared.adaptAndConvert(antigravityEnvelope)
+            if !result.chatItemUpdates.isEmpty || !result.passthroughEvents.isEmpty {
+                return .antigravityChatItems(result)
+            }
+            return .antigravitySkipped(eventName: antigravityEnvelope.hookEventName)
+        }
+
         if let cursorEnvelope = try? JSONDecoder().decode(CursorHookEnvelope.self, from: data),
            cursorEnvelope.isCursorPayload {
             let result = CursorChatItemAdapter.shared.adaptAndConvert(cursorEnvelope)
             if !result.chatItemUpdates.isEmpty || !result.passthroughEvents.isEmpty {
-                return .cursorChatItems(result.chatItemUpdates, result.passthroughEvents)
+                return .cursorChatItems(result)
             }
             return .cursorSkipped(eventName: cursorEnvelope.hookEventName)
         }
@@ -566,7 +572,7 @@ class HookSocketServer {
         if let opencodeEnvelope = try? JSONDecoder().decode(OpencodeHookEnvelope.self, from: data) {
             let result = OpencodeChatItemAdapter.shared.adaptAndConvert(opencodeEnvelope)
             if !result.chatItemUpdates.isEmpty || !result.passthroughEvents.isEmpty {
-                return .opencodeChatItems(result.chatItemUpdates, result.passthroughEvents)
+                return .opencodeChatItems(result)
             }
             // Envelope decoded fine; adapter just had nothing to surface.
             return .opencodeSkipped(type: opencodeEnvelope.type)
@@ -634,6 +640,15 @@ class HookSocketServer {
             return
         } else {
             close(clientSocket)
+        }
+
+        // Permission descriptors belong to this receive queue. Complete the
+        // cleanup before another envelope can register a new pending request.
+        if event.event == "Stop" {
+            cleanupPendingPermissions(sessionId: event.sessionId)
+        }
+        if event.event == "PostToolUse", let toolUseId = event.toolUseId {
+            cleanupSpecificPermission(toolUseId: toolUseId)
         }
 
         DebugLog.shared.write("[claude-hook] event=\(event.event) status=\(event.status ?? "-") tool=\(event.tool ?? "-") session=\(event.sessionId.prefix(8))")

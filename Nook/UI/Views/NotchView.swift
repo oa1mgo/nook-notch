@@ -71,12 +71,13 @@ struct NotchView: View {
             case .codex: return .codex
             case .opencode: return .opencode
             case .cursor: return .cursor
+            case .antigravity: return .antigravity
             }
         }
     }
 
     /// All currently processing providers, in priority order
-    /// (claude > codex > opencode > cursor). Empty if no agent is
+    /// (claude > codex > opencode > cursor > antigravity). Empty if no agent is
     /// processing. Used by the closed-state header to render a
     /// stacked "peek" of icons — see `headerRow` below.
     private var activeProcessingProviders: [SessionProvider] {
@@ -92,6 +93,9 @@ struct NotchView: View {
         }
         if sessionMonitor.instances.contains(where: { $0.provider == .cursor && ($0.phase == .processing || $0.phase == .compacting) }) {
             providers.append(.cursor)
+        }
+        if sessionMonitor.instances.contains(where: { $0.provider == .antigravity && ($0.phase == .processing || $0.phase == .compacting) }) {
+            providers.append(.antigravity)
         }
         return providers
     }
@@ -127,6 +131,9 @@ struct NotchView: View {
         }
         if sessionMonitor.instances.contains(where: { $0.provider == .cursor && ($0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval) }) {
             return .cursor
+        }
+        if sessionMonitor.instances.contains(where: { $0.provider == .antigravity && ($0.phase.isWaitingForApproval || $0.phase.isWaitingForTerminalApproval) }) {
+            return .antigravity
         }
         return nil
     }
@@ -171,7 +178,7 @@ struct NotchView: View {
 
         if activityCoordinator.expandingActivity.show {
             switch activityCoordinator.expandingActivity.type {
-            case .claude, .codex, .opencode, .cursor:
+            case .claude, .codex, .opencode, .cursor, .antigravity:
                 return baseExpansion + permissionIndicatorWidth
             case .none:
                 break
@@ -231,7 +238,6 @@ struct NotchView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             viewModel.closedNotchExpansionWidth = expansionWidth
-            sessionMonitor.startMonitoring()
             performanceMonitor.setActive(performanceMonitorEnabled)
             syncInstancesPageLayoutState()
             handleProcessingChange()
@@ -286,7 +292,7 @@ struct NotchView: View {
         guard activityCoordinator.expandingActivity.show else { return false }
 
         switch activityCoordinator.expandingActivity.type {
-        case .claude, .codex, .opencode, .cursor:
+        case .claude, .codex, .opencode, .cursor, .antigravity:
             return true
         case .none:
             return false
@@ -319,6 +325,8 @@ struct NotchView: View {
             return .opencode
         case .cursor:
             return .cursor
+        case .antigravity:
+            return .antigravity
         case .claude, .none:
             return .claude
         }
@@ -338,6 +346,8 @@ struct NotchView: View {
             return .opencode
         case .cursor:
             return .cursor
+        case .antigravity:
+            return .antigravity
         }
     }
 
@@ -833,6 +843,7 @@ struct NotchView: View {
                                 case .codex: return .codex
                                 case .opencode: return .opencode
                                 case .cursor: return .cursor
+                                case .antigravity: return .antigravity
                                 case .claude, .none: return .claude
                                 }
                             }()
@@ -1179,7 +1190,7 @@ struct NotchView: View {
         // Track synthetic completion notifications for providers that keep a
         // short completed marker in the active session list.
         let completionMarkerSessions = instances.filter {
-            $0.provider == .cursor && $0.completionNotificationAt != nil
+            ($0.provider == .cursor || $0.provider == .antigravity) && $0.completionNotificationAt != nil
         }
         var currentCompletionMarkers: [String: Date] = [:]
         var newCompletionSessions: [SessionState] = []

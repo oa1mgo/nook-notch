@@ -15,9 +15,11 @@ class ChatHistoryManager: ObservableObject {
 
     private var loadedSessions: Set<String> = []
     private var cancellables = Set<AnyCancellable>()
+    private let store: SessionStore
 
-    private init() {
-        SessionStore.shared.sessionsPublisher
+    init(store: SessionStore = .shared) {
+        self.store = store
+        store.sessionsPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] sessions in
                 self?.updateFromSessions(sessions)
@@ -38,49 +40,34 @@ class ChatHistoryManager: ObservableObject {
     func loadFromFile(sessionId: String, cwd: String, force: Bool = false) async {
         guard force || !loadedSessions.contains(sessionId) else { return }
         loadedSessions.insert(sessionId)
-        await SessionStore.shared.process(.loadHistory(sessionId: sessionId, cwd: cwd))
+        await store.process(.loadHistory(sessionId: sessionId, cwd: cwd))
     }
 
     func syncFromFile(sessionId: String, cwd: String) async {
-        let messages = await ConversationParser.shared.parseFullConversation(
-            sessionId: sessionId,
-            cwd: cwd
-        )
-        let completedTools = await ConversationParser.shared.completedToolIds(for: sessionId)
-        let toolResults = await ConversationParser.shared.toolResults(for: sessionId)
-        let structuredResults = await ConversationParser.shared.structuredResults(for: sessionId)
-
-        let payload = FileUpdatePayload(
-            sessionId: sessionId,
-            cwd: cwd,
-            messages: messages,
-            isIncremental: false,  // Full sync
-            completedToolIds: completedTools,
-            toolResults: toolResults,
-            structuredResults: structuredResults
-        )
-
-        await SessionStore.shared.process(.fileUpdated(payload))
+        await store.process(.syncHistory(sessionId: sessionId, cwd: cwd))
     }
 
     func clearHistory(for sessionId: String) {
         loadedSessions.remove(sessionId)
         histories.removeValue(forKey: sessionId)
+        agentDescriptions.removeValue(forKey: sessionId)
         Task {
-            await SessionStore.shared.process(.sessionEnded(sessionId: sessionId))
+            await store.process(.sessionEnded(sessionId: sessionId))
         }
     }
 
     // MARK: - State Updates
 
     private func updateFromSessions(_ sessions: [SessionState]) {
-        var newHistories = histories
-        var newAgentDescriptions = agentDescriptions
+        // The store publishes a complete snapshot. This projection has no
+        // independent retention policy: absent sessions release all UI caches.
+        var newHistories: [String: [ChatHistoryItem]] = [:]
+        var newAgentDescriptions: [String: [String: String]] = [:]
+        loadedSessions = Set(sessions.map(\.sessionId))
         for session in sessions {
             let filteredItems = filterOutSubagentTools(session.chatItems)
             newHistories[session.sessionId] = filteredItems
             newAgentDescriptions[session.sessionId] = session.subagentState.agentDescriptions
-            loadedSessions.insert(session.sessionId)
         }
         histories = newHistories
         agentDescriptions = newAgentDescriptions

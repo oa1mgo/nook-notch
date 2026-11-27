@@ -1,5 +1,15 @@
 # Release Notes
 
+## 1.6.0
+
+What's New
+
+  - Antigravity Support — integrates with Antigravity global lifecycle hooks (`~/.gemini/config/hooks.json`) to surface live processing state, user prompts, completed tool calls, and turn-completion notifications in the notch. Includes an Antigravity brand mark, purple-indigo activity tint, session list badges, and an Agents settings toggle. `PreToolUse` is intentionally omitted so Antigravity's own tool permission prompts remain untouched.
+
+  - Session Runtime & Ingress Governance — moves session ingestion to application lifetime with FIFO-ordered ingress batches, provider-owned bounded pre-registration buffering, scoped session resources, and stale in-flight Claude conversation read rejection.
+
+  - Release Version — Nook 1.6.0 (build 5).
+
 ## 1.5.0
 
 What's New

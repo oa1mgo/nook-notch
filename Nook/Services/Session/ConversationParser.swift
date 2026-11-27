@@ -72,8 +72,17 @@ struct ConversationInfo: Equatable {
     }
 }
 
-actor ConversationParser {
+actor ConversationParser: ClaudeConversationReading {
     static let shared = ConversationParser()
+
+    typealias SubagentToolInfo = ClaudeSubagentToolInfo
+
+    /// Override only for readers backed by an isolated fixture directory.
+    private let projectsRoot: URL?
+
+    init(projectsRoot: URL? = nil) {
+        self.projectsRoot = projectsRoot
+    }
 
     /// Logger for conversation parser (nonisolated static for cross-context access)
     nonisolated static let logger = Logger(subsystem: "com.celestial.Nook", category: "Parser")
@@ -89,7 +98,7 @@ actor ConversationParser {
     }
 
     /// State for incremental JSONL parsing
-    private struct IncrementalParseState {
+    fileprivate nonisolated struct IncrementalParseState: Sendable {
         var lastFileOffset: UInt64 = 0
         var messages: [ChatMessage] = []
         var seenToolIds: Set<String> = []
@@ -99,10 +108,23 @@ actor ConversationParser {
         var structuredResults: [String: ToolResultData] = [:]  // Structured results keyed by tool_use_id
         var lastClearOffset: UInt64 = 0  // Offset of last /clear command (0 = none or at start)
         var clearPending: Bool = false  // True if a /clear was just detected
+
+        nonisolated init() {}
+    }
+
+    /// Opaque value owned by SessionStore, never advanced by a candidate read.
+    nonisolated struct Cursor: Sendable {
+        fileprivate var filePath: String?
+        fileprivate var state: IncrementalParseState
+
+        nonisolated init() {
+            filePath = nil
+            state = IncrementalParseState()
+        }
     }
 
     /// Parsed tool result data
-    struct ToolResult {
+    struct ToolResult: Sendable {
         let content: String?
         let stdout: String?
         let stderr: String?
@@ -123,12 +145,70 @@ actor ConversationParser {
         }
     }
 
+    /// Read metadata and message/result state in one actor turn. Parsing uses a
+    /// value copy, so discarding this snapshot cannot consume rows or /clear.
+    func readSnapshot(
+        sessionId: String,
+        cwd: String,
+        cursor: ClaudeConversationCursor?
+    ) -> ClaudeConversationSnapshot {
+        let sessionFile = Self.sessionFilePath(
+            sessionId: sessionId, cwd: cwd,
+            projectsRoot: projectsRoot ?? ClaudePaths.projectsDir
+        )
+        var nextCursor = cursor ?? Cursor()
+        if nextCursor.filePath != sessionFile {
+            nextCursor = Cursor()
+        }
+        nextCursor.filePath = sessionFile
+        let emptyInfo = ConversationInfo(
+            summary: nil, lastMessage: nil, lastMessageRole: nil,
+            lastToolName: nil, firstUserMessage: nil, lastUserMessageDate: nil
+        )
+        guard FileManager.default.fileExists(atPath: sessionFile) else {
+            return ClaudeConversationSnapshot(
+                newMessages: [], allMessages: [], completedToolIds: [],
+                toolResults: [:], structuredResults: [:], conversationInfo: emptyInfo,
+                clearDetected: false, cursor: nextCursor
+            )
+        }
+
+        let newMessages = parseNewLines(
+            filePath: sessionFile, state: &nextCursor.state,
+            candidateRead: true
+        )
+        let clearDetected = nextCursor.state.clearPending
+        nextCursor.state.clearPending = false
+        let conversationInfo = parseInfo(filePath: sessionFile)
+
+        return ClaudeConversationSnapshot(
+            newMessages: newMessages,
+            allMessages: nextCursor.state.messages,
+            completedToolIds: nextCursor.state.completedToolIds,
+            toolResults: nextCursor.state.toolResults,
+            structuredResults: nextCursor.state.structuredResults,
+            conversationInfo: conversationInfo,
+            clearDetected: clearDetected,
+            cursor: nextCursor
+        )
+    }
+
+    func readSubagentTools(sessionId: String, agentId: String, cwd: String) -> [SubagentToolInfo] {
+        Self.parseSubagentToolsSync(
+            sessionId: sessionId, agentId: agentId, cwd: cwd,
+            projectsRoot: projectsRoot ?? ClaudePaths.projectsDir
+        )
+    }
+
     /// Parse a JSONL file to extract conversation info
     /// Uses caching based on file modification time
     func parse(sessionId: String, cwd: String) -> ConversationInfo {
         let projectDir = cwd.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
         let sessionFile = ClaudePaths.projectsDir.path + "/" + projectDir + "/" + sessionId + ".jsonl"
+        return parseInfo(filePath: sessionFile)
+    }
 
+    private func parseInfo(filePath sessionFile: String) -> ConversationInfo {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: sessionFile),
               let attrs = try? fileManager.attributesOfItem(atPath: sessionFile),
@@ -393,7 +473,11 @@ actor ConversationParser {
     }
 
     /// Parse only new lines since last read (incremental)
-    private func parseNewLines(filePath: String, state: inout IncrementalParseState) -> [ChatMessage] {
+    private func parseNewLines(
+        filePath: String,
+        state: inout IncrementalParseState,
+        candidateRead: Bool = false
+    ) -> [ChatMessage] {
         guard let fileHandle = FileHandle(forReadingAtPath: filePath) else {
             return []
         }
@@ -411,7 +495,7 @@ actor ConversationParser {
         }
 
         if fileSize == state.lastFileOffset {
-            return state.messages
+            return candidateRead ? [] : state.messages
         }
 
         do {
@@ -432,6 +516,9 @@ actor ConversationParser {
 
         for line in lines where !line.isEmpty {
             if line.contains("<command-name>/clear</command-name>") {
+                if candidateRead {
+                    newMessages.removeAll()
+                }
                 state.messages = []
                 state.seenToolIds = []
                 state.toolIdToName = [:]
@@ -531,9 +618,14 @@ actor ConversationParser {
     }
 
     /// Build session file path
-    private nonisolated static func sessionFilePath(sessionId: String, cwd: String) -> String {
+    private nonisolated static func sessionFilePath(
+        sessionId: String,
+        cwd: String,
+        projectsRoot: URL = ClaudePaths.projectsDir
+    ) -> String {
         let projectDir = cwd.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
-        return ClaudePaths.projectsDir.path + "/" + projectDir + "/" + sessionId + ".jsonl"
+        return projectsRoot.appendingPathComponent(projectDir)
+            .appendingPathComponent(sessionId + ".jsonl").standardizedFileURL.path
     }
 
     private nonisolated static func makeISOFormatter() -> ISO8601DateFormatter {
@@ -553,8 +645,13 @@ actor ConversationParser {
     /// Prefer the nested path; fall back to the flat path if only it exists
     /// (cross-version compatibility). If neither exists yet (file still being
     /// created) we return the nested path as the modern default.
-    nonisolated static func subagentFilePath(sessionId: String, agentId: String, projectDir: String) -> String {
-        let base = ClaudePaths.projectsDir.path + "/" + projectDir
+    nonisolated static func subagentFilePath(
+        sessionId: String,
+        agentId: String,
+        projectDir: String,
+        projectsRoot: URL = ClaudePaths.projectsDir
+    ) -> String {
+        let base = projectsRoot.path + "/" + projectDir
         let nested = base + "/" + sessionId + "/subagents/agent-" + agentId + ".jsonl"
         let flat = base + "/agent-" + agentId + ".jsonl"
 
@@ -1085,7 +1182,7 @@ actor ConversationParser {
 }
 
 /// Info about a subagent tool call parsed from JSONL
-struct SubagentToolInfo: Sendable {
+struct ClaudeSubagentToolInfo: Sendable {
     let id: String
     let name: String
     let input: [String: String]
@@ -1093,15 +1190,25 @@ struct SubagentToolInfo: Sendable {
     let timestamp: String?
 }
 
+typealias SubagentToolInfo = ClaudeSubagentToolInfo
+
 // MARK: - Static Subagent Tools Parsing
 
 extension ConversationParser {
     /// Parse subagent tools from an agent JSONL file (static, synchronous version)
-    nonisolated static func parseSubagentToolsSync(sessionId: String, agentId: String, cwd: String) -> [SubagentToolInfo] {
+    nonisolated static func parseSubagentToolsSync(
+        sessionId: String,
+        agentId: String,
+        cwd: String,
+        projectsRoot: URL = ClaudePaths.projectsDir
+    ) -> [SubagentToolInfo] {
         guard !agentId.isEmpty else { return [] }
 
         let projectDir = cwd.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
-        let agentFile = subagentFilePath(sessionId: sessionId, agentId: agentId, projectDir: projectDir)
+        let agentFile = subagentFilePath(
+            sessionId: sessionId, agentId: agentId,
+            projectDir: projectDir, projectsRoot: projectsRoot
+        )
 
         guard FileManager.default.fileExists(atPath: agentFile),
               let content = try? String(contentsOfFile: agentFile, encoding: .utf8) else {

@@ -7,6 +7,8 @@ import os.log
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowManager: WindowManager?
     private var screenObserver: ScreenObserver?
+    private var sessionRuntime: SessionRuntime?
+    private let isTestHost = AppRuntimeEnvironment.isXCTestHost()
 
     static var shared: AppDelegate?
 
@@ -24,6 +26,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Tests exercise domain logic without installing hooks, taking the real
+        // socket, creating windows, or sending telemetry from the host process.
+        guard !isTestHost else { return }
+
         if !ensureSingleInstance() {
             NSApplication.shared.terminate(nil)
             return
@@ -58,6 +64,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             reg.register(TerminalFallbackProvider(provider: .claude))
             reg.register(TerminalFallbackProvider(provider: .codex))
             reg.register(TerminalFallbackProvider(provider: .cursor))
+            reg.register(TerminalFallbackProvider(provider: .antigravity))
         }
 
         // Start the on-disk debug log mirror as early as possible so
@@ -103,8 +110,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if AppSettings.codexHooksEnabled { CodexHookInstaller.installIfNeeded() }
             if AppSettings.opencodeHooksEnabled { OpencodeHookInstaller.installIfNeeded() }
             if AppSettings.cursorHooksEnabled { CursorHookInstaller.installIfNeeded() }
+            if AppSettings.antigravityHooksEnabled { AntigravityHookInstaller.installIfNeeded() }
         }
         NSApplication.shared.setActivationPolicy(.accessory)
+
+        sessionRuntime = SessionRuntime()
+        sessionRuntime?.start()
 
         windowManager = WindowManager()
         _ = windowManager?.setupNotchWindow()
@@ -121,6 +132,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        guard !isTestHost else { return }
+        sessionRuntime?.stop()
+        sessionRuntime = nil
         MusicAudioAnalyzer.shared.stop()
         mixpanel?.flush()
         screenObserver = nil

@@ -12,6 +12,8 @@ struct AgentPathsResolver {
             return homeDir.appendingPathComponent(".config/opencode")
         case .cursor:
             return homeDir.appendingPathComponent(".cursor")
+        case .antigravity:
+            return homeDir.appendingPathComponent(".gemini/config")
         }
     }
 
@@ -25,6 +27,8 @@ struct AgentPathsResolver {
             return directory(for: .opencode).appendingPathComponent("hooks")
         case .cursor:
             return directory(for: .cursor).appendingPathComponent("hooks")
+        case .antigravity:
+            return directory(for: .antigravity).appendingPathComponent("hooks")
         }
     }
 

@@ -24,8 +24,34 @@ actor SessionStore {
     /// All sessions keyed by sessionId
     private var sessions: [String: SessionState] = [:]
 
-    /// Pending file syncs (debounced)
-    private var pendingSyncs: [String: Task<Void, Never>] = [:]
+    /// A Claude cursor advances only with an accepted Store commit. Requests
+    /// share one flight per lifetime; new hooks ask for another pass.
+    private struct ClaudeReadRequest {
+        var fullHistory: Bool
+        var appliesSyncEffects: Bool
+    }
+
+    private struct ClaudeReadState {
+        let generation = UUID()
+        let cwd: String
+        var cursor: ClaudeConversationCursor?
+        var pending: ClaudeReadRequest?
+    }
+
+    private struct ClaudeReadBaseline {
+        let toolStarts: [String: Date]
+        let taskStarts: [String: Date]
+    }
+
+    private struct ClaudeSubagentRead {
+        let agentId: String
+        let tools: [ConversationParser.SubagentToolInfo]
+    }
+
+    private let claudeReader: any ClaudeConversationReading
+    private let claudeSyncDebounceNs: UInt64
+    private var claudeReads: [String: ClaudeReadState] = [:]
+    private var claudeSyncTasks: [String: Task<Void, Never>] = [:]
 
     /// Content sync is separate from hook-driven lifecycle effects.
     private var codexTranscriptLowerBounds: [String: Date] = [:]
@@ -51,6 +77,8 @@ actor SessionStore {
     private var opencodeServerPorts: [Int: Int] = [:]
     /// Legacy fallback: port from a plugin that reports no pid, or from probe.
     private var opencodeServerPortFallback: Int?
+    private var opencodePortProbeTask: Task<Void, Never>?
+    private var opencodePortProbeToken: UUID?
 
     /// Running OpenCode plugin version, reported by the plugin in the serverPort
     /// handshake. Used to detect when OpenCode is still running a stale plugin
@@ -88,15 +116,13 @@ actor SessionStore {
     private let opencodeExtendedQuietExpirationSeconds: TimeInterval = 600
 
     /// BlockOrdering keys for chat items (from unified ChatItemUpdate path).
-    /// Maps chatItem.id → BlockOrdering so ChatItemSorter can maintain
-    /// correct display order regardless of event arrival timing.
-    private var blockOrderings: [String: BlockOrdering] = [:]
+    /// Item IDs are only unique within a session. Each session owns its
+    /// ordering metadata so removal and conversation resets stay isolated.
+    private var blockOrderings: [String: [String: BlockOrdering]] = [:]
 
-    /// Sessions that have been explicitly opened via a `SessionStarted`
-    /// event (or via Claude's hook path). The `realtimeChatItemBatch` /
-    /// `chatItemBatch` / `chatItemUpdate` entry points filter against this
-    /// set: chat-item updates for unknown sessionIds are dropped instead of
-    /// being auto-promoted to a top-level `SessionState`. This is the
+    /// Sessions opened through an authorized provider lifecycle path.
+    /// Chat-item entry points buffer unknown identities briefly without
+    /// promoting them to a top-level `SessionState`. This is the
     /// contract that keeps subagent child sessions (which never emit a
     /// SessionStarted because `OpencodeHookAdapter.adaptSubagentEvent`
     /// short-circuits subagent events) from materializing as standalone
@@ -111,11 +137,10 @@ actor SessionStore {
     /// with unknown pid are never recorded (conservatively never removed).
     private var provisionalSessionPids: [String: Int] = [:]
 
-    /// Buffer for chat-item updates that arrive before their session is registered.
-    /// Subagent child sessions are intentionally never registered (they don't emit
-    /// SessionStarted), so their buffered updates are naturally dropped. Top-level
-    /// sessions get registered via processOpencodeSessionStart and flush their buffer.
-    private var earlyChatItemBuffer: [String: [ChatItemUpdate]] = [:]
+    /// Unknown identities retain content only within the registration budget.
+    /// In particular, unregistered child sessions expire without becoming visible.
+    private var earlyChatItemBuffer: PendingChatItemBuffer
+    private let pendingChatItemClock: @Sendable () -> TimeInterval
 
     /// Sessions whose current turn already published a completion notification.
     /// Reset when a new turn starts (prompt / status=busy), not by chat items —
@@ -168,7 +193,19 @@ actor SessionStore {
 
     // MARK: - Initialization
 
-    private init() {}
+    init(
+        claudeReader: any ClaudeConversationReading = ConversationParser.shared,
+        claudeSyncDebounceNs: UInt64 = 100_000_000,
+        pendingChatItemPolicy: PendingChatItemBuffer.Policy = .init(),
+        pendingChatItemClock: @escaping @Sendable () -> TimeInterval = {
+            Foundation.ProcessInfo.processInfo.systemUptime
+        }
+    ) {
+        self.claudeReader = claudeReader
+        self.claudeSyncDebounceNs = claudeSyncDebounceNs
+        self.earlyChatItemBuffer = PendingChatItemBuffer(policy: pendingChatItemPolicy)
+        self.pendingChatItemClock = pendingChatItemClock
+    }
 
     // MARK: - Event Processing
 
@@ -181,7 +218,6 @@ actor SessionStore {
             await processHookEvent(hookEvent)
 
         case .codexSessionStarted(let sessionId, let cwd, let source):
-            registerSession(sessionId: sessionId)
             processCodexSessionStart(sessionId: sessionId, cwd: cwd, source: source)
             scheduleCodexTranscriptSync(sessionId: sessionId)
 
@@ -230,7 +266,6 @@ actor SessionStore {
             scheduleCodexTranscriptSync(sessionId: sessionId)
 
         case .opencodeSessionStarted(let sessionId, let cwd, let provisional, let pid):
-            registerSession(sessionId: sessionId)
             processOpencodeSessionStart(sessionId: sessionId, cwd: cwd, provisional: provisional, pid: pid)
 
         case .opencodeProcessingStarted(let sessionId, let cwd):
@@ -260,7 +295,6 @@ actor SessionStore {
             processOpencodeServerPortReceived(sessionId: sessionId, port: port, version: version, pid: pid)
 
         case .cursorSessionStarted(let sessionId, let cwd):
-            registerSession(sessionId: sessionId)
             processCursorSessionStart(sessionId: sessionId, cwd: cwd)
 
         case .cursorProcessingStarted(let sessionId, let cwd):
@@ -274,6 +308,18 @@ actor SessionStore {
 
         case .cursorSessionEnded(let sessionId):
             processCursorSessionEnd(sessionId: sessionId)
+
+        case .antigravitySessionStarted(let sessionId, let cwd):
+            processAntigravitySessionStart(sessionId: sessionId, cwd: cwd)
+
+        case .antigravityProcessingStarted(let sessionId, let cwd):
+            processAntigravityProcessingStarted(sessionId: sessionId, cwd: cwd)
+
+        case .antigravityWaitingForInput(let sessionId, let cwd):
+            processAntigravityWaitingForInput(sessionId: sessionId, cwd: cwd)
+
+        case .antigravityStopped(let sessionId, let cwd, let terminationReason, let error):
+            processAntigravityStop(sessionId: sessionId, cwd: cwd, terminationReason: terminationReason, error: error)
 
         case .chatItemUpdate(let update):
             applyChatItemUpdateIfRegistered(update)
@@ -300,9 +346,6 @@ actor SessionStore {
         case .permissionSocketFailed(let sessionId, let toolUseId):
             await processSocketFailure(sessionId: sessionId, toolUseId: toolUseId)
 
-        case .fileUpdated(let payload):
-            await processFileUpdate(payload)
-
         case .interruptDetected(let sessionId):
             await processInterrupt(sessionId: sessionId)
 
@@ -315,18 +358,12 @@ actor SessionStore {
         case .loadHistory(let sessionId, let cwd):
             await loadHistoryFromFile(sessionId: sessionId, cwd: cwd)
 
-        case .historyLoaded(let sessionId, let messages, let completedTools, let toolResults, let structuredResults, let conversationInfo):
-            await processHistoryLoaded(
-                sessionId: sessionId,
-                messages: messages,
-                completedTools: completedTools,
-                toolResults: toolResults,
-                structuredResults: structuredResults,
-                conversationInfo: conversationInfo
-            )
+        case .syncHistory(let sessionId, let cwd):
+            let task = requestClaudeRead(sessionId: sessionId, cwd: cwd, fullHistory: true, appliesSyncEffects: true)
+            await task?.value
 
         case .toolCompleted(let sessionId, let toolUseId, let result):
-            await processToolCompleted(sessionId: sessionId, toolUseId: toolUseId, result: result)
+            processToolCompleted(sessionId: sessionId, toolUseId: toolUseId, result: result)
 
         // MARK: - Subagent Events
 
@@ -352,19 +389,28 @@ actor SessionStore {
 
     // MARK: - Session Registration
 
-    /// Mark a sessionId as a known top-level session. Called from each
-    /// `SessionStarted` branch in `process(_:)` and from `processHookEvent`
-    /// (Claude) when it first creates a session. See `registeredSessionIds`.
-    private func registerSession(sessionId: String) {
+    /// Provider lifecycle code establishes the owner before granting replay.
+    /// Callers receive the latest state, including any buffered content, before
+    /// applying their current prompt/stop/permission event.
+    private func registerNewSession(_ session: SessionState) -> SessionState {
+        let sessionId = session.sessionId
+        sessions[sessionId] = session
         registeredSessionIds.insert(sessionId)
-        // Flush any chat-item updates that arrived before session registration.
-        // This handles the race condition where opencode sends chat items
-        // (e.g. image) before the sessionStart event.
-        if let buffered = earlyChatItemBuffer.removeValue(forKey: sessionId) {
-            writeDebugLogAsync("[chat-item-update] flushing \(buffered.count) buffered updates for session=\(sessionId.prefix(12))")
-            for update in buffered {
-                applyChatItemUpdate(update, appliesLifecycleEffects: true)
-            }
+        let drained = earlyChatItemBuffer.drain(
+            provider: session.provider, sessionId: sessionId, now: pendingChatItemClock()
+        )
+        logPendingChatItemDiscards(drained.discards)
+        for entry in drained.entries {
+            applyChatItemUpdate(
+                entry.update, appliesLifecycleEffects: entry.appliesLifecycleEffects
+            )
+        }
+        return sessions[sessionId] ?? session
+    }
+
+    private func logPendingChatItemDiscards(_ discards: [PendingChatItemBuffer.Discard]) {
+        for discard in discards {
+            writeDebugLogAsync("[chat-item-buffer] discarded reason=\(discard.reason.rawValue) provider=\(discard.identity.provider.rawValue) session=\(discard.identity.sessionId.prefix(12)) count=\(discard.count)")
         }
     }
 
@@ -372,29 +418,29 @@ actor SessionStore {
     /// session is removed (processSessionEnd, claude `status=ended`, etc.).
     private func unregisterSession(sessionId: String) {
         registeredSessionIds.remove(sessionId)
-        earlyChatItemBuffer.removeValue(forKey: sessionId)
+        earlyChatItemBuffer.remove(sessionId: sessionId)
         provisionalSessionPids.removeValue(forKey: sessionId)
         opencodeCompletionNotifiedSessions.remove(sessionId)
     }
 
-    /// Filtered wrapper around `applyChatItemUpdate`: drops updates for
-    /// sessionIds that have never been explicitly registered, instead of
-    /// letting `applyChatItemUpdate`'s auto-create path materialize a fresh
-    /// top-level `SessionState`. Subagent child sessions rely on this to
-    /// stay invisible — they leak chat-item events (e.g. reasoning parts)
-    /// when `OpencodeHookAdapter`'s `cleanupState` fires prematurely, and
-    /// we must not promote those leaks to standalone sessions.
+    /// Only registered provider owners receive content. Unknown identities
+    /// are buffered briefly; child events cannot create top-level sessions.
     private func applyChatItemUpdateIfRegistered(
         _ update: ChatItemUpdate,
         appliesLifecycleEffects: Bool = false
     ) {
+        if let session = sessions[update.sessionId] {
+            guard session.provider == update.provider else {
+                writeDebugLogAsync("[chat-item-update] ignored provider-mismatch session=\(update.sessionId.prefix(12)) existingProvider=\(session.provider.rawValue) updateProvider=\(update.provider.rawValue)")
+                return
+            }
+        }
         if !registeredSessionIds.contains(update.sessionId) {
-            // Buffer early chat-item updates instead of dropping them.
-            // They will be flushed when the session is registered via processOpencodeSessionStart.
-            // Subagent child sessions are never registered, so their buffers
-            // are never flushed (and get cleaned up on session end).
-            earlyChatItemBuffer[update.sessionId, default: []].append(update)
-            writeDebugLogAsync("[chat-item-update] buffered for unregistered session=\(update.sessionId.prefix(12)) id=\(update.id.prefix(16)) bufferCount=\(earlyChatItemBuffer[update.sessionId]?.count ?? 0)")
+            let discards = earlyChatItemBuffer.enqueue(
+                .init(update: update, appliesLifecycleEffects: appliesLifecycleEffects),
+                now: pendingChatItemClock()
+            )
+            logPendingChatItemDiscards(discards)
             return
         }
         applyChatItemUpdate(update, appliesLifecycleEffects: appliesLifecycleEffects)
@@ -422,7 +468,6 @@ actor SessionStore {
         // Track new session in Mixpanel
         if isNewSession {
             mixpanel?.track(event: "Session Started")
-            registerSession(sessionId: sessionId)
         }
 
         session.pid = event.pid
@@ -436,9 +481,7 @@ actor SessionStore {
         session.lastActivity = Date()
 
         if event.status == "ended" {
-            sessions.removeValue(forKey: sessionId)
-            cancelPendingSync(sessionId: sessionId)
-            unregisterSession(sessionId: sessionId)
+            removeSession(sessionId: sessionId)
             return
         }
 
@@ -472,8 +515,7 @@ actor SessionStore {
     }
 
     private func createSession(from event: HookEvent) -> SessionState {
-        registerSession(sessionId: event.sessionId)
-        return SessionState(
+        let session = SessionState(
             sessionId: event.sessionId,
             provider: .claude,
             cwd: event.cwd,
@@ -483,17 +525,18 @@ actor SessionStore {
             isInTmux: false,  // Will be updated
             phase: .idle
         )
+        return registerNewSession(session)
     }
 
     private func createCodexSession(sessionId: String, cwd: String) -> SessionState {
-        registerSession(sessionId: sessionId)
-        return SessionState(
+        let session = SessionState(
             sessionId: sessionId,
             provider: .codex,
             cwd: cwd,
             projectName: URL(fileURLWithPath: cwd).lastPathComponent,
             phase: .idle
         )
+        return registerNewSession(session)
     }
 
     private func shouldIgnoreCodexSession(_ sessionId: String) -> Bool {
@@ -604,7 +647,7 @@ actor SessionStore {
         enrichCodexRuntimeMetadata(session: &session)
         session.lastActivity = now
         session.completionNotificationAt = nil
-        if isNewSession || !session.phase.isActive {
+        if !session.phase.isActive {
             session.phase = .idle
         }
         sessions[sessionId] = session
@@ -620,9 +663,7 @@ actor SessionStore {
         if pendingCodexStartupSessions.remove(sessionId) != nil,
            isCodexInternalStartupPrompt(prompt) {
             ignoredCodexSessions.insert(sessionId)
-            sessions.removeValue(forKey: sessionId)
-            cancelPendingSync(sessionId: sessionId)
-            unregisterSession(sessionId: sessionId)
+            removeSession(sessionId: sessionId, preservingCodexSuppression: true)
             writeDebugLogAsync("[codex-lifecycle] ignored internal startup session=\(sessionId)")
             return
         }
@@ -944,8 +985,7 @@ actor SessionStore {
     // MARK: - OpenCode Session Processing
 
     private func createOpencodeSession(sessionId: String, cwd: String) -> SessionState {
-        registerSession(sessionId: sessionId)
-        return SessionState(
+        let session = SessionState(
             sessionId: sessionId,
             provider: .opencode,
             cwd: cwd,
@@ -953,6 +993,7 @@ actor SessionStore {
             serverPort: nil,
             phase: .idle
         )
+        return registerNewSession(session)
     }
 
     // No session-id-based ignore hook for opencode: subagent sessions are
@@ -964,6 +1005,7 @@ actor SessionStore {
     // (mirroring `shouldIgnoreCodexSession`'s transcript-based filter).
 
     private func processOpencodeSessionStart(sessionId: String, cwd: String, provisional: Bool = false, pid: Int? = nil) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "sessionStart") else { return }
         // A real (non-provisional) session start on a known pid invalidates
         // any inactive provisional guess from the same instance — the plugin's
         // session.list() fallback picked a storage session the TUI did not
@@ -973,11 +1015,8 @@ actor SessionStore {
         }
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
-        // When the session was auto-created by applyChatItemUpdate
-        // (chat items arrived ~1ms before session.updated), the cwd is
-        // a placeholder "". Since cwd/projectName are `let`, we rebuild
-        // the session struct with the real values, preserving all
-        // mutable state (chatItems, toolTracker, phase, etc.).
+        // A lifecycle fallback may have lacked cwd. Rebuild immutable
+        // identity metadata once known, preserving the conversation.
         if session.cwd.isEmpty, !cwd.isEmpty {
             session = SessionState(
                 sessionId: session.sessionId,
@@ -998,7 +1037,7 @@ actor SessionStore {
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
         session.completionNotificationAt = nil
-        if isNewSession || !session.phase.isActive {
+        if !session.phase.isActive {
             session.phase = .idle
         }
         sessions[sessionId] = session
@@ -1013,10 +1052,6 @@ actor SessionStore {
             provisionalSessionPids.removeValue(forKey: sessionId)
         }
 
-        // Track "Session Started" even for auto-created sessions —
-        // applyChatItemUpdate fires the Mixpanel event on first creation
-        // but processOpencodeSessionStart may be the first real session
-        // start if the chat-item auto-create was for a different session.
         if isNewSession {
             mixpanel?.track(event: "Session Started", properties: ["provider": "opencode"])
         }
@@ -1024,7 +1059,7 @@ actor SessionStore {
         // Probe OpenCode server port if not yet known (plugin's serverPort
         // event may have been lost due to race with socket connection).
         if session.serverPort == nil && opencodeServerPortFallback == nil && opencodeServerPorts.isEmpty {
-            Task { await probeOpencodeServerPort() }
+            scheduleOpencodeServerPortProbe()
         }
 
         publishState()
@@ -1040,13 +1075,13 @@ actor SessionStore {
             guard let session = sessions[provisionalId],
                   session.chatItems.isEmpty,
                   !session.phase.isActive else { continue }
-            sessions.removeValue(forKey: provisionalId)
-            unregisterSession(sessionId: provisionalId)
+            removeSession(sessionId: provisionalId)
             writeDebugLogAsync("[opencode] removed inactive provisional session=\(provisionalId.prefix(12)) replacedBy=\(newSessionId.prefix(12)) pid=\(pid)")
         }
     }
 
     private func processOpencodeProcessingStarted(sessionId: String, cwd: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "processingStarted") else { return }
         if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration processingStarted session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
@@ -1056,7 +1091,7 @@ actor SessionStore {
 
         // Retry probe if server port still unknown (plugin event may arrive late).
         if session.serverPort == nil && opencodeServerPortFallback == nil && opencodeServerPorts.isEmpty {
-            Task { await probeOpencodeServerPort() }
+            scheduleOpencodeServerPortProbe()
         }
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -1088,6 +1123,7 @@ actor SessionStore {
     }
 
     private func processOpencodeWaitingForUserInput(sessionId: String, cwd: String, toolUseId: String, questions: [QuestionItem], requestId: String?) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "waitingForUserInput") else { return }
         if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration waitingForUserInput session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
@@ -1130,6 +1166,7 @@ actor SessionStore {
     }
 
     private func processOpencodeStop(sessionId: String, cwd: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "stop") else { return }
         if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration stop session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
@@ -1168,10 +1205,10 @@ actor SessionStore {
     }
 
     private func processOpencodePromptSubmitted(sessionId: String, cwd: String, prompt: String) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "userPromptSubmit") else { return }
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else { return }
         opencodeCompletionNotifiedSessions.remove(sessionId)
-        registerSession(sessionId: sessionId)
         var session = sessions[sessionId] ?? createOpencodeSession(sessionId: sessionId, cwd: cwd)
         enrichOpencodeRuntimeMetadata(session: &session)
         session.lastActivity = Date()
@@ -1204,15 +1241,34 @@ actor SessionStore {
     /// Probe common OpenCode server ports to discover a running server.
     /// Note: OpenCode in TUI mode (tmux) has no HTTP server — this only works
     /// for `opencode serve` mode. TUI sessions should use tmux send-keys.
-    private func probeOpencodeServerPort() async {
+    private func scheduleOpencodeServerPortProbe() {
+        guard opencodePortProbeTask == nil,
+              opencodeServerPortFallback == nil, opencodeServerPorts.isEmpty else { return }
+        let token = UUID()
+        opencodePortProbeToken = token
+        opencodePortProbeTask = Task { [weak self] in
+            await self?.probeOpencodeServerPort(token: token)
+        }
+    }
+
+    private func probeOpencodeServerPort(token: UUID) async {
+        defer {
+            if opencodePortProbeToken == token {
+                opencodePortProbeTask = nil
+                opencodePortProbeToken = nil
+            }
+        }
         guard opencodeServerPortFallback == nil && opencodeServerPorts.isEmpty else { return }
         let ports = [4096, 4097, 4098]
         for port in ports {
+            guard !Task.isCancelled, opencodePortProbeToken == token else { return }
             guard let url = URL(string: "http://127.0.0.1:\(port)/global/health") else { continue }
             var request = URLRequest(url: url)
             request.timeoutInterval = 1
             if let (_, response) = try? await URLSession.shared.data(for: request),
                let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                guard !Task.isCancelled, opencodePortProbeToken == token,
+                      opencodeServerPortFallback == nil, opencodeServerPorts.isEmpty else { return }
                 writeDebugLogAsync("[opencode-server] probe OK port=\(port)")
                 applyOpencodeFallbackPort(port)
                 return
@@ -1272,6 +1328,7 @@ actor SessionStore {
         inputSummary: String?,
         alwaysPatterns: [String] = []
     ) {
+        guard shouldProcessProviderSession(sessionId: sessionId, provider: .opencode, eventName: "permissionAsked") else { return }
         if sessions[sessionId] == nil, !registeredSessionIds.contains(sessionId) {
             writeDebugLogAsync("[opencode-lifecycle] ignored pre-registration permissionAsked session=\(sessionId.prefix(12)) cwd=\(cwd)")
             return
@@ -1387,6 +1444,19 @@ actor SessionStore {
             return
         }
 
+        let wasMissing = sessions[sessionId] == nil
+        if wasMissing {
+            switch event {
+            case .sessionStart(let cwd), .processingStarted(let cwd),
+                 .compactingStarted(let cwd), .stop(let cwd, _):
+                // Cursor can first appear through a fallback lifecycle event.
+                // Replay older content before applying that event's phase.
+                _ = registerNewSession(SessionState(sessionId: sessionId, provider: .cursor, cwd: cwd))
+            case .sessionEnd:
+                break
+            }
+        }
+
         let result = CursorSessionStateReducer.reduce(
             existingSession: sessions[sessionId],
             sessionId: sessionId,
@@ -1401,8 +1471,72 @@ actor SessionStore {
             writeDebugLogAsync(debugMessage)
         }
 
-        if result.didCreateSession {
+        if wasMissing && result.session != nil {
             mixpanel?.track(event: "Session Started", properties: ["provider": "cursor"])
+        }
+    }
+
+    // MARK: - Antigravity Lifecycle Processing
+
+    private func processAntigravitySessionStart(sessionId: String, cwd: String) {
+        applyAntigravityLifecycle(sessionId: sessionId, event: .sessionStart(cwd: cwd))
+    }
+
+    private func processAntigravityProcessingStarted(sessionId: String, cwd: String) {
+        applyAntigravityLifecycle(sessionId: sessionId, event: .processingStarted(cwd: cwd))
+    }
+
+    private func processAntigravityWaitingForInput(sessionId: String, cwd: String) {
+        applyAntigravityLifecycle(sessionId: sessionId, event: .waitingForInput(cwd: cwd))
+    }
+
+    private func processAntigravityStop(
+        sessionId: String,
+        cwd: String,
+        terminationReason: String?,
+        error: String?
+    ) {
+        applyAntigravityLifecycle(
+            sessionId: sessionId,
+            event: .stop(cwd: cwd, terminationReason: terminationReason, error: error)
+        )
+    }
+
+    private func applyAntigravityLifecycle(
+        sessionId: String,
+        event: AntigravitySessionStateReducer.Event
+    ) {
+        if let existingSession = sessions[sessionId],
+           existingSession.provider != .antigravity {
+            writeDebugLogAsync("[antigravity-lifecycle] ignored provider-mismatch session=\(sessionId) existingProvider=\(existingSession.provider.rawValue)")
+            return
+        }
+
+        let wasMissing = sessions[sessionId] == nil
+        if wasMissing {
+            switch event {
+            case .sessionStart(let cwd), .processingStarted(let cwd),
+                 .waitingForInput(let cwd), .stop(let cwd, _, _):
+                _ = registerNewSession(SessionState(sessionId: sessionId, provider: .antigravity, cwd: cwd))
+            }
+        }
+
+        let result = AntigravitySessionStateReducer.reduce(
+            existingSession: sessions[sessionId],
+            sessionId: sessionId,
+            event: event
+        )
+
+        if let session = result.session {
+            sessions[sessionId] = session
+        }
+
+        if let debugMessage = result.debugMessage {
+            writeDebugLogAsync(debugMessage)
+        }
+
+        if wasMissing && result.session != nil {
+            mixpanel?.track(event: "Session Started", properties: ["provider": "antigravity"])
         }
     }
 
@@ -1421,14 +1555,11 @@ actor SessionStore {
     /// After each mutation, chatItems are re-sorted using ChatItemSorter
     /// to maintain correct display order based on BlockOrdering keys.
     ///
-    /// Session auto-creation: live event streams can deliver chat updates
-    /// before the session-start lifecycle event. Rather than dropping those
-    /// items, create a minimal placeholder and let the provider lifecycle
-    /// path enrich cwd/pid/tty metadata when it arrives.
+    /// Content cannot create sessions. Provider lifecycle paths establish the
+    /// owner before replaying buffered updates or applying their own content.
     private func applyChatItemUpdate(
         _ update: ChatItemUpdate,
-        appliesLifecycleEffects: Bool = false,
-        allowSessionCreation: Bool = true
+        appliesLifecycleEffects: Bool = false
     ) {
         if let existingSession = sessions[update.sessionId],
            existingSession.provider != update.provider {
@@ -1436,30 +1567,17 @@ actor SessionStore {
             return
         }
 
-        if sessions[update.sessionId] == nil, !allowSessionCreation {
+        guard var session = sessions[update.sessionId] else {
             writeDebugLogAsync("[chat-item-update] ignored missing-session session=\(update.sessionId) updateProvider=\(update.provider.rawValue) id=\(update.id)")
             return
         }
 
         let now = Date()
-        var session = sessions[update.sessionId] ?? SessionState(
-            sessionId: update.sessionId,
-            provider: update.provider,
-            cwd: ""  // placeholder — filled by the imminent sessionStart
-        )
-        let isNewSession = sessions[update.sessionId] == nil
-        if isNewSession {
-            DebugLog.shared.write("[chat-item-update] auto-created session for \(update.sessionId) (pre-sessionStart chat item)")
-            // Fire Mixpanel immediately on auto-create so we never miss
-            // the "Session Started" event even if sessionStart passthrough
-            // arrives later and finds the session already existing.
-            mixpanel?.track(event: "Session Started", properties: ["provider": update.provider.rawValue])
-        }
 
         let didApply = ChatItemUpdateReducer.apply(
             update,
             items: &session.chatItems,
-            orderings: &blockOrderings,
+            orderings: &blockOrderings[update.sessionId, default: [:]],
             now: now
         )
         guard didApply else { return }
@@ -1682,9 +1800,7 @@ actor SessionStore {
     // MARK: - Codex Helpers
 
     private func resetCodexConversationState(_ session: inout SessionState) {
-        for item in session.chatItems {
-            blockOrderings.removeValue(forKey: item.id)
-        }
+        blockOrderings.removeValue(forKey: session.sessionId)
 
         session.chatItems.removeAll()
         session.toolTracker = ToolTracker()
@@ -2156,7 +2272,7 @@ actor SessionStore {
 
     /// Process a tool completion event (from JSONL detection)
     /// This is the authoritative handler for tool completions - ensures consistent state updates
-    private func processToolCompleted(sessionId: String, toolUseId: String, result: ToolCompletionResult) async {
+    private func processToolCompleted(sessionId: String, toolUseId: String, result: ToolCompletionResult) {
         guard var session = sessions[sessionId] else { return }
 
         // Check if this tool is already completed (avoid duplicate processing)
@@ -2285,160 +2401,111 @@ actor SessionStore {
         sessions[sessionId] = session
     }
 
-    // MARK: - File Update Processing
+    // MARK: - Claude Read Commit
 
-    private func processFileUpdate(_ payload: FileUpdatePayload) async {
-        guard var session = sessions[payload.sessionId] else { return }
-
-        DebugLog.shared.write("[claude-file-update] session=\(payload.sessionId) msgs=\(payload.messages.count) incremental=\(payload.isIncremental) completedTools=\(payload.completedToolIds.count)")
-
-        // Update conversationInfo from JSONL (summary, lastMessage, etc.)
-        let conversationInfo = await ConversationParser.shared.parse(
-            sessionId: payload.sessionId,
-            cwd: session.cwd
-        )
-        session.conversationInfo = conversationInfo
-
-        // Handle /clear reconciliation - remove items that no longer exist in parser state
-        if session.needsClearReconciliation {
-            // Build set of valid IDs from the payload messages
-            var validIds = Set<String>()
-            for message in payload.messages {
-                for (blockIndex, block) in message.content.enumerated() {
-                    switch block {
-                    case .toolUse(let tool):
-                        validIds.insert(tool.id)
-                    case .text, .thinking, .image, .interrupted:
-                        let itemId = "\(message.id)-\(block.typePrefix)-\(blockIndex)"
-                        validIds.insert(itemId)
-                    }
-                }
-            }
-
-            // Filter chatItems to only keep valid items OR items that are very recent
-            // (within last 2 seconds - these are hook-created placeholders for post-clear tools)
-            let cutoffTime = Date().addingTimeInterval(-2)
-            let previousCount = session.chatItems.count
-            session.chatItems = session.chatItems.filter { item in
-                validIds.contains(item.id) || item.timestamp > cutoffTime
-            }
-
-            // Also reset tool tracker
-            session.toolTracker = ToolTracker()
-            session.subagentState = SubagentState()
-
-            session.needsClearReconciliation = false
-            Self.logger.debug("Clear reconciliation: kept \(session.chatItems.count) of \(previousCount) items")
-        }
-
-        // Persist clear reconciliation before applying adapter updates,
-        // so applyChatItemUpdate() sees the filtered chatItems.
-        sessions[payload.sessionId] = session
-
-        // Use ClaudeChatItemAdapter instead of upsertBlocks.
-        // Sorting is handled by ChatItemSorter in applyChatItemUpdate().
-        let chatUpdates = ClaudeChatItemAdapter.updates(fromFileUpdate: payload)
-        let typeCounts = Dictionary(grouping: chatUpdates, by: { "\($0.block)".prefix(20) }).mapValues(\.count)
-        DebugLog.shared.write("[claude-file-update] session=\(payload.sessionId) adapterUpdates=\(chatUpdates.count) types=\(typeCounts)")
-        for update in chatUpdates {
-            applyChatItemUpdate(update)
-        }
-
-        // Re-fetch session — applyChatItemUpdate may have modified it.
-        guard var currentSession = sessions[payload.sessionId] else { return }
-        currentSession.toolTracker.lastSyncTime = Date()
-
-        await populateSubagentToolsFromAgentFiles(
-            sessionId: payload.sessionId,
-            session: &currentSession,
-            cwd: payload.cwd,
-            structuredResults: payload.structuredResults
-        )
-
-        sessions[payload.sessionId] = currentSession
-
-        await emitToolCompletionEvents(
-            sessionId: payload.sessionId,
-            session: currentSession,
-            completedToolIds: payload.completedToolIds,
-            toolResults: payload.toolResults,
-            structuredResults: payload.structuredResults
-        )
-    }
-
-    /// Populate subagent tools for Task/Agent tools using their agent JSONL files
-    private func populateSubagentToolsFromAgentFiles(
+    /// No suspension is allowed in this commit. Always merge into the current
+    /// session, so hooks received during I/O keep their phase and tool state.
+    private func commitClaudeRead(
+        _ snapshot: ClaudeConversationSnapshot,
         sessionId: String,
-        session: inout SessionState,
-        cwd: String,
-        structuredResults: [String: ToolResultData]
-    ) async {
-        for i in 0..<session.chatItems.count {
-            guard case .toolCall(var tool) = session.chatItems[i].type,
-                  tool.isSubagentContainer,
-                  let structuredResult = structuredResults[session.chatItems[i].id],
-                  case .task(let taskResult) = structuredResult,
-                  !taskResult.agentId.isEmpty else { continue }
+        request: ClaudeReadRequest,
+        baseline: ClaudeReadBaseline,
+        updates: [ChatItemUpdate],
+        subagents: [String: ClaudeSubagentRead]
+    ) {
+        guard var session = sessions[sessionId] else { return }
+        let hasClear = snapshot.clearDetected || session.needsClearReconciliation
+        let reconcilesClear = hasClear && request.appliesSyncEffects
+        session.conversationInfo = snapshot.conversationInfo
 
-            let taskToolId = session.chatItems[i].id
+        // History loading remains content-only. Carry a detected clear forward
+        // so the next sync can reconcile even after this cursor is committed.
+        session.needsClearReconciliation = hasClear
+        if reconcilesClear {
+            reconcileClaudeClear(in: &session, validIds: Set(updates.map(\.id)), baseline: baseline)
+        }
+        ChatItemUpdateReducer.applyBatch(
+            updates, items: &session.chatItems,
+            orderings: &blockOrderings[sessionId, default: [:]]
+        )
+        if request.appliesSyncEffects {
+            session.toolTracker.lastSyncTime = Date()
+            mergeClaudeSubagents(subagents, into: &session)
+        }
+        sessions[sessionId] = session
 
-            // Store agentId → description mapping for AgentOutputTool display
-            if let description = session.subagentState.activeTasks[taskToolId]?.description {
-                session.subagentState.agentDescriptions[taskResult.agentId] = description
-            } else if let description = tool.input["description"] {
-                session.subagentState.agentDescriptions[taskResult.agentId] = description
-            }
-
-            let subagentToolInfos = await ConversationParser.shared.parseSubagentTools(
-                sessionId: sessionId,
-                agentId: taskResult.agentId,
-                cwd: cwd
-            )
-
-            guard !subagentToolInfos.isEmpty else { continue }
-
-            tool.subagentTools = subagentToolInfos.map { info in
-                SubagentToolCall(
-                    id: info.id,
-                    name: info.name,
-                    input: info.input,
-                    status: info.isCompleted ? .success : .running,
-                    timestamp: parseTimestamp(info.timestamp) ?? Date()
+        if request.appliesSyncEffects {
+            for item in session.chatItems {
+                guard case .toolCall(let tool) = item.type,
+                      tool.status == .running || tool.status == .waitingForApproval,
+                      snapshot.completedToolIds.contains(item.id) else { continue }
+                processToolCompleted(
+                    sessionId: sessionId, toolUseId: item.id,
+                    result: ToolCompletionResult.from(
+                        parserResult: snapshot.toolResults[item.id],
+                        structuredResult: snapshot.structuredResults[item.id]
+                    )
                 )
             }
-
-            session.chatItems[i] = ChatHistoryItem(
-                id: taskToolId,
-                type: .toolCall(tool),
-                timestamp: session.chatItems[i].timestamp
-            )
-
-            Self.logger.debug("Populated \(subagentToolInfos.count) subagent tools for Task \(taskToolId.prefix(12), privacy: .public) from agent \(taskResult.agentId.prefix(8), privacy: .public)")
         }
+        writeDebugLogAsync("[claude-read] session=\(sessionId) updates=\(updates.count) full=\(request.fullHistory) clear=\(reconcilesClear)")
     }
 
-    /// Emit toolCompleted events for tools that have results in JSONL but aren't marked complete yet
-    private func emitToolCompletionEvents(
-        sessionId: String,
-        session: SessionState,
-        completedToolIds: Set<String>,
-        toolResults: [String: ConversationParser.ToolResult],
-        structuredResults: [String: ToolResultData]
-    ) async {
-        for item in session.chatItems {
-            guard case .toolCall(let tool) = item.type else { continue }
+    private func reconcileClaudeClear(
+        in session: inout SessionState, validIds: Set<String>, baseline: ClaudeReadBaseline
+    ) {
+        // Keep the established two-second grace for post-clear hook placeholders.
+        let cutoff = Date().addingTimeInterval(-2)
+        session.chatItems.removeAll { !validIds.contains($0.id) && $0.timestamp <= cutoff }
+        let retainedIds = Set(session.chatItems.map(\.id))
+        blockOrderings[session.sessionId] = blockOrderings[session.sessionId]?.filter { retainedIds.contains($0.key) }
+        // Claude hooks track tools before JSONL creates their visible items.
+        // Retain tools started during I/O even when no chat item exists yet.
+        let validToolIds = retainedIds.union(validIds)
+        session.toolTracker.inProgress = session.toolTracker.inProgress.filter {
+            validToolIds.contains($0.key) || baseline.toolStarts[$0.key] != $0.value.startTime
+        }
+        session.subagentState.activeTasks = session.subagentState.activeTasks.filter {
+            validToolIds.contains($0.key) || baseline.taskStarts[$0.key] != $0.value.startTime
+        }
+        session.toolTracker.seenIds.formIntersection(
+            validToolIds.union(session.toolTracker.inProgress.keys).union(session.subagentState.activeTasks.keys)
+        )
+        let activeTaskIds = Set(session.subagentState.activeTasks.keys)
+        session.subagentState.taskStack.removeAll { !activeTaskIds.contains($0) }
+        session.subagentState.agentDescriptions.removeAll()
+        session.needsClearReconciliation = false
+    }
 
-            // Only emit for tools that are running or waiting but have results in JSONL
-            guard tool.status == .running || tool.status == .waitingForApproval else { continue }
-            guard completedToolIds.contains(item.id) else { continue }
-
-            let result = ToolCompletionResult.from(
-                parserResult: toolResults[item.id],
-                structuredResult: structuredResults[item.id]
-            )
-
-            // Process the completion event (this will update state and phase consistently)
-            await process(.toolCompleted(sessionId: sessionId, toolUseId: item.id, result: result))
+    private func mergeClaudeSubagents(_ reads: [String: ClaudeSubagentRead], into session: inout SessionState) {
+        for index in session.chatItems.indices {
+            let item = session.chatItems[index]
+            guard case .toolCall(var tool) = item.type, tool.isSubagentContainer,
+                  let read = reads[item.id] else { continue }
+            if let description = session.subagentState.activeTasks[item.id]?.description ?? tool.input["description"] {
+                session.subagentState.agentDescriptions[read.agentId] = description
+            }
+            guard !read.tools.isEmpty else { continue }
+            // Match by stable ID after I/O; do not roll back newer hook completions
+            // or remove child tools that arrived while the agent file was read.
+            let existing = Dictionary(tool.subagentTools.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            let readIds = Set(read.tools.map(\.id))
+            var tools = read.tools.map { info in
+                let current = existing[info.id]
+                let status: ToolStatus
+                if let current, current.status == .success || current.status == .error || current.status == .interrupted {
+                    status = current.status
+                } else {
+                    status = info.isCompleted ? .success : (current?.status ?? .running)
+                }
+                return SubagentToolCall(
+                    id: info.id, name: info.name, input: info.input, status: status,
+                    timestamp: current?.timestamp ?? parseTimestamp(info.timestamp) ?? Date()
+                )
+            }
+            tools.append(contentsOf: tool.subagentTools.filter { !readIds.contains($0.id) })
+            tool.subagentTools = tools
+            session.chatItems[index] = ChatHistoryItem(id: item.id, type: .toolCall(tool), timestamp: item.timestamp)
         }
     }
 
@@ -2517,10 +2584,12 @@ actor SessionStore {
 
         Self.logger.info("Processing /clear for session \(sessionId.prefix(8), privacy: .public)")
 
-        // Mark that a clear happened - the next fileUpdated will reconcile
-        // by removing items that no longer exist in the parser's state
+        // An explicit clear invalidates all earlier reads, including full loads.
+        // A clear discovered inside a candidate snapshot is handled in its commit.
+        invalidateClaudeRead(sessionId: sessionId)
         session.needsClearReconciliation = true
         sessions[sessionId] = session
+        requestClaudeRead(sessionId: sessionId, cwd: session.cwd, fullHistory: true, appliesSyncEffects: true)
 
         Self.logger.info("/clear processed for session \(sessionId.prefix(8), privacy: .public) - marked for reconciliation")
     }
@@ -2528,12 +2597,22 @@ actor SessionStore {
     // MARK: - Session End Processing
 
     private func processSessionEnd(sessionId: String) async {
+        removeSession(sessionId: sessionId)
+    }
+
+    /// Release session-owned state in every removal path. OpenCode ports and
+    /// plugin version belong to the running instance, not an individual chat.
+    /// Hidden Codex startup sessions retain suppression until explicitly ended.
+    private func removeSession(sessionId: String, preservingCodexSuppression: Bool = false) {
         sessions.removeValue(forKey: sessionId)
         cancelPendingSync(sessionId: sessionId)
+        blockOrderings.removeValue(forKey: sessionId)
         codexTranscriptLowerBounds.removeValue(forKey: sessionId)
-        recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
         pendingCodexStartupSessions.remove(sessionId)
-        ignoredCodexSessions.remove(sessionId)
+        if !preservingCodexSuppression {
+            recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
+            ignoredCodexSessions.remove(sessionId)
+        }
         unregisterSession(sessionId: sessionId)
     }
 
@@ -2545,65 +2624,8 @@ actor SessionStore {
             await codexSyncTasks[sessionId]?.value
             return
         }
-        if sessions[sessionId]?.provider == .cursor {
-            return
-        }
-
-        // Parse file asynchronously
-        let messages = await ConversationParser.shared.parseFullConversation(
-            sessionId: sessionId,
-            cwd: cwd
-        )
-        let completedTools = await ConversationParser.shared.completedToolIds(for: sessionId)
-        let toolResults = await ConversationParser.shared.toolResults(for: sessionId)
-        let structuredResults = await ConversationParser.shared.structuredResults(for: sessionId)
-
-        // Also parse conversationInfo (summary, lastMessage, etc.)
-        let conversationInfo = await ConversationParser.shared.parse(
-            sessionId: sessionId,
-            cwd: cwd
-        )
-
-        // Process loaded history
-        await process(.historyLoaded(
-            sessionId: sessionId,
-            messages: messages,
-            completedTools: completedTools,
-            toolResults: toolResults,
-            structuredResults: structuredResults,
-            conversationInfo: conversationInfo
-        ))
-    }
-
-    private func processHistoryLoaded(
-        sessionId: String,
-        messages: [ChatMessage],
-        completedTools: Set<String>,
-        toolResults: [String: ConversationParser.ToolResult],
-        structuredResults: [String: ToolResultData],
-        conversationInfo: ConversationInfo
-    ) async {
-        guard var session = sessions[sessionId] else { return }
-
-        DebugLog.shared.write("[claude-history-loaded] session=\(sessionId) msgs=\(messages.count) completedTools=\(completedTools.count)")
-
-        // Update conversationInfo (summary, lastMessage, etc.)
-        session.conversationInfo = conversationInfo
-
-        // Use ClaudeChatItemAdapter instead of upsertBlocks.
-        // Sorting is handled by ChatItemSorter in applyChatItemUpdate().
-        sessions[sessionId] = session
-
-        let chatUpdates = ClaudeChatItemAdapter.updates(
-            fromHistoryLoad: messages,
-            completedTools: completedTools,
-            toolResults: toolResults,
-            structuredResults: structuredResults,
-            sessionId: sessionId
-        )
-        for update in chatUpdates {
-            applyChatItemUpdate(update)
-        }
+        let task = requestClaudeRead(sessionId: sessionId, cwd: cwd, fullHistory: true, appliesSyncEffects: false)
+        await task?.value
     }
 
     private func scheduleCodexTranscriptSync(sessionId: String) {
@@ -2664,7 +2686,8 @@ actor SessionStore {
         codexTranscriptCursors[sessionId] = result.cursor
         currentSession.toolTracker.lastSyncTime = Date()
         ChatItemUpdateReducer.applyBatch(
-            result.updates, items: &currentSession.chatItems, orderings: &blockOrderings
+            result.updates, items: &currentSession.chatItems,
+            orderings: &blockOrderings[sessionId, default: [:]]
         )
         // History must not wake a completed turn or emit another notification.
         // A late transcript-only tool also must not remain visibly running.
@@ -2680,45 +2703,95 @@ actor SessionStore {
     // MARK: - File Sync Scheduling
 
     private func scheduleFileSync(sessionId: String, cwd: String) {
-        // Cancel existing sync
-        cancelPendingSync(sessionId: sessionId)
+        requestClaudeRead(sessionId: sessionId, cwd: cwd, fullHistory: false, appliesSyncEffects: true)
+    }
 
-        // Schedule new debounced sync
-        pendingSyncs[sessionId] = Task { [weak self, syncDebounceNs] in
-            try? await Task.sleep(nanoseconds: syncDebounceNs)
-            guard !Task.isCancelled else { return }
+    @discardableResult
+    private func requestClaudeRead(
+        sessionId: String, cwd: String, fullHistory: Bool, appliesSyncEffects: Bool
+    ) -> Task<Void, Never>? {
+        guard let session = sessions[sessionId], session.provider == .claude,
+              session.cwd == cwd else { return nil }
+        var state = claudeReads[sessionId] ?? ClaudeReadState(cwd: cwd)
+        state.pending = ClaudeReadRequest(
+            fullHistory: fullHistory || (state.pending?.fullHistory ?? false),
+            appliesSyncEffects: appliesSyncEffects || (state.pending?.appliesSyncEffects ?? false)
+        )
+        claudeReads[sessionId] = state
+        if let task = claudeSyncTasks[sessionId] { return task }
+        let generation = state.generation
+        let task = Task { [weak self, claudeSyncDebounceNs] in
+            try? await Task.sleep(nanoseconds: claudeSyncDebounceNs)
+            await self?.runClaudeRead(sessionId: sessionId, generation: generation)
+        }
+        claudeSyncTasks[sessionId] = task
+        return task
+    }
 
-            // Parse incrementally - only get NEW messages since last call
-            let result = await ConversationParser.shared.parseIncremental(
-                sessionId: sessionId,
-                cwd: cwd
+    private func isCurrentClaudeRead(sessionId: String, generation: UUID) -> Bool {
+        guard !Task.isCancelled, let state = claudeReads[sessionId],
+              state.generation == generation, let session = sessions[sessionId] else { return false }
+        return session.provider == .claude && session.cwd == state.cwd
+    }
+
+    private func runClaudeRead(sessionId: String, generation: UUID) async {
+        defer {
+            // A cancelled old flight must not remove a replacement's task handle.
+            if claudeReads[sessionId]?.generation == generation {
+                claudeSyncTasks.removeValue(forKey: sessionId)
+            }
+        }
+        while isCurrentClaudeRead(sessionId: sessionId, generation: generation),
+              let state = claudeReads[sessionId], let request = state.pending {
+            claudeReads[sessionId]?.pending = nil
+            let baseline = ClaudeReadBaseline(
+                toolStarts: sessions[sessionId]?.toolTracker.inProgress.mapValues(\.startTime) ?? [:],
+                taskStarts: sessions[sessionId]?.subagentState.activeTasks.mapValues(\.startTime) ?? [:]
             )
-
-            if result.clearDetected {
-                await self?.process(.clearDetected(sessionId: sessionId))
-            }
-
-            guard !result.newMessages.isEmpty || result.clearDetected else {
-                return
-            }
-
+            let snapshot = await claudeReader.readSnapshot(
+                sessionId: sessionId, cwd: state.cwd, cursor: state.cursor
+            )
+            guard isCurrentClaudeRead(sessionId: sessionId, generation: generation) else { return }
+            let fullHistory = request.fullHistory || snapshot.clearDetected ||
+                sessions[sessionId]?.needsClearReconciliation == true
             let payload = FileUpdatePayload(
-                sessionId: sessionId,
-                cwd: cwd,
-                messages: result.newMessages,
-                isIncremental: !result.clearDetected,
-                completedToolIds: result.completedToolIds,
-                toolResults: result.toolResults,
-                structuredResults: result.structuredResults
+                sessionId: sessionId, cwd: state.cwd,
+                messages: fullHistory ? snapshot.allMessages : snapshot.newMessages,
+                isIncremental: !fullHistory, completedToolIds: snapshot.completedToolIds,
+                toolResults: snapshot.toolResults, structuredResults: snapshot.structuredResults
             )
-
-            await self?.process(.fileUpdated(payload))
+            // The legacy adapter uses the project's default MainActor isolation.
+            // Finish that hop before entering the synchronous Store commit.
+            let updates = await ClaudeChatItemAdapter.updates(fromFileUpdate: payload)
+            guard isCurrentClaudeRead(sessionId: sessionId, generation: generation) else { return }
+            var subagents: [String: ClaudeSubagentRead] = [:]
+            if request.appliesSyncEffects {
+                for toolId in snapshot.structuredResults.keys.sorted() {
+                    guard case .task(let result) = snapshot.structuredResults[toolId],
+                          !result.agentId.isEmpty else { continue }
+                    let tools = await claudeReader.readSubagentTools(
+                        sessionId: sessionId, agentId: result.agentId, cwd: state.cwd
+                    )
+                    guard isCurrentClaudeRead(sessionId: sessionId, generation: generation) else { return }
+                    subagents[toolId] = ClaudeSubagentRead(agentId: result.agentId, tools: tools)
+                }
+            }
+            commitClaudeRead(
+                snapshot, sessionId: sessionId, request: request,
+                baseline: baseline, updates: updates, subagents: subagents
+            )
+            claudeReads[sessionId]?.cursor = snapshot.cursor
+            publishState()
         }
     }
 
+    private func invalidateClaudeRead(sessionId: String) {
+        claudeSyncTasks.removeValue(forKey: sessionId)?.cancel()
+        claudeReads.removeValue(forKey: sessionId)
+    }
+
     private func cancelPendingSync(sessionId: String) {
-        pendingSyncs[sessionId]?.cancel()
-        pendingSyncs.removeValue(forKey: sessionId)
+        invalidateClaudeRead(sessionId: sessionId)
         cancelCodexTranscriptSync(sessionId: sessionId)
         codexTranscriptCursors.removeValue(forKey: sessionId)
     }
@@ -2749,6 +2822,7 @@ actor SessionStore {
 
     /// Recheck status of all active sessions
     private func recheckAllSessions() {
+        logPendingChatItemDiscards(earlyChatItemBuffer.prune(now: pendingChatItemClock()))
         var stateChanged = false
         let now = Date()
 
@@ -2760,13 +2834,7 @@ actor SessionStore {
 
         for (sessionId, session) in Array(sessions) {
             if session.phase == .ended {
-                sessions.removeValue(forKey: sessionId)
-                cancelPendingSync(sessionId: sessionId)
-                codexTranscriptLowerBounds.removeValue(forKey: sessionId)
-                recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
-                pendingCodexStartupSessions.remove(sessionId)
-                ignoredCodexSessions.remove(sessionId)
-                unregisterSession(sessionId: sessionId)
+                removeSession(sessionId: sessionId)
                 stateChanged = true
                 continue
             }
@@ -2774,13 +2842,7 @@ actor SessionStore {
             if session.provider == .codex,
                session.phase == .idle,
                now.timeIntervalSince(session.lastActivity) > codexIdleExpirationSeconds {
-                sessions.removeValue(forKey: sessionId)
-                cancelPendingSync(sessionId: sessionId)
-                codexTranscriptLowerBounds.removeValue(forKey: sessionId)
-                recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
-                pendingCodexStartupSessions.remove(sessionId)
-                ignoredCodexSessions.remove(sessionId)
-                unregisterSession(sessionId: sessionId)
+                removeSession(sessionId: sessionId)
                 stateChanged = true
                 continue
             }
@@ -2828,13 +2890,7 @@ actor SessionStore {
                 let isRunning = isProcessRunning(pid: pid)
                 if !isRunning {
                     Self.logger.info("Process \(pid) no longer running, ending session \(sessionId.prefix(8))")
-                    sessions.removeValue(forKey: sessionId)
-                    cancelPendingSync(sessionId: sessionId)
-                    codexTranscriptLowerBounds.removeValue(forKey: sessionId)
-                    recentlyStoppedCodexSessions.removeValue(forKey: sessionId)
-                    pendingCodexStartupSessions.remove(sessionId)
-                    ignoredCodexSessions.remove(sessionId)
-                    unregisterSession(sessionId: sessionId)
+                    removeSession(sessionId: sessionId)
                     stateChanged = true
                     continue
                 }
@@ -2914,10 +2970,10 @@ actor SessionStore {
 
     private func shouldRemoveWhenProcessExits(_ session: SessionState) -> Bool {
         switch session.provider {
-        case .codex:
+        case .codex, .antigravity:
             // Codex runtime pids are best-effort hints for focusing a live turn.
-            // The stable identity is the Codex session id, so a completed Codex
-            // turn must remain visible after the worker process exits.
+            // Antigravity sessions are owned by the Antigravity app/LS and have no
+            // per-session pid; completed sessions remain visible until dismissed.
             return false
         case .claude, .opencode, .cursor:
             return true
@@ -3004,11 +3060,16 @@ actor SessionStore {
         }
         pendingPermissionPromptNotifications.removeAll()
         permissionPromptNotificationDelayNanos = 1_500_000_000
-        for task in pendingSyncs.values {
+        stopPeriodicStatusCheck()
+        opencodePortProbeTask?.cancel()
+        opencodePortProbeTask = nil
+        opencodePortProbeToken = nil
+        for task in claudeSyncTasks.values {
             task.cancel()
         }
         sessions.removeAll()
-        pendingSyncs.removeAll()
+        claudeSyncTasks.removeAll()
+        claudeReads.removeAll()
         for task in codexSyncTasks.values { task.cancel() }
         codexSyncTasks.removeAll()
         codexSyncTokens.removeAll()
@@ -3020,12 +3081,43 @@ actor SessionStore {
         pendingCodexStartupSessions.removeAll()
         ignoredCodexSessions.removeAll()
         blockOrderings.removeAll()
+        registeredSessionIds.removeAll()
+        earlyChatItemBuffer.removeAll()
         provisionalSessionPids.removeAll()
         opencodeCompletionNotifiedSessions.removeAll()
         #if DEBUG
         runtimeMetadataDisabledForTesting = true
         #endif
+        opencodeServerPorts.removeAll()
+        opencodeServerPortFallback = nil
+        opencodePluginVersion = nil
+        opencodePluginVersionSubject.send(nil)
         publishState()
+    }
+
+    /// Resource ownership snapshot for lifecycle tests; no provider I/O needed.
+    func sessionResourceIDsForTesting() -> Set<String> {
+        var ids = Set(sessions.keys)
+        ids.formUnion(claudeSyncTasks.keys)
+        ids.formUnion(claudeReads.keys)
+        ids.formUnion(codexSyncTasks.keys)
+        ids.formUnion(codexSyncTokens.keys)
+        ids.formUnion(codexSyncRequested)
+        ids.formUnion(codexTranscriptCursors.keys)
+        ids.formUnion(codexTranscriptLowerBounds.keys)
+        ids.formUnion(recentlyStoppedCodexSessions.keys)
+        ids.formUnion(pendingCodexStartupSessions)
+        ids.formUnion(ignoredCodexSessions)
+        ids.formUnion(blockOrderings.keys)
+        ids.formUnion(registeredSessionIds)
+        ids.formUnion(earlyChatItemBuffer.sessionIds)
+        ids.formUnion(provisionalSessionPids.keys)
+        return ids
+    }
+
+    func hasBackgroundTasksForTesting() -> Bool {
+        statusCheckTask != nil || opencodePortProbeTask != nil ||
+            !claudeSyncTasks.isEmpty || !codexSyncTasks.isEmpty
     }
 
     func setSessionPidForTesting(sessionId: String, pid: Int?) {
@@ -3047,6 +3139,15 @@ actor SessionStore {
 
     func setCodexTranscriptRootForTesting(_ root: URL) {
         codexTranscriptRoot = root
+    }
+
+    func pendingClaudeReadForTesting(sessionId: String) -> (fullHistory: Bool, appliesSyncEffects: Bool)? {
+        guard let request = claudeReads[sessionId]?.pending else { return nil }
+        return (request.fullHistory, request.appliesSyncEffects)
+    }
+
+    func waitForClaudeSyncForTesting(sessionId: String) async {
+        await claudeSyncTasks[sessionId]?.value
     }
 
     func waitForCodexSyncForTesting(sessionId: String) async {

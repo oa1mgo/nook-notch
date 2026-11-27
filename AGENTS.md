@@ -21,6 +21,9 @@ Nook turns the MacBook notch into a compact desktop control layer. Agent session
 
 | Spec | When to read |
 |---|---|
+| [`docs/architecture/2026-10-22-architecture-governance.md`](docs/architecture/2026-10-22-architecture-governance.md) | Before changing app/session runtime ownership, session resource cleanup, or test-host bootstrap |
+| [`docs/architecture/2026-10-22-claude-read-lifecycle.md`](docs/architecture/2026-10-22-claude-read-lifecycle.md) | Before changing Claude file reads, cursor ownership, history sync, or in-flight result commits |
+| [`docs/architecture/2026-10-22-session-ingress-governance.md`](docs/architecture/2026-10-22-session-ingress-governance.md) | Before changing socket event ordering, provider registration, or pending chat-item budgets |
 | [`docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md`](docs/specs/2026-07-07-picker-height-and-broadcast-pattern.md) | Before changing any settings / agents / performance picker behavior |
 | [`docs/specs/2026-07-01-picker-panel-height-redesign.md`](docs/specs/2026-07-01-picker-panel-height-redesign.md) | Before changing panel height / scrollbar code |
 | [`docs/specs/2026-06-17-opencode-v1.17-compatibility-matrix.md`](docs/specs/2026-06-17-opencode-v1.17-compatibility-matrix.md) | Before changing opencode adapter / plugin (see §3.3 version caveat) |

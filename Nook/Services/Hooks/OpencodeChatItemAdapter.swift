@@ -38,7 +38,7 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
     /// Result of adapting an opencode envelope: chat item updates (for the
     /// unified ChatItemUpdate path) and passthrough events (session lifecycle,
     /// subagent events that still need the old SessionStore dispatch).
-    struct AdaptResult {
+    struct AdaptResult: Sendable {
         let chatItemUpdates: [ChatItemUpdate]
         let passthroughEvents: [OpencodeSessionEvent]
     }
@@ -87,6 +87,15 @@ final class OpencodeChatItemAdapter: @unchecked Sendable {
                 chatItemUpdates.append(contentsOf: convertEvent(event, sessionId: sessionId))
             } else {
                 passthroughEvents.append(event)
+            }
+        }
+
+        // The socket converts envelopes serially. Finish this envelope before
+        // clearing its turn context, so an asynchronous Store stop cannot erase
+        // context already established by the next envelope.
+        for event in passthroughEvents {
+            if case .stop(let stoppedSessionId, _) = event {
+                clearSession(stoppedSessionId)
             }
         }
 

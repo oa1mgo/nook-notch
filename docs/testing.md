@@ -10,22 +10,47 @@ Run the local suite with:
 xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug -derivedDataPath build/TestDerivedData -destination 'platform=macOS'
 ```
 
-For a clean local run, quit any running `Nook.app`, then reset the test
-DerivedData first:
+If stale build products require a clean local run, reset the test DerivedData:
 
 ```bash
 rm -rf build/TestDerivedData
 xcodebuild test -project Nook.xcodeproj -scheme Nook -configuration Debug -derivedDataPath build/TestDerivedData -destination 'platform=macOS'
 ```
 
-The test target is intentionally not parallelizable in the shared scheme. The
-app owns singleton state and local process resources such as `/tmp/nook.sock`,
-so parallel host launches can make Xcode report an early test-runner exit even
-when individual tests pass.
+The XCTest host skips application bootstrap and shutdown effects: it does not
+install hooks, create the notch window, start telemetry, or bind the production
+socket. Tests can run while a normal Nook instance is open. The test target is
+still intentionally not parallelizable in the shared scheme because legacy
+tests share store and adapter singleton state.
+
+New store tests should construct their own `SessionStore()` and inject it into
+consumers such as `ChatHistoryManager(store:)`. Runtime lifecycle tests inject
+only lifecycle effects, so they do not start production watchers or sockets.
+Ingress tests also inject an async event sink and hold its first submission
+behind a continuation gate, then verify batch order and admission across restart.
+Registration buffer tests inject a monotonic clock and small budgets, so expiry
+and eviction do not depend on real time or a live provider.
+Claude read tests inject `ClaudeConversationReading` and a zero debounce into
+`SessionStore`; continuation gates control I/O completion, and bounded waits
+observe specific requests or pending state. Parser fixtures inject a temporary
+`projectsRoot` and never read the user's Claude history.
+This isolates those boundaries; it does not make every legacy parser/process
+lookup test independent of the local environment.
+
+If `xcodebuild` reports that the active developer directory is Command Line
+Tools, prefix the command with
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
+
+The `Tests` GitHub Actions workflow runs the app suite and existing packaging
+unit tests on pull requests and pushes to `main`. App test failures retain the
+Xcode log and result bundle for seven days. This workflow does not configure
+branch protection or publish releases.
 
 ## Current Coverage
 
 - Provider adapters:
+  - `ClaudeConversationReaderTests` covers candidate cursor replay, `/clear`,
+    full-path isolation, result-only appends, and injected subagent paths.
   - `ClaudeChatItemAdapterTests` covers Claude JSONL/history conversion, tool
     status propagation, and rejected `AskUserQuestion` structured fallback.
   - `CodexHookAdapterTests` covers Codex hook alias decoding, provider error
@@ -37,12 +62,37 @@ when individual tests pass.
   - `OpencodeChatItemAdapterTests` covers opencode raw bus envelopes through
     the chat-item adapter boundary, including message-relative ordering and
     bash metadata error detection.
+  - `OpencodeIngressAdapterTests` covers synchronous stop cleanup and the next
+    turn's message/block context while older Store submissions are suspended.
 - Shared state pipeline:
   - `ChatItemUpdateReducerTests` covers insert/update ordering, duplicate
     prompt preservation, and tool status updates.
   - `SessionStateTests` covers terminal approval state exposure.
   - `SessionStoreCodexLifecycleTests` covers Codex stop cleanup and completion
     notification behavior.
+  - `SessionStoreLifecycleTests` covers session resource ownership, ordering
+    isolation, buffered content/lifecycle semantics, and complete test reset.
+  - `PendingChatItemBufferTests` covers provider ownership, fixed TTL, whole-bucket
+    eviction, suppression, count budgets, and removal without real-time sleeps.
+  - `SessionStoreRegistrationTests` covers authorized registration and replay,
+    startup suppression, current-event precedence, and periodic buffer cleanup.
+  - `SessionStoreClaudeReadTests` covers suspended reads across end/recreation,
+    reset and clear, single-flight coalescing, content-only history, current hook
+    and subagent state preservation, and result-only tool completion.
+  - `ChatHistoryManagerTests` covers full-snapshot removal, reused session IDs,
+    and subagent tool filtering without mutating the source store.
+- Application runtime:
+  - `AppRuntimeEnvironmentTests` covers XCTest detection and inert host bootstrap.
+  - `SessionRuntimeTests` covers idempotent lifecycle effects, ordered polling
+    transitions, and UI projection recreation without replacing watcher delegates.
+  - `SessionEventIngressTests` covers whole-batch and cross-provider ordering,
+    accepted work draining across restart, stale callbacks, and final Store state.
+  - `HookSocketServerLifecycleTests` exercises queued start/stop and listener
+    restart using temporary socket paths, without touching `/tmp/nook.sock`.
+  - `HookSocketServerBatchTests` sends provider fixtures over a temporary socket
+    and verifies content/lifecycle are delivered together.
+  - `HookSocketPermissionCleanupTests` keeps temporary permission connections
+    open and verifies Stop/PostToolUse close only the intended pending sockets.
 
 ## Adding Tests
 

@@ -97,6 +97,18 @@ enum SessionEvent: Sendable {
     /// Cursor composer conversation ended.
     case cursorSessionEnded(sessionId: String)
 
+    /// Antigravity conversation session started.
+    case antigravitySessionStarted(sessionId: String, cwd: String)
+
+    /// Antigravity entered a working state (invocation or tool execution).
+    case antigravityProcessingStarted(sessionId: String, cwd: String)
+
+    /// Antigravity is waiting for user input (ask_question tool).
+    case antigravityWaitingForInput(sessionId: String, cwd: String)
+
+    /// Antigravity stopped the current agent execution loop.
+    case antigravityStopped(sessionId: String, cwd: String, terminationReason: String?, error: String?)
+
     // MARK: - Unified ChatItem Updates (from provider adapters)
 
     /// A provider adapter produced a chat item operation (insert/update/remove).
@@ -129,11 +141,6 @@ enum SessionEvent: Sendable {
 
     /// Permission socket failed (connection died before response)
     case permissionSocketFailed(sessionId: String, toolUseId: String)
-
-    // MARK: - File Events (from ConversationParser)
-
-    /// JSONL file was updated with new content
-    case fileUpdated(FileUpdatePayload)
 
     // MARK: - Tool Completion Events (from JSONL parsing)
 
@@ -176,11 +183,11 @@ enum SessionEvent: Sendable {
     /// Request to load initial history from file
     case loadHistory(sessionId: String, cwd: String)
 
-    /// History load completed
-    case historyLoaded(sessionId: String, messages: [ChatMessage], completedTools: Set<String>, toolResults: [String: ConversationParser.ToolResult], structuredResults: [String: ToolResultData], conversationInfo: ConversationInfo)
+    /// Request a full Claude file sync through the Store's lifetime-checked reader.
+    case syncHistory(sessionId: String, cwd: String)
 }
 
-/// Payload for file update events
+/// Parsed content passed to the Claude adapter; never an unversioned Store event.
 struct FileUpdatePayload: Sendable {
     let sessionId: String
     let cwd: String
@@ -339,14 +346,20 @@ extension SessionEvent: CustomStringConvertible {
             return "cursorStopped(session: \(sessionId.prefix(8)), status: \(status ?? "nil"))"
         case .cursorSessionEnded(let sessionId):
             return "cursorSessionEnded(session: \(sessionId.prefix(8)))"
+        case .antigravitySessionStarted(let sessionId, _):
+            return "antigravitySessionStarted(session: \(sessionId.prefix(8)))"
+        case .antigravityProcessingStarted(let sessionId, _):
+            return "antigravityProcessingStarted(session: \(sessionId.prefix(8)))"
+        case .antigravityWaitingForInput(let sessionId, _):
+            return "antigravityWaitingForInput(session: \(sessionId.prefix(8)))"
+        case .antigravityStopped(let sessionId, _, let terminationReason, _):
+            return "antigravityStopped(session: \(sessionId.prefix(8)), reason: \(terminationReason ?? "nil"))"
         case .permissionApproved(let sessionId, let toolUseId):
             return "permissionApproved(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .permissionDenied(let sessionId, let toolUseId, _):
             return "permissionDenied(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
         case .permissionSocketFailed(let sessionId, let toolUseId):
             return "permissionSocketFailed(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)))"
-        case .fileUpdated(let payload):
-            return "fileUpdated(session: \(payload.sessionId.prefix(8)), messages: \(payload.messages.count))"
         case .interruptDetected(let sessionId):
             return "interruptDetected(session: \(sessionId.prefix(8)))"
         case .clearDetected(let sessionId):
@@ -355,8 +368,8 @@ extension SessionEvent: CustomStringConvertible {
             return "sessionEnded(session: \(sessionId.prefix(8)))"
         case .loadHistory(let sessionId, _):
             return "loadHistory(session: \(sessionId.prefix(8)))"
-        case .historyLoaded(let sessionId, let messages, _, _, _, _):
-            return "historyLoaded(session: \(sessionId.prefix(8)), messages: \(messages.count))"
+        case .syncHistory(let sessionId, _):
+            return "syncHistory(session: \(sessionId.prefix(8)))"
         case .toolCompleted(let sessionId, let toolUseId, let result):
             return "toolCompleted(session: \(sessionId.prefix(8)), tool: \(toolUseId.prefix(12)), status: \(result.status))"
         case .subagentStarted(let sessionId, let taskToolId):

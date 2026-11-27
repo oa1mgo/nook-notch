@@ -28,6 +28,8 @@ struct AgentIcon: View {
             OpenCodeLogoIcon(size: size, color: color, isAnimating: animate)
         case .cursor:
             CursorLogoIcon(size: size, color: color, isAnimating: animate)
+        case .antigravity:
+            AntigravityLogoIcon(size: size, color: color, isAnimating: animate)
         }
     }
 }
@@ -413,6 +415,86 @@ struct OpenCodeLogoIcon: View {
             } else {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     squishPhase = 0
+                }
+            }
+        }
+    }
+}
+
+
+/// Antigravity brand mark: a 4-point Gemini-inspired star/sparkle.
+/// Pulses gently when `isAnimating` is true.
+struct AntigravityLogoIcon: View {
+    let size: CGFloat
+    let color: Color
+    var isAnimating: Bool = false
+
+    @State private var pulse: Bool = false
+
+    init(size: CGFloat = 16, color: Color = Color(red: 0.62, green: 0.48, blue: 0.98), isAnimating: Bool = false) {
+        self.size = size
+        self.color = color
+        self.isAnimating = isAnimating
+    }
+
+    var body: some View {
+        Canvas { context, canvasSize in
+            let edge = min(canvasSize.width, canvasSize.height)
+            let scale = edge / 100
+            let xOffset = (canvasSize.width - edge) / 2
+            let yOffset = (canvasSize.height - edge) / 2
+
+            func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: xOffset + x * scale, y: yOffset + y * scale)
+            }
+
+            var star = Path()
+            star.move(to: pt(50, 6))
+            star.addQuadCurve(to: pt(94, 50), control: pt(56, 44))
+            star.addQuadCurve(to: pt(50, 94), control: pt(56, 56))
+            star.addQuadCurve(to: pt(6, 50), control: pt(44, 56))
+            star.addQuadCurve(to: pt(50, 6), control: pt(44, 44))
+            star.closeSubpath()
+
+            let fill = GraphicsContext.Shading.linearGradient(
+                Gradient(colors: [
+                    Color(red: 0.42, green: 0.72, blue: 1.0),
+                    color,
+                    Color(red: 0.80, green: 0.52, blue: 0.98),
+                ]),
+                startPoint: pt(12, 12),
+                endPoint: pt(88, 88)
+            )
+            context.fill(star, with: fill)
+
+            let coreRadius: CGFloat = 9 * scale
+            let coreRect = CGRect(
+                x: xOffset + 50 * scale - coreRadius,
+                y: yOffset + 50 * scale - coreRadius,
+                width: coreRadius * 2,
+                height: coreRadius * 2
+            )
+            context.fill(
+                Path(ellipseIn: coreRect),
+                with: .color(Color.white.opacity(isAnimating ? (pulse ? 0.92 : 0.45) : 0.78))
+            )
+        }
+        .frame(width: size, height: size)
+        .scaleEffect(isAnimating && pulse ? 1.08 : 0.94)
+        .onAppear {
+            guard isAnimating else { return }
+            withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+        .onChange(of: isAnimating) { _, newValue in
+            if newValue {
+                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            } else {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    pulse = false
                 }
             }
         }
